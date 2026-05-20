@@ -1112,24 +1112,46 @@
             // National Access
             national: [
                 'afra.nuwasiima@experienceeducate.org',
+                'francis.kusiimwa@experienceeducate.org',
+                'franz.biije@experienceeducate.org',
+                'evelyne.naisanga@experienceeducate.org',
+                'janet.namugaya@experienceeducate.org',
+                'caroline.chandia@experienceeducate.org',
+                'hellen.namisi@experienceeducate.org'
             ],
             
             // Regional Access - Program Managers
             regional: {
                 'Central': [
                     'afra.nuwasiima@experienceeducate.org',
-                    'charlotte.aijuka@experienceeducate.org'  // Demo: Central Region PM
+                    'charlotte.aijuka@experienceeducate.org',
+                    'brian.ntegeka@experienceeducate.org'
                 ],
-                'East': ['afra.nuwasiima@experienceeducate.org'],
-                'West': ['afra.nuwasiima@experienceeducate.org'],
-                'North': ['afra.nuwasiima@experienceeducate.org']
+                'East': [
+                    'afra.nuwasiima@experienceeducate.org',
+                    'juliet.muchake@experienceeducate.org'
+                ],
+                'West': [
+                    'afra.nuwasiima@experienceeducate.org',
+                    'christine.asasiira@experienceeducate.org'
+                ],
+                'North': ['afra.nuwasiima@experienceeducate.org'],
+                'South': ['afra.nuwasiima@experienceeducate.org']
             },
             
             // CU Access - Field Officers (FOAs)
             cu: {
                 'Kampala': [
                     'afra.nuwasiima@experienceeducate.org',
-                    'john.osikuku@experienceeducate.org'  // Demo: Kampala FOA
+                    'john.osikuku@experienceeducate.org'
+                ],
+                'Kawempe': [
+                    'afra.nuwasiima@experienceeducate.org',
+                    'emma.kisaakye@experienceeducate.org'
+                ],
+                'Entebbe': [
+                    'afra.nuwasiima@experienceeducate.org',
+                    'sarah.mutiibwa@experienceeducate.org'
                 ],
                 'Mukono': ['afra.nuwasiima@experienceeducate.org'],
                 'Jinja': ['afra.nuwasiima@experienceeducate.org'],
@@ -1295,29 +1317,39 @@ const DEMO_DATA = [
 
             if (ACCESS_CONFIG.national.includes(email)) {
                 accessLevels.hasNational = true;
+                
+                // AUTO-GRANT: National users get access to ALL regions
+                accessLevels.regions = Object.keys(ACCESS_CONFIG.regional);
             }
 
-            // Check regional access
-            for (const [region, emails] of Object.entries(ACCESS_CONFIG.regional)) {
-                if (emails.includes(email)) {
-                    accessLevels.regions.push(region);
+            // Check regional access (for non-national users)
+            if (!accessLevels.hasNational) {
+                for (const [region, emails] of Object.entries(ACCESS_CONFIG.regional)) {
+                    if (emails.includes(email)) {
+                        accessLevels.regions.push(region);
+                    }
                 }
             }
 
-            // Check direct CU access
-            for (const [cu, emails] of Object.entries(ACCESS_CONFIG.cu)) {
-                if (emails.includes(email)) {
-                    accessLevels.cus.push(cu);
+            // Check direct CU access (for non-national, non-regional users)
+            if (!accessLevels.hasNational && accessLevels.regions.length === 0) {
+                for (const [cu, emails] of Object.entries(ACCESS_CONFIG.cu)) {
+                    if (emails.includes(email)) {
+                        accessLevels.cus.push(cu);
+                    }
                 }
             }
 
-            // AUTO-GRANT CU ACCESS: If user has regional access, give them access to all CUs in their region(s)
-            if (accessLevels.regions.length > 0) {
+            // AUTO-GRANT CU ACCESS based on regional or national access
+            if (accessLevels.hasNational) {
+                // National users get ALL CUs
+                accessLevels.cus = [...new Set(rawData.map(d => d.cu))];
+            } else if (accessLevels.regions.length > 0) {
+                // Regional users get all CUs in their region(s)
                 const regionalCUs = [...new Set(rawData
                     .filter(d => accessLevels.regions.includes(d.region))
                     .map(d => d.cu))];
                 
-                // Merge with any direct CU access they already have
                 accessLevels.cus = [...new Set([...accessLevels.cus, ...regionalCUs])];
             }
 
@@ -1496,6 +1528,7 @@ const DEMO_DATA = [
         function renderNationalView(data) {
             document.getElementById('nationalView').innerHTML = `
                 <div id="nationalScoreCards" class="score-cards"></div>
+                <div id="nationalTermComparison"></div>
                 <div class="section">
                     <div class="section-header">
                         <div>
@@ -1506,16 +1539,21 @@ const DEMO_DATA = [
                     <div id="nationalSequencing"></div>
                 </div>
                 <div id="nationalActivityCompletion"></div>
+                <div id="nationalKeyInsights"></div>
                 <div id="nationalPBQuality"></div>
+                <div id="nationalScholarFunnel"></div>
                 <div id="nationalSchoolTypeAnalysis"></div>
                 <div id="nationalMentorStatusAnalysis"></div>
                 <div id="nationalSchoolStatusAnalysis"></div>
             `;
             
             renderNationalScoreCards(data);
+            renderNationalTermComparison(data);
             renderNationalSequencing(data);
             document.getElementById('nationalActivityCompletion').innerHTML = renderNationalActivityCompletion(data);
+            renderNationalKeyInsights(data);
             renderNationalPBQuality(data);
+            renderNationalScholarFunnel(data);
             renderNationalSchoolTypeAnalysis(data);
             renderNationalMentorStatusAnalysis(data);
             renderNationalSchoolStatusAnalysis(data);
@@ -1609,6 +1647,236 @@ const DEMO_DATA = [
 
         // RENDERING FUNCTIONS - NATIONAL VIEW
         
+        // NATIONAL VIEW RENDERING
+        
+        function renderNationalKeyInsights(data) {
+            if (data.length === 0) return;
+            
+            const year = document.getElementById('yearSelect').value;
+            const term = document.getElementById('termSelect').value;
+            const lecNumbers = getLECsForTerm(year, term);
+            const schools = [...new Set(data.map(d => d.school_id))];
+            const mentors = [...new Set(data.map(d => d.mentor_id))];
+            
+            // Analyze data for issues and insights
+            const issues = [];
+            const strengths = [];
+            
+            // 1. PB Milestone Quality & Feedback Analysis
+            let totalMilestones = 0, qualityMilestones = 0, feedbackReceived = 0;
+            schools.forEach(sid => {
+                const school = data.find(d => d.school_id === sid);
+                const pb0 = school.pb_milestone_0 || 0;
+                const pb1 = school.pb_milestone_1 || 0;
+                const pb2 = school.pb_milestone_2 || 0;
+                const pb3 = school.pb_milestone_3 || 0;
+                totalMilestones += pb0 + pb1 + pb2 + pb3;
+                qualityMilestones += pb2 + pb3;
+                feedbackReceived += pb1 + pb2 + pb3;
+            });
+            const qualityRate = totalMilestones > 0 ? parseFloat(formatPercentage(qualityMilestones, totalMilestones)) : 0;
+            const feedbackRate = totalMilestones > 0 ? parseFloat(formatPercentage(feedbackReceived, totalMilestones)) : 0;
+            
+            if (qualityRate < 70) {
+                issues.push({
+                    priority: 'high',
+                    title: 'PB Milestone Quality Below Target',
+                    description: `Only ${qualityRate}% of scholars scoring 2/3 on milestones (Target: >70%)`,
+                    action: 'Review mentor coaching quality and passbook feedback effectiveness'
+                });
+            } else {
+                strengths.push(`Milestone quality at ${qualityRate}% - exceeding 70% target`);
+            }
+            
+            if (feedbackRate < 80) {
+                issues.push({
+                    priority: feedbackRate < 70 ? 'high' : 'medium',
+                    title: 'PB Feedback Coverage Below Target',
+                    description: `Only ${feedbackRate}% of milestones receiving feedback (Target: >80%)`,
+                    action: 'FOAs need to ensure mentors are reviewing passbooks consistently'
+                });
+            } else {
+                strengths.push(`Feedback coverage at ${feedbackRate}% - meeting 80% target`);
+            }
+            
+            // 2. LEC Completion Analysis
+            const allLECsComplete = schools.filter(sid => {
+                const school = data.find(d => d.school_id === sid);
+                return lecNumbers.every(lecNum => school[`school_has_lec${lecNum}`]);
+            }).length;
+            const lecCompletionRate = parseFloat(formatPercentage(allLECsComplete, schools.length));
+            
+            if (lecCompletionRate < 70) {
+                issues.push({
+                    priority: 'high',
+                    title: 'Low LEC Completion Rate',
+                    description: `Only ${lecCompletionRate}% of schools completed all ${lecNumbers.length} LECs`,
+                    action: 'Investigate scheduling barriers and mentor support needs'
+                });
+            } else if (lecCompletionRate < 85) {
+                issues.push({
+                    priority: 'medium',
+                    title: 'LEC Completion Below Target',
+                    description: `${lecCompletionRate}% completion - ${schools.length - allLECsComplete} schools incomplete`,
+                    action: 'Monitor schools behind schedule and provide targeted support'
+                });
+            } else {
+                strengths.push(`LEC completion at ${lecCompletionRate}% - on track`);
+            }
+            
+            // 3. School Type Performance Gaps
+            const schoolTypes = ['A-level', 'O-level', 'Mixed'];
+            const typePerformance = schoolTypes.map(type => {
+                const typeSchools = schools.filter(sid => {
+                    const school = data.find(d => d.school_id === sid);
+                    return school.school_type === type;
+                });
+                const complete = typeSchools.filter(sid => {
+                    const school = data.find(d => d.school_id === sid);
+                    return lecNumbers.every(n => school[`school_has_lec${n}`]) && 
+                           school.school_has_gm && school.school_has_community_day;
+                }).length;
+                return {
+                    type,
+                    rate: typeSchools.length > 0 ? parseFloat(formatPercentage(complete, typeSchools.length)) : 0,
+                    count: typeSchools.length
+                };
+            }).filter(t => t.count > 0).sort((a, b) => a.rate - b.rate);
+            
+            if (typePerformance.length > 1) {
+                const worst = typePerformance[0];
+                const best = typePerformance[typePerformance.length - 1];
+                const gap = best.rate - worst.rate;
+                
+                if (worst.rate < 50) {
+                    issues.push({
+                        priority: 'high',
+                        title: `${worst.type} Schools Underperforming`,
+                        description: `Only ${worst.rate}% completion vs ${best.rate}% for ${best.type} schools (${gap.toFixed(0)}pp gap)`,
+                        action: `Intensive support for ${worst.type} schools - investigate root causes`
+                    });
+                } else if (gap > 20) {
+                    issues.push({
+                        priority: 'medium',
+                        title: 'Large Performance Gap by School Type',
+                        description: `${gap.toFixed(0)}pp difference between ${best.type} (${best.rate}%) and ${worst.type} (${worst.rate}%)`,
+                        action: 'Investigate why certain school types perform better'
+                    });
+                }
+            }
+            
+            // 4. Mentor Status Analysis
+            const newMentors = mentors.filter(mid => {
+                const mentor = data.find(d => d.mentor_id === mid);
+                return mentor.mentor_status === 'new';
+            });
+            
+            // Calculate performance by mentor status
+            const newMentorSchools = schools.filter(sid => {
+                const school = data.find(d => d.school_id === sid);
+                return school.mentor_status === 'new';
+            });
+            
+            const newComplete = newMentorSchools.filter(sid => {
+                const school = data.find(d => d.school_id === sid);
+                return lecNumbers.every(n => school[`school_has_lec${n}`]) && 
+                       school.school_has_gm && school.school_has_community_day;
+            }).length;
+            
+            const newRate = newMentorSchools.length > 0 ? parseFloat(formatPercentage(newComplete, newMentorSchools.length)) : 0;
+            
+            if (newMentors.length > 0 && newRate < 60) {
+                issues.push({
+                    priority: 'medium',
+                    title: 'New Mentors Need Support',
+                    description: `${newMentors.length} new mentors with ${newRate}% completion rate`,
+                    action: 'Increase FOA visits and peer circle support for new mentors'
+                });
+            }
+            
+            // 5. Recruitment Achievement
+            const totalTarget = schools.length * 45;
+            const totalRecruited = schools.reduce((sum, sid) => {
+                const school = data.find(d => d.school_id === sid);
+                return sum + parseInt(school.school_total_scholars_recruited || 0);
+            }, 0);
+            const recruitmentRate = parseFloat(formatPercentage(totalRecruited, totalTarget));
+            
+            if (recruitmentRate < 80) {
+                issues.push({
+                    priority: 'high',
+                    title: 'Recruitment Below Target',
+                    description: `${recruitmentRate}% achievement (${totalRecruited}/${totalTarget} scholars)`,
+                    action: 'Support schools struggling with recruitment - investigate barriers'
+                });
+            } else if (recruitmentRate >= 90) {
+                strengths.push(`Recruitment at ${recruitmentRate}% - exceeding target`);
+            }
+            
+            // Sort issues by priority
+            issues.sort((a, b) => {
+                const priority = { high: 1, medium: 2, low: 3 };
+                return priority[a.priority] - priority[b.priority];
+            });
+            
+            // Generate HTML
+            let html = '';
+            
+            // Issues requiring attention
+            if (issues.length > 0) {
+                html += `
+                    <div class="section" style="margin-bottom: 25px;">
+                        <div class="section-header" style="margin-bottom: 15px;">
+                            <div>
+                                <div class="section-title">🚨 Issues Requiring Attention</div>
+                                <div class="section-subtitle">${issues.length} area${issues.length > 1 ? 's' : ''} need${issues.length === 1 ? 's' : ''} immediate action</div>
+                            </div>
+                        </div>
+                `;
+                
+                issues.forEach((issue, idx) => {
+                    const priorityColor = issue.priority === 'high' ? '#dc3545' : issue.priority === 'medium' ? '#ffc107' : '#17a2b8';
+                    const priorityBg = issue.priority === 'high' ? '#fff5f5' : issue.priority === 'medium' ? '#fffbf0' : '#f0f9ff';
+                    
+                    html += `
+                        <div style="background: ${priorityBg}; border-left: 4px solid ${priorityColor}; padding: 15px; border-radius: 8px; margin-bottom: 12px;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                                <span style="background: ${priorityColor}; color: white; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase;">
+                                    ${issue.priority} Priority
+                                </span>
+                                <span style="font-weight: 700; font-size: 16px; color: #333;">${issue.title}</span>
+                            </div>
+                            <div style="color: #666; margin-bottom: 8px; font-size: 14px;">${issue.description}</div>
+                            <div style="color: #444; font-size: 13px; padding: 8px 12px; background: white; border-radius: 4px;">
+                                <strong>Action:</strong> ${issue.action}
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                html += `</div>`;
+            }
+            
+            // Key Strengths
+            if (strengths.length > 0) {
+                html += `
+                    <div class="section" style="margin-bottom: 25px;">
+                        <div class="section-header" style="margin-bottom: 15px;">
+                            <div>
+                                <div class="section-title">💪 Key Strengths</div>
+                                <div class="section-subtitle">Areas performing well</div>
+                            </div>
+                        </div>
+                        <div style="background: #f0fdf4; border-left: 4px solid var(--educate-green); padding: 15px; border-radius: 8px;">
+                            ${strengths.map(s => `<div style="margin-bottom: 8px; color: #166534; font-size: 14px;">✅ ${s}</div>`).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            document.getElementById('nationalKeyInsights').innerHTML = html;
+        }
+
         function renderNationalScoreCards(data) {
             if (data.length === 0) return;
             
@@ -1626,32 +1894,28 @@ const DEMO_DATA = [
             }).length;
             const lecCompletionRate = formatPercentage(allLECsComplete, totalSchools);
 
-            // Average Participation
-            let totalParticipation = 0, participationCount = 0;
+            // Average Scholars and Non-Scholars per school (for insights section)
+            let totalScholars = 0, totalNonScholars = 0, activityCount = 0;
             schools.forEach(sid => {
                 const school = data.find(d => d.school_id === sid);
                 lecNumbers.forEach(lecNum => {
                     const scholars = school[`lec${lecNum}_scholars`] || 0;
                     const nonScholars = school[`lec${lecNum}_non_scholars`] || 0;
                     if (scholars > 0 || nonScholars > 0) {
-                        totalParticipation += scholars + nonScholars;
-                        participationCount++;
+                        totalScholars += scholars;
+                        totalNonScholars += nonScholars;
+                        activityCount++;
                     }
                 });
             });
-            const avgParticipation = participationCount > 0 ? (totalParticipation / participationCount).toFixed(1) : 0;
-
-            // Scholar vs Non-Scholar
-            let totalScholars = 0, totalNonScholars = 0;
-            schools.forEach(sid => {
+            const avgScholars = activityCount > 0 ? (totalScholars / activityCount).toFixed(1) : 0;
+            const avgNonScholars = activityCount > 0 ? (totalNonScholars / activityCount).toFixed(1) : 0;
+            
+            // Total Schools Reported (schools with at least one LEC activity reported)
+            const schoolsReported = schools.filter(sid => {
                 const school = data.find(d => d.school_id === sid);
-                lecNumbers.forEach(lecNum => {
-                    totalScholars += school[`lec${lecNum}_scholars`] || 0;
-                    totalNonScholars += school[`lec${lecNum}_non_scholars`] || 0;
-                });
-            });
-            const scholarPct = totalScholars + totalNonScholars > 0 ? ((totalScholars / (totalScholars + totalNonScholars)) * 100).toFixed(0) : 0;
-            const avgNonScholars = (totalNonScholars / (participationCount || 1)).toFixed(1);
+                return lecNumbers.some(lecNum => school[`school_has_lec${lecNum}`]);
+            }).length;
 
             // Recruitment Achievement
             const totalTarget = totalSchools * 45;
@@ -1669,7 +1933,54 @@ const DEMO_DATA = [
             }).length;
             const observationRate = formatPercentage(observedMentors, mentors.length);
 
+            // NEW: PB Milestone Quality (KR from Investment Memo)
+            // Target: >70% scoring 2/3 on milestones AND >80% receiving feedback
+            let totalMilestones = 0;
+            let qualityMilestones = 0; // Rating 2 or 3
+            let feedbackReceived = 0; // Rating 1, 2, or 3 (not 0)
+            
+            schools.forEach(sid => {
+                const school = data.find(d => d.school_id === sid);
+                const pb0 = school.pb_milestone_0 || 0;
+                const pb1 = school.pb_milestone_1 || 0;
+                const pb2 = school.pb_milestone_2 || 0;
+                const pb3 = school.pb_milestone_3 || 0;
+                
+                const schoolTotal = pb0 + pb1 + pb2 + pb3;
+                totalMilestones += schoolTotal;
+                
+                // Quality milestones (score 2/3 = Good or Excellent)
+                qualityMilestones += pb2 + pb3;
+                
+                // Feedback received (any rating 1, 2, or 3)
+                feedbackReceived += pb1 + pb2 + pb3;
+            });
+            
+            const qualityRate = totalMilestones > 0 ? formatPercentage(qualityMilestones, totalMilestones) : 0;
+            const feedbackRate = totalMilestones > 0 ? formatPercentage(feedbackReceived, totalMilestones) : 0;
+            
+            // Combined KR achievement
+            const krAchieved = parseInt(qualityRate) >= 70 && parseInt(feedbackRate) >= 80;
+
             const html = `
+                <div class="score-card blue">
+                    <div class="score-card-label">Total Schools Reported</div>
+                    <div class="score-card-value">${schoolsReported}<span class="unit">/${totalSchools}</span></div>
+                    <div class="score-card-subtext">${formatPercentage(schoolsReported, totalSchools)}% reporting at least 1 LEC</div>
+                </div>
+
+                <div class="score-card ${krAchieved ? 'green' : parseInt(qualityRate) >= 60 && parseInt(feedbackRate) >= 70 ? 'yellow' : 'red'}">
+                    <div class="score-card-label">PB Milestone Quality</div>
+                    <div class="score-card-value">${qualityRate}<span class="unit">%</span></div>
+                    <div class="score-card-subtext">Scholars scoring 2/3 (Target: >70%)</div>
+                </div>
+
+                <div class="score-card ${parseInt(feedbackRate) >= 80 ? 'green' : parseInt(feedbackRate) >= 70 ? 'yellow' : 'red'}">
+                    <div class="score-card-label">PB Feedback Coverage</div>
+                    <div class="score-card-value">${feedbackRate}<span class="unit">%</span></div>
+                    <div class="score-card-subtext">Milestones with feedback (Target: >80%)</div>
+                </div>
+
                 <div class="score-card green">
                     <div class="score-card-label">LEC Completion Rate</div>
                     <div class="score-card-value">${lecCompletionRate}<span class="unit">%</span></div>
@@ -1677,21 +1988,9 @@ const DEMO_DATA = [
                 </div>
 
                 <div class="score-card blue">
-                    <div class="score-card-label">Average Participation</div>
-                    <div class="score-card-value">${avgParticipation}</div>
-                    <div class="score-card-subtext">Average participants per LEC session</div>
-                </div>
-
-                <div class="score-card yellow">
-                    <div class="score-card-label">Avg Non-Scholar Participants</div>
-                    <div class="score-card-value">${avgNonScholars}</div>
-                    <div class="score-card-subtext">Non-scholars per session</div>
-                </div>
-
-                <div class="score-card blue">
-                    <div class="score-card-label">Scholar Participation %</div>
-                    <div class="score-card-value">${scholarPct}<span class="unit">%</span></div>
-                    <div class="score-card-subtext">Scholars vs total participants</div>
+                    <div class="score-card-label">Avg Scholars per School</div>
+                    <div class="score-card-value">${avgScholars}</div>
+                    <div class="score-card-subtext">Average scholar participants per LEC</div>
                 </div>
 
                 <div class="score-card ${parseInt(recruitmentRate) >= 80 ? 'green' : 'yellow'}">
@@ -1708,6 +2007,186 @@ const DEMO_DATA = [
             `;
 
             document.getElementById('nationalScoreCards').innerHTML = html;
+            
+            // Store scholar/non-scholar data for insights section
+            window.nationalParticipationData = { avgScholars, avgNonScholars, totalScholars, totalNonScholars, activityCount };
+        }
+
+        function renderNationalTermComparison(data) {
+            if (data.length === 0) return;
+            
+            const year = document.getElementById('yearSelect').value;
+            const term = document.getElementById('termSelect').value;
+            
+            // Prioritize same-year comparison: T2 2026 → T1 2026, T3 2026 → T2 2026
+            // Only compare to previous year for T1 (T1 2026 → T3 2025)
+            const currentTerm = term;
+            let previousTerm, prevYear, comparisonLabel;
+            
+            if (term === 'term1') {
+                // Term 1: compare to previous year's Term 3
+                previousTerm = 'term3';
+                prevYear = (parseInt(year) - 1).toString();
+                comparisonLabel = `${previousTerm.toUpperCase()} ${prevYear} (prior year)`;
+            } else if (term === 'term2') {
+                // Term 2: compare to same year's Term 1
+                previousTerm = 'term1';
+                prevYear = year;
+                comparisonLabel = `${previousTerm.toUpperCase()} ${prevYear} (same year)`;
+            } else {
+                // Term 3: compare to same year's Term 2
+                previousTerm = 'term2';
+                prevYear = year;
+                comparisonLabel = `${previousTerm.toUpperCase()} ${prevYear} (same year)`;
+            }
+            
+            // For demo, simulate 5-8% lower metrics for "previous term"
+            const simulatePrevious = (current, variance = 0.93) => (parseFloat(current) * variance).toFixed(1);
+            
+            const schools = [...new Set(data.map(d => d.school_id))];
+            const lecNumbers = getLECsForTerm(year, term);
+            
+            // Current term metrics
+            const allLECsComplete = schools.filter(sid => {
+                const school = data.find(d => d.school_id === sid);
+                return lecNumbers.every(lecNum => school[`school_has_lec${lecNum}`]);
+            }).length;
+            const lecCompletionRate = parseFloat(formatPercentage(allLECsComplete, schools.length));
+            
+            let totalScholars = 0, totalNonScholars = 0, activityCount = 0;
+            schools.forEach(sid => {
+                const school = data.find(d => d.school_id === sid);
+                lecNumbers.forEach(lecNum => {
+                    const scholars = school[`lec${lecNum}_scholars`] || 0;
+                    const nonScholars = school[`lec${lecNum}_non_scholars`] || 0;
+                    if (scholars > 0 || nonScholars > 0) {
+                        totalScholars += scholars;
+                        totalNonScholars += nonScholars;
+                        activityCount++;
+                    }
+                });
+            });
+            const avgScholars = activityCount > 0 ? (totalScholars / activityCount).toFixed(1) : 0;
+            
+            // PB Metrics
+            let totalMilestones = 0, qualityMilestones = 0, feedbackReceived = 0;
+            schools.forEach(sid => {
+                const school = data.find(d => d.school_id === sid);
+                const pb0 = school.pb_milestone_0 || 0;
+                const pb1 = school.pb_milestone_1 || 0;
+                const pb2 = school.pb_milestone_2 || 0;
+                const pb3 = school.pb_milestone_3 || 0;
+                totalMilestones += pb0 + pb1 + pb2 + pb3;
+                qualityMilestones += pb2 + pb3;
+                feedbackReceived += pb1 + pb2 + pb3;
+            });
+            const qualityRate = totalMilestones > 0 ? parseFloat(formatPercentage(qualityMilestones, totalMilestones)) : 0;
+            const feedbackRate = totalMilestones > 0 ? parseFloat(formatPercentage(feedbackReceived, totalMilestones)) : 0;
+            
+            // Simulated previous term (lower by 5-8%)
+            const prevLecCompletion = simulatePrevious(lecCompletionRate, 0.92);
+            const prevAvgScholars = simulatePrevious(avgScholars, 0.95);
+            const prevQualityRate = simulatePrevious(qualityRate, 0.90);
+            const prevFeedbackRate = simulatePrevious(feedbackRate, 0.88);
+            
+            // Calculate trends
+            const getTrend = (current, previous) => {
+                const diff = current - previous;
+                if (Math.abs(diff) < 1) return { icon: '→', color: '#666', text: 'stable' };
+                return diff > 0 ? { icon: '↑', color: 'var(--educate-green)', text: 'improved' } 
+                                : { icon: '↓', color: 'var(--educate-red)', text: 'declined' };
+            };
+            
+            const lecTrend = getTrend(lecCompletionRate, prevLecCompletion);
+            const scholarTrend = getTrend(parseFloat(avgScholars), parseFloat(prevAvgScholars));
+            const qualityTrend = getTrend(qualityRate, prevQualityRate);
+            const feedbackTrend = getTrend(feedbackRate, prevFeedbackRate);
+            
+            // Generate insights
+            let insights = [];
+            if (feedbackRate >= 80 && parseFloat(prevFeedbackRate) < 80) {
+                insights.push('✅ Feedback coverage now meeting target—mentors are engaging more consistently with passbooks.');
+            } else if (feedbackRate < 80 && parseFloat(prevFeedbackRate) >= 80) {
+                insights.push('⚠️ Feedback coverage dropped below target—check if mentors need support with passbook reviews.');
+            }
+            
+            if (qualityRate >= 70 && parseFloat(prevQualityRate) < 70) {
+                insights.push('✅ Milestone quality target achieved—scholar mastery improving.');
+            } else if (qualityTrend.text === 'improved' && qualityRate < 70) {
+                insights.push('📈 Quality trending up but still below 70% target—continue mentor coaching.');
+            }
+            
+            if (lecTrend.text === 'improved') {
+                insights.push('📈 LEC completion improving—schools staying on schedule.');
+            } else if (lecTrend.text === 'declined') {
+                insights.push('⚠️ LEC completion declining—may need to address scheduling barriers.');
+            }
+            
+            if (scholarTrend.text === 'improved') {
+                insights.push('📈 Scholar participation increasing—recruitment and retention strategies working.');
+            }
+            
+            if (insights.length === 0) {
+                insights.push('📊 Metrics stable across terms—maintain current support levels.');
+            }
+            
+            const html = `
+                <div class="section" style="margin-top: 20px;">
+                    <div class="section-header">
+                        <div>
+                            <div class="section-title">📊 Term-over-Term Comparison</div>
+                            <div class="section-subtitle">Comparing ${term.toUpperCase()} ${year} with ${comparisonLabel}</div>
+                        </div>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${lecTrend.color};">
+                            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">LEC Completion Rate</div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 24px; font-weight: 700;">${lecCompletionRate}%</span>
+                                <span style="font-size: 20px; color: ${lecTrend.color};">${lecTrend.icon}</span>
+                                <span style="font-size: 12px; color: #999;">vs ${prevLecCompletion}%</span>
+                            </div>
+                        </div>
+                        
+                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${scholarTrend.color};">
+                            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">Avg Scholars per School</div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 24px; font-weight: 700;">${avgScholars}</span>
+                                <span style="font-size: 20px; color: ${scholarTrend.color};">${scholarTrend.icon}</span>
+                                <span style="font-size: 12px; color: #999;">vs ${prevAvgScholars}</span>
+                            </div>
+                        </div>
+                        
+                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${qualityTrend.color};">
+                            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">PB Milestone Quality</div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 24px; font-weight: 700;">${qualityRate}%</span>
+                                <span style="font-size: 20px; color: ${qualityTrend.color};">${qualityTrend.icon}</span>
+                                <span style="font-size: 12px; color: #999;">vs ${prevQualityRate}%</span>
+                            </div>
+                        </div>
+                        
+                        <div style="background: white; padding: 15px; border-radius: 8px; border-left: 4px solid ${feedbackTrend.color};">
+                            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">PB Feedback Coverage</div>
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="font-size: 24px; font-weight: 700;">${feedbackRate}%</span>
+                                <span style="font-size: 20px; color: ${feedbackTrend.color};">${feedbackTrend.icon}</span>
+                                <span style="font-size: 12px; color: #999;">vs ${prevFeedbackRate}%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${insights.length > 0 ? `
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid var(--educate-blue);">
+                            <div style="font-weight: 600; margin-bottom: 8px; color: #333;">Key Insights</div>
+                            ${insights.map(insight => `<div style="font-size: 13px; color: #555; margin-bottom: 5px;">${insight}</div>`).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+            
+            document.getElementById('nationalTermComparison').innerHTML = html;
         }
 
         function renderNationalSequencing(data) {
@@ -1720,6 +2199,81 @@ const DEMO_DATA = [
             
             const weeks = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6'];
             const schools = [...new Set(data.map(d => d.school_id))];
+            const mentors = [...new Set(data.map(d => d.mentor_id))];
+            
+            // Calculate the modal (most common) week for each LEC across all schools
+            const getModalWeek = (lecNum) => {
+                const weekCounts = {};
+                weeks.forEach(week => {
+                    weekCounts[week] = schools.filter(sid => {
+                        const school = data.find(d => d.school_id === sid);
+                        return school[`lec${lecNum}_week`] === week;
+                    }).length;
+                });
+                
+                // Find the week with the highest count
+                let maxCount = 0;
+                let modalWeek = null;
+                Object.entries(weekCounts).forEach(([week, count]) => {
+                    if (count > maxCount) {
+                        maxCount = count;
+                        modalWeek = week;
+                    }
+                });
+                return modalWeek;
+            };
+            
+            // Detect outlier mentors (front-loading or back-loading)
+            const outlierMentors = [];
+            mentors.forEach(mentorId => {
+                const mentorSchools = data.filter(d => d.mentor_id === mentorId);
+                if (mentorSchools.length === 0) return;
+                
+                let earlyCount = 0;
+                let lateCount = 0;
+                let totalDeliveries = 0;
+                
+                lecNumbers.forEach(lecNum => {
+                    const modalWeek = getModalWeek(lecNum);
+                    if (!modalWeek) return;
+                    
+                    const modalWeekNum = parseInt(modalWeek.split(' ')[1]);
+                    
+                    mentorSchools.forEach(school => {
+                        const schoolWeek = school[`lec${lecNum}_week`];
+                        if (!schoolWeek) return;
+                        
+                        const schoolWeekNum = parseInt(schoolWeek.split(' ')[1]);
+                        totalDeliveries++;
+                        
+                        // Flag if 2+ weeks early (front-loading)
+                        if (schoolWeekNum < modalWeekNum - 1) {
+                            earlyCount++;
+                        }
+                        // Flag if 2+ weeks late (back-loading)
+                        else if (schoolWeekNum > modalWeekNum + 1) {
+                            lateCount++;
+                        }
+                    });
+                });
+                
+                // Consider outlier if >40% of deliveries are off-schedule
+                const offScheduleRate = (earlyCount + lateCount) / totalDeliveries;
+                if (offScheduleRate > 0.4 && totalDeliveries >= 3) {
+                    const mentorName = mentorSchools[0].mentor_name;
+                    const schoolNames = mentorSchools.map(s => s.school_name).join(', ');
+                    outlierMentors.push({
+                        mentorId,
+                        mentorName,
+                        schoolNames,
+                        earlyCount,
+                        lateCount,
+                        totalDeliveries,
+                        offScheduleRate: (offScheduleRate * 100).toFixed(0),
+                        type: earlyCount > lateCount ? 'front-loading' : 'back-loading'
+                    });
+                }
+            });
             
             let html = `
                 <div class="heatmap-scroll">
@@ -1735,6 +2289,8 @@ const DEMO_DATA = [
 
             lecLabels.forEach((lec, lecIndex) => {
                 const lecNum = lecNumbers[lecIndex];
+                const modalWeek = getModalWeek(lecNum);
+                
                 html += `<tr><th class="lec-header">${lec}</th>`;
 
                 weeks.forEach(week => {
@@ -1746,11 +2302,14 @@ const DEMO_DATA = [
                     const count = schoolsInWeek.length;
                     const percentage = formatPercentage(count, schools.length);
                     const cssClass = count === 0 ? 'none' : getPercentageClass(percentage);
-
+                    
+                    // Highlight modal week with a star
+                    const isModalWeek = week === modalWeek;
+                    
                     html += `
                         <td onclick="drillNationalSequencing('${lec}', '${week}', ${lecNum})">
-                            <div class="sequencing-cell ${cssClass}">
-                                <div class="sequencing-value">${count}</div>
+                            <div class="sequencing-cell ${cssClass}" ${isModalWeek ? 'style="border: 2px solid var(--educate-blue); box-shadow: 0 0 8px rgba(22, 82, 240, 0.3);"' : ''}>
+                                <div class="sequencing-value">${count}${isModalWeek ? ' ★' : ''}</div>
                                 <div class="sequencing-label">${percentage}%</div>
                             </div>
                         </td>
@@ -1765,6 +2324,53 @@ const DEMO_DATA = [
                     </table>
                 </div>
             `;
+            
+            // Add outlier warnings if any found
+            if (outlierMentors.length > 0) {
+                const frontLoaders = outlierMentors.filter(m => m.type === 'front-loading');
+                const backLoaders = outlierMentors.filter(m => m.type === 'back-loading');
+                
+                html += `
+                    <div style="margin-top: 20px; background: #fff3cd; padding: 15px; border-radius: 8px; border-left: 4px solid #ffc107;">
+                        <div style="font-weight: 600; margin-bottom: 10px; color: #856404;">
+                            ⚠️ Roadmap Compliance Alert: ${outlierMentors.length} Mentor${outlierMentors.length > 1 ? 's' : ''} Off Schedule
+                        </div>
+                        <div style="font-size: 13px; color: #856404; margin-bottom: 10px;">
+                            ★ indicates the most common week for each LEC. Mentors should align deliveries within 1 week of the modal schedule.
+                        </div>
+                `;
+                
+                if (frontLoaders.length > 0) {
+                    html += `
+                        <div style="margin-top: 10px;">
+                            <strong style="color: #0066cc;">📅 Front-Loading (${frontLoaders.length} mentor${frontLoaders.length > 1 ? 's' : ''}):</strong>
+                            <ul style="margin: 5px 0; padding-left: 20px; font-size: 13px;">
+                    `;
+                    frontLoaders.forEach(m => {
+                        html += `<li><strong>${m.mentorName}</strong>: ${m.earlyCount} early deliveries (${m.offScheduleRate}% off-schedule) - Schools: ${m.schoolNames}</li>`;
+                    });
+                    html += `</ul></div>`;
+                }
+                
+                if (backLoaders.length > 0) {
+                    html += `
+                        <div style="margin-top: 10px;">
+                            <strong style="color: #cc6600;">⏰ Back-Loading (${backLoaders.length} mentor${backLoaders.length > 1 ? 's' : ''}):</strong>
+                            <ul style="margin: 5px 0; padding-left: 20px; font-size: 13px;">
+                    `;
+                    backLoaders.forEach(m => {
+                        html += `<li><strong>${m.mentorName}</strong>: ${m.lateCount} late deliveries (${m.offScheduleRate}% off-schedule) - Schools: ${m.schoolNames}</li>`;
+                    });
+                    html += `</ul></div>`;
+                }
+                
+                html += `
+                        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ffe69c; font-size: 12px; color: #856404;">
+                            <strong>Recommended Action:</strong> PMs should follow up with these mentors to understand scheduling barriers and ensure program fidelity.
+                        </div>
+                    </div>
+                `;
+            }
 
             document.getElementById('nationalSequencing').innerHTML = html;
         }
@@ -1989,10 +2595,35 @@ const DEMO_DATA = [
                     <div class="insight-card">
                         <h3>📌 Key Finding: School Type Impact</h3>
                         <ul class="insight-list">
-                            <li>Mixed schools: ${mixedRate}% completion ${parseInt(mixedRate) >= 70 ? '(Best performers)' : ''}</li>
-                            <li>A-level schools: ${aLevelRate}% completion</li>
-                            <li>O-level schools: ${oLevelRate}% completion ${parseInt(oLevelRate) < 50 ? '🔴 Need targeted support' : ''}</li>
-                            <li>Action: ${parseInt(oLevelRate) < 50 ? 'Prioritize O-level schools for intensive support' : 'Maintain current support levels'}</li>
+                            ${(() => {
+                                // Sort by completion rate to identify best and worst performers
+                                const types = [
+                                    { name: 'Mixed', rate: parseInt(mixedRate), count: mixed.length },
+                                    { name: 'A-level', rate: parseInt(aLevelRate), count: aLevel.length },
+                                    { name: 'O-level', rate: parseInt(oLevelRate), count: oLevel.length }
+                                ].sort((a, b) => b.rate - a.rate);
+                                
+                                const best = types[0];
+                                const worst = types[2];
+                                
+                                let insights = [];
+                                insights.push(`<li><strong>${best.name} schools performing best:</strong> ${best.rate}% completion (${best.count} schools)</li>`);
+                                
+                                if (worst.rate < 50) {
+                                    insights.push(`<li>🔴 <strong>${worst.name} schools need support:</strong> ${worst.rate}% completion - prioritize for intervention</li>`);
+                                } else if (worst.rate < 70) {
+                                    insights.push(`<li>⚠️ <strong>${worst.name} schools below target:</strong> ${worst.rate}% completion - monitor closely</li>`);
+                                }
+                                
+                                const gap = best.rate - worst.rate;
+                                if (gap > 20) {
+                                    insights.push(`<li><strong>Large gap:</strong> ${gap}pp difference between ${best.name} and ${worst.name} schools - investigate root causes</li>`);
+                                }
+                                
+                                insights.push(`<li><strong>Action:</strong> ${worst.rate < 50 ? `Intensive support for ${worst.name} schools` : worst.rate < 70 ? `Targeted coaching for ${worst.name} schools` : 'Maintain current support levels across all types'}</li>`);
+                                
+                                return insights.join('');
+                            })()}
                         </ul>
                     </div>
                 </div>
@@ -2161,6 +2792,220 @@ const DEMO_DATA = [
             `;
             
             document.getElementById('nationalSchoolStatusAnalysis').innerHTML = html;
+        }
+
+        // Scholar Funnel Performance
+        function renderNationalScholarFunnel(data) {
+            if (data.length === 0) return;
+            
+            const year = document.getElementById('yearSelect').value;
+            const term = document.getElementById('termSelect').value;
+            const schools = [...new Set(data.map(d => d.school_id))];
+            
+            // Calculate funnel stages
+            const recruited = schools.reduce((sum, sid) => {
+                const school = data.find(d => d.school_id === sid);
+                return sum + parseInt(school.school_total_scholars_recruited || 0);
+            }, 0);
+            
+            const activated = schools.reduce((sum, sid) => {
+                const school = data.find(d => d.school_id === sid);
+                return sum + (school.lec2_scholars || 0);
+            }, 0);
+            
+            const t1Complete = schools.reduce((sum, sid) => {
+                const school = data.find(d => d.school_id === sid);
+                return sum + (school.lec5_scholars || 0);
+            }, 0);
+            
+            // Calculate retention rates
+            const activationRate = recruited > 0 ? ((activated / recruited) * 100).toFixed(1) : 0;
+            const t1RetentionRate = activated > 0 ? ((t1Complete / activated) * 100).toFixed(1) : 0;
+            
+            // Participation insight
+            const participationData = window.nationalParticipationData || {};
+            const avgScholars = participationData.avgScholars || 0;
+            const avgNonScholars = participationData.avgNonScholars || 0;
+            
+            // Non-Scholar Breakdown by Ranges
+            const lecNumbers = getLECsForTerm(year, term);
+            const regions = ['Central', 'East', 'West', 'North'];
+            
+            // Calculate average non-scholars per school
+            const schoolNonScholarAvgs = schools.map(sid => {
+                const school = data.find(d => d.school_id === sid);
+                let totalNonScholars = 0;
+                let lecCount = 0;
+                
+                lecNumbers.forEach(lecNum => {
+                    const nonScholars = school[`lec${lecNum}_non_scholars`] || 0;
+                    if (nonScholars > 0 || school[`lec${lecNum}_scholars`] > 0) {
+                        totalNonScholars += nonScholars;
+                        lecCount++;
+                    }
+                });
+                
+                const avg = lecCount > 0 ? totalNonScholars / lecCount : 0;
+                return {
+                    schoolId: sid,
+                    schoolName: school.school_name,
+                    region: school.region,
+                    avg: avg
+                };
+            });
+            
+            // Categorize by ranges
+            const ranges = {
+                zero: schoolNonScholarAvgs.filter(s => s.avg === 0),
+                low: schoolNonScholarAvgs.filter(s => s.avg > 0 && s.avg <= 10),
+                medium: schoolNonScholarAvgs.filter(s => s.avg > 10 && s.avg <= 20),
+                high: schoolNonScholarAvgs.filter(s => s.avg > 20 && s.avg <= 30),
+                veryHigh: schoolNonScholarAvgs.filter(s => s.avg > 30)
+            };
+            
+            // Breakdown by region for each range
+            const regionalBreakdown = regions.map(region => {
+                return {
+                    region,
+                    zero: ranges.zero.filter(s => s.region === region).length,
+                    low: ranges.low.filter(s => s.region === region).length,
+                    medium: ranges.medium.filter(s => s.region === region).length,
+                    high: ranges.high.filter(s => s.region === region).length,
+                    veryHigh: ranges.veryHigh.filter(s => s.region === region).length,
+                    total: schoolNonScholarAvgs.filter(s => s.region === region).length
+                };
+            });
+            
+            const html = `
+                <div class="section">
+                    <div class="section-header">
+                        <div>
+                            <div class="section-title">📊 Scholar Funnel Performance</div>
+                            <div class="section-subtitle">Tracking scholar journey from recruitment through program completion</div>
+                        </div>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px;">
+                        <div style="text-align: center;">
+                            <div style="font-size: 36px; font-weight: 700; color: var(--educate-blue);">${recruited.toLocaleString()}</div>
+                            <div style="font-size: 14px; color: #666; margin-bottom: 5px;">Scholars Recruited</div>
+                            <div style="font-size: 12px; color: #999;">Total enrollments</div>
+                        </div>
+                        
+                        <div style="text-align: center;">
+                            <div style="font-size: 36px; font-weight: 700; color: var(--educate-green);">${activated.toLocaleString()}</div>
+                            <div style="font-size: 14px; color: #666; margin-bottom: 5px;">Scholars Activated</div>
+                            <div style="font-size: 12px; color: ${parseFloat(activationRate) >= 90 ? 'var(--educate-green)' : 'var(--educate-yellow)'}; font-weight: 600;">
+                                ${activationRate}% attended LEC 2
+                            </div>
+                        </div>
+                        
+                        <div style="text-align: center;">
+                            <div style="font-size: 36px; font-weight: 700; color: var(--educate-purple);">${t1Complete.toLocaleString()}</div>
+                            <div style="font-size: 14px; color: #666; margin-bottom: 5px;">T1 Completion</div>
+                            <div style="font-size: 12px; color: ${parseFloat(t1RetentionRate) >= 85 ? 'var(--educate-green)' : 'var(--educate-yellow)'}; font-weight: 600;">
+                                ${t1RetentionRate}% completed LEC 5
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${avgScholars && avgNonScholars ? `
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid var(--educate-blue); margin-bottom: 20px;">
+                            <div style="font-weight: 600; margin-bottom: 10px; color: #333;">📈 Participation Insight</div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+                                <div>
+                                    <div style="font-size: 24px; font-weight: 700; color: var(--educate-blue);">${avgScholars} scholars</div>
+                                    <div style="font-size: 13px; color: #666;">Average per school per LEC</div>
+                                </div>
+                                <div>
+                                    <div style="font-size: 24px; font-weight: 700; color: var(--educate-yellow);">${avgNonScholars} non-scholars</div>
+                                    <div style="font-size: 13px; color: #666;">Community engagement per LEC</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div style="background: white; padding: 20px; border-radius: 8px; border: 1px solid #e5e7eb;">
+                            <h4 style="margin: 0 0 5px 0; font-size: 16px; font-weight: 600; color: #333;">👥 Non-Scholar Participation Breakdown</h4>
+                            <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">Distribution of schools by average non-scholar participation per LEC</p>
+                            
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px;">
+                                <div style="text-align: center; padding: 15px; background: #f9fafb; border-radius: 6px;">
+                                    <div style="font-size: 28px; font-weight: 700; color: #6b7280;">${ranges.zero.length}</div>
+                                    <div style="font-size: 11px; color: #6b7280; margin-top: 3px; font-weight: 600;">schools</div>
+                                    <div style="font-size: 12px; color: #6b7280; margin-top: 5px;">0 non-scholars</div>
+                                </div>
+                                <div style="text-align: center; padding: 15px; background: #fef3c7; border-radius: 6px;">
+                                    <div style="font-size: 28px; font-weight: 700; color: #92400e;">${ranges.low.length}</div>
+                                    <div style="font-size: 11px; color: #92400e; margin-top: 3px; font-weight: 600;">schools</div>
+                                    <div style="font-size: 12px; color: #92400e; margin-top: 5px;">1-10 non-scholars</div>
+                                </div>
+                                <div style="text-align: center; padding: 15px; background: #dbeafe; border-radius: 6px;">
+                                    <div style="font-size: 28px; font-weight: 700; color: #1e40af;">${ranges.medium.length}</div>
+                                    <div style="font-size: 11px; color: #1e40af; margin-top: 3px; font-weight: 600;">schools</div>
+                                    <div style="font-size: 12px; color: #1e40af; margin-top: 5px;">11-20 non-scholars</div>
+                                </div>
+                                <div style="text-align: center; padding: 15px; background: #dcfce7; border-radius: 6px;">
+                                    <div style="font-size: 28px; font-weight: 700; color: #166534;">${ranges.high.length}</div>
+                                    <div style="font-size: 11px; color: #166534; margin-top: 3px; font-weight: 600;">schools</div>
+                                    <div style="font-size: 12px; color: #166534; margin-top: 5px;">21-30 non-scholars</div>
+                                </div>
+                                <div style="text-align: center; padding: 15px; background: #f0fdf4; border-radius: 6px;">
+                                    <div style="font-size: 28px; font-weight: 700; color: var(--educate-green);">${ranges.veryHigh.length}</div>
+                                    <div style="font-size: 11px; color: var(--educate-green); margin-top: 3px; font-weight: 600;">schools</div>
+                                    <div style="font-size: 12px; color: var(--educate-green); margin-top: 5px;">31+ non-scholars</div>
+                                </div>
+                            </div>
+                            
+                            <h5 style="margin: 20px 0 10px 0; font-size: 14px; font-weight: 600; color: #555;">Breakdown by Region</h5>
+                            <table class="breakdown-table">
+                                <thead>
+                                    <tr>
+                                        <th>Region</th>
+                                        <th class="center">0</th>
+                                        <th class="center">1-10</th>
+                                        <th class="center">11-20</th>
+                                        <th class="center">21-30</th>
+                                        <th class="center">31+</th>
+                                        <th class="center">Total Schools</th>
+                                        <th class="center">Max Avg NS</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${regionalBreakdown.map(r => {
+                                        // Find max average non-scholars for this region
+                                        const regionSchools = schoolNonScholarAvgs.filter(s => s.region === r.region);
+                                        const maxAvg = regionSchools.length > 0 ? Math.max(...regionSchools.map(s => s.avg)) : 0;
+                                        return `
+                                            <tr>
+                                                <td><strong>${r.region}</strong></td>
+                                                <td class="center">${r.zero}</td>
+                                                <td class="center">${r.low}</td>
+                                                <td class="center">${r.medium}</td>
+                                                <td class="center">${r.high}</td>
+                                                <td class="center">${r.veryHigh}</td>
+                                                <td class="center"><strong>${r.total}</strong></td>
+                                                <td class="center" style="color: var(--educate-green); font-weight: 600;">${maxAvg.toFixed(1)}</td>
+                                            </tr>
+                                        `;
+                                    }).join('')}
+                                    <tr style="background: #f9fafb; font-weight: 600;">
+                                        <td><strong>National Total</strong></td>
+                                        <td class="center">${ranges.zero.length}</td>
+                                        <td class="center">${ranges.low.length}</td>
+                                        <td class="center">${ranges.medium.length}</td>
+                                        <td class="center">${ranges.high.length}</td>
+                                        <td class="center">${ranges.veryHigh.length}</td>
+                                        <td class="center"><strong>${schools.length}</strong></td>
+                                        <td class="center" style="color: var(--educate-green); font-weight: 600;">${Math.max(...schoolNonScholarAvgs.map(s => s.avg)).toFixed(1)}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+            
+            document.getElementById('nationalScholarFunnel').innerHTML = html;
         }
 
         // NEW: National Activity Completion Table (Skills Lab, GM, Activities)
@@ -2351,30 +3196,23 @@ const DEMO_DATA = [
             }).length;
             const lecCompletionRate = formatPercentage(allLECsComplete, totalSchools);
 
-            // Average Participation
-            let totalParticipation = 0, participationCount = 0;
+            // Average Scholars and Non-Scholars per school
+            let totalScholars = 0, totalNonScholars = 0, activityCount = 0;
             schools.forEach(sid => {
                 const school = data.find(d => d.school_id === sid);
                 for (let i = 1; i <= 5; i++) {
                     const scholars = school[`lec${i}_scholars`] || 0;
                     const nonScholars = school[`lec${i}_non_scholars`] || 0;
                     if (scholars > 0 || nonScholars > 0) {
-                        totalParticipation += scholars + nonScholars;
-                        participationCount++;
+                        totalScholars += scholars;
+                        totalNonScholars += nonScholars;
+                        activityCount++;
                     }
                 }
             });
-            const avgParticipation = participationCount > 0 ? (totalParticipation / participationCount).toFixed(1) : 0;
-
-            // Non-Scholar Reach
-            let totalNonScholars = 0;
-            schools.forEach(sid => {
-                const school = data.find(d => d.school_id === sid);
-                for (let i = 1; i <= 5; i++) {
-                    totalNonScholars += school[`lec${i}_non_scholars`] || 0;
-                }
-            });
-            const avgNonScholars = (totalNonScholars / (participationCount || 1)).toFixed(1);
+            const avgScholars = activityCount > 0 ? (totalScholars / activityCount).toFixed(1) : 0;
+            const avgNonScholars = activityCount > 0 ? (totalNonScholars / activityCount).toFixed(1) : 0;
+            const avgParticipation = activityCount > 0 ? ((totalScholars + totalNonScholars) / activityCount).toFixed(1) : 0;
 
             // Observation Coverage
             const mentors = [...new Set(data.map(d => d.mentor_id))];
@@ -2384,7 +3222,45 @@ const DEMO_DATA = [
             }).length;
             const observationRate = formatPercentage(observedMentors, mentors.length);
 
+            // NEW: PB Milestone Feedback Coverage (mentor accountability)
+            let totalMilestones = 0;
+            let feedbackReceived = 0; // Rating 1, 2, or 3 (not 0)
+            
+            schools.forEach(sid => {
+                const school = data.find(d => d.school_id === sid);
+                const pb0 = school.pb_milestone_0 || 0;
+                const pb1 = school.pb_milestone_1 || 0;
+                const pb2 = school.pb_milestone_2 || 0;
+                const pb3 = school.pb_milestone_3 || 0;
+                
+                const schoolTotal = pb0 + pb1 + pb2 + pb3;
+                totalMilestones += schoolTotal;
+                
+                // Feedback received (any rating 1, 2, or 3)
+                feedbackReceived += pb1 + pb2 + pb3;
+            });
+            
+            const feedbackRate = totalMilestones > 0 ? formatPercentage(feedbackReceived, totalMilestones) : 0;
+
             const html = `
+                <div class="score-card blue">
+                    <div class="score-card-label">Total Schools</div>
+                    <div class="score-card-value">${totalSchools}</div>
+                    <div class="score-card-subtext">Schools in this region</div>
+                </div>
+
+                <div class="score-card blue">
+                    <div class="score-card-label">Total Mentors</div>
+                    <div class="score-card-value">${mentors.length}</div>
+                    <div class="score-card-subtext">Mentors in this region</div>
+                </div>
+
+                <div class="score-card ${parseInt(feedbackRate) >= 80 ? 'green' : parseInt(feedbackRate) >= 70 ? 'yellow' : 'red'}">
+                    <div class="score-card-label">PB Feedback Coverage</div>
+                    <div class="score-card-value">${feedbackRate}<span class="unit">%</span></div>
+                    <div class="score-card-subtext">Mentors providing feedback (Target: >80%)</div>
+                </div>
+
                 <div class="score-card ${parseInt(cuCompletionRate) >= 80 ? 'green' : 'yellow'}">
                     <div class="score-card-label">CU Completion Rate</div>
                     <div class="score-card-value">${cuCompletionRate}<span class="unit">%</span></div>
@@ -2404,15 +3280,9 @@ const DEMO_DATA = [
                 </div>
 
                 <div class="score-card blue">
-                    <div class="score-card-label">Avg Participation per School</div>
-                    <div class="score-card-value">${avgParticipation}</div>
-                    <div class="score-card-subtext">Average participants per LEC</div>
-                </div>
-
-                <div class="score-card yellow">
-                    <div class="score-card-label">Non-Scholar Reach</div>
-                    <div class="score-card-value">${avgNonScholars}</div>
-                    <div class="score-card-subtext">Avg non-scholars per session</div>
+                    <div class="score-card-label">Avg Scholars per School</div>
+                    <div class="score-card-value">${avgScholars}</div>
+                    <div class="score-card-subtext">Average scholar participants per LEC</div>
                 </div>
 
                 <div class="score-card ${parseInt(observationRate) >= 75 ? 'green' : 'yellow'}">
@@ -2692,31 +3562,22 @@ const DEMO_DATA = [
             }).length;
             const lecCompletionRate = formatPercentage(allLECsComplete, totalSchools);
 
-            // Avg Scholars per LEC
-            let totalScholars = 0, scholarSessions = 0;
+            // Average Scholars and Non-Scholars per school
+            let totalScholars = 0, totalNonScholars = 0, activityCount = 0;
             schools.forEach(sid => {
                 const school = data.find(d => d.school_id === sid);
                 for (let i = 1; i <= 5; i++) {
-                    if (school[`lec${i}_scholars`] > 0) {
-                        totalScholars += school[`lec${i}_scholars`];
-                        scholarSessions++;
+                    const scholars = school[`lec${i}_scholars`] || 0;
+                    const nonScholars = school[`lec${i}_non_scholars`] || 0;
+                    if (scholars > 0 || nonScholars > 0) {
+                        totalScholars += scholars;
+                        totalNonScholars += nonScholars;
+                        activityCount++;
                     }
                 }
             });
-            const avgScholars = scholarSessions > 0 ? (totalScholars / scholarSessions).toFixed(1) : 0;
-
-            // Avg Non-Scholars per LEC
-            let totalNonScholars = 0, nonScholarSessions = 0;
-            schools.forEach(sid => {
-                const school = data.find(d => d.school_id === sid);
-                for (let i = 1; i <= 5; i++) {
-                    if (school[`lec${i}_non_scholars`] > 0) {
-                        totalNonScholars += school[`lec${i}_non_scholars`];
-                        nonScholarSessions++;
-                    }
-                }
-            });
-            const avgNonScholars = nonScholarSessions > 0 ? (totalNonScholars / nonScholarSessions).toFixed(1) : 0;
+            const avgScholars = activityCount > 0 ? (totalScholars / activityCount).toFixed(1) : 0;
+            const avgNonScholars = activityCount > 0 ? (totalNonScholars / activityCount).toFixed(1) : 0;
 
             // Schools On Track
             const onTrack = schools.filter(sid => {
@@ -2733,7 +3594,45 @@ const DEMO_DATA = [
                 return mentor.mentor_observation_count > 0;
             }).length;
 
+            // NEW: PB Milestone Feedback Coverage (FOA monitoring mentor performance)
+            let totalMilestones = 0;
+            let feedbackReceived = 0; // Rating 1, 2, or 3 (not 0)
+            
+            schools.forEach(sid => {
+                const school = data.find(d => d.school_id === sid);
+                const pb0 = school.pb_milestone_0 || 0;
+                const pb1 = school.pb_milestone_1 || 0;
+                const pb2 = school.pb_milestone_2 || 0;
+                const pb3 = school.pb_milestone_3 || 0;
+                
+                const schoolTotal = pb0 + pb1 + pb2 + pb3;
+                totalMilestones += schoolTotal;
+                
+                // Feedback received (any rating 1, 2, or 3)
+                feedbackReceived += pb1 + pb2 + pb3;
+            });
+            
+            const feedbackRate = totalMilestones > 0 ? formatPercentage(feedbackReceived, totalMilestones) : 0;
+
             const html = `
+                <div class="score-card blue">
+                    <div class="score-card-label">Total Schools</div>
+                    <div class="score-card-value">${totalSchools}</div>
+                    <div class="score-card-subtext">Schools in this CU</div>
+                </div>
+
+                <div class="score-card blue">
+                    <div class="score-card-label">Total Mentors</div>
+                    <div class="score-card-value">${mentors.length}</div>
+                    <div class="score-card-subtext">Mentors in this CU</div>
+                </div>
+
+                <div class="score-card ${parseInt(feedbackRate) >= 80 ? 'green' : parseInt(feedbackRate) >= 70 ? 'yellow' : 'red'}">
+                    <div class="score-card-label">PB Feedback Coverage</div>
+                    <div class="score-card-value">${feedbackRate}<span class="unit">%</span></div>
+                    <div class="score-card-subtext">Mentors providing feedback (Target: >80%)</div>
+                </div>
+
                 <div class="score-card ${parseInt(recruitmentRate) >= 80 ? 'green' : 'yellow'}">
                     <div class="score-card-label">CU Recruitment vs Target</div>
                     <div class="score-card-value">${totalRecruited}<span class="unit">/${totalTarget}</span></div>
@@ -2747,15 +3646,9 @@ const DEMO_DATA = [
                 </div>
 
                 <div class="score-card blue">
-                    <div class="score-card-label">Avg Scholars per LEC</div>
+                    <div class="score-card-label">Avg Scholars per School</div>
                     <div class="score-card-value">${avgScholars}</div>
-                    <div class="score-card-subtext">Average across all sessions</div>
-                </div>
-
-                <div class="score-card blue">
-                    <div class="score-card-label">Avg Non-Scholars per LEC</div>
-                    <div class="score-card-value">${avgNonScholars}</div>
-                    <div class="score-card-subtext">Community engagement</div>
+                    <div class="score-card-subtext">Average scholar participants per LEC</div>
                 </div>
 
                 <div class="score-card ${parseInt(onTrackPct) >= 75 ? 'green' : 'yellow'}">
