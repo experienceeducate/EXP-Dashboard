@@ -73,8 +73,14 @@ Single replica per service; **pod restart is the recovery path.**
 - Ordering when a deployment env var depends on a new Secret key:
   (1) apply `secret.yaml`, (2) apply the deployment, (3) re-run the workflow.
 - `secret.yaml` is gitignored (`*secret.yaml`); `k8s/backend/secret.example.yaml`
-  is the template. The GCP SA key lives ONLY in a k8s Secret, mounted at
-  `/var/secrets/gcp/key.json` — never in an image layer, never committed.
+  is the template. The GCP SA key lives ONLY in a k8s Secret
+  (`exp-dashboard-gcp-key`, field `key.json`), mounted at `/var/secrets/gcp/key.json`
+  — never in an image layer, never committed. NB: the namespace also has a shared
+  `gcp-service-account-key` secret used by other apps (different field name); we
+  deliberately use our own dedicated secret instead.
+- Cluster secrets in use: `exp-dashboard-credentials` (envFrom) and
+  `exp-dashboard-gcp-key` (mounted). Both were created via `kubectl create secret`
+  during the first bootstrap.
 - gitleaks (`secret-scan.yml`) hard-fails on any finding — the authoritative gate.
 
 ## Known limitations (accepted for the pilot)

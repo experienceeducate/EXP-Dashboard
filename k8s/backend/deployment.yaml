@@ -54,4 +54,7 @@ spec:
       volumes:
         - name: gcp-key
           secret:
-            secretName: gcp-service-account-key
+            # Dedicated, product-scoped SA key (field: key.json). NOT the shared
+            # namespace secret `gcp-service-account-key`, which other apps use and
+            # stores its key under a different field name.
+            secretName: exp-dashboard-gcp-key
