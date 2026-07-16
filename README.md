@@ -75,10 +75,11 @@ via `ACCESS_CONFIG`, embedded in the JWT. **Row-level filtering is server-side**
 
 ## Metric definitions
 The source model is a wide "one-big-table" with a `level` column (`cu` /
-`school`). See `docs/ARCHITECTURE.md` for the field catalogue and
-`docs/FLOW.md` for how a request becomes a scoped BigQuery query. Derived
-metrics (quality rates, completion rates) are documented alongside the routers /
-frontend that compute them.
+`school`). Full metric formulas, RAG thresholds, and the field catalogue are in
+**`docs/METRICS.md`** (the EXP Dashboard Metrics Reference). See
+`docs/ARCHITECTURE.md` for the grouped field list, `docs/FLOW.md` for how a
+request becomes a scoped BigQuery query, and `docs/DROPPED_SECTIONS.md` for the
+parity gap analysis vs. the legacy dashboard.
 
 ## Deploy
 Push to `main` auto-builds changed images and digest-pins the rollout (see
