@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
-import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeRegionalIssues, sum } from '../lib/metrics.js';
+import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, sum } from '../lib/metrics.js';
 import { formatPercentage, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap } from '../components/ui.jsx';
-import { TimelinessBar, TimelinessLegend } from './NationalView.jsx';
+import { TimelinessBar, TimelinessLegend, HeatmapInsights } from './NationalView.jsx';
 
 const N = (v) => Number(v) || 0;
 const rag = (pct) => (pct >= 80 ? C.green : pct >= 60 ? C.yellow : C.red);
@@ -394,7 +394,7 @@ function SkillsDayByCU({ data }) {
   );
 }
 
-export default function RegionalView({ summaryData, schoolData, year, term, region, onSelectCU }) {
+export default function RegionalView({ summaryData, schoolData, year, term, region, onSelectCU, onDrill }) {
   const data = useMemo(() => {
     let rows = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
     if (region) rows = rows.filter((d) => String(d.region || '').toLowerCase() === String(region).toLowerCase());
@@ -410,6 +410,8 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
   const matrix = useMemo(() => buildLecWeekMatrix(regionSchoolData, year, heatTerm), [regionSchoolData, year, heatTerm]);
   const heatLecs = getLECsForTerm(year, heatTerm);
   const totalSchools = useMemo(() => sum(data, (d) => N(d.total_target_schools)), [data]);
+  const clusters = useMemo(() => computeLecClusters(regionSchoolData, year, term), [regionSchoolData, year, term]);
+  const heatmapHeader = computeHeatmapHeader(matrix, heatLecs, totalSchools);
   const showSkillsDay = term === 'term2' || term === 'all';
 
   if (!region) return <Placeholder label="Select a region from the dropdown above to view its performance." />;
@@ -419,14 +421,23 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
     <div>
       <ScoreCards summaryData={summaryData} data={data} year={year} term={term} />
       <IssueSummary data={data} summaryData={summaryData} year={year} term={term} onSelectCU={onSelectCU} />
-      <Section title="📊 CU Performance Breakdown" subtitle="Recruitment, LECs, Activities, PB Quality, Observations by CU">
-        <CUBreakdown summaryData={summaryData} data={data} year={year} term={term} onSelectCU={onSelectCU} />
-      </Section>
       <Section title="✅ Activity Completion & Participation" subtitle="Delivery and participation across the region">
         <ActivityCompletion data={data} year={year} term={term} />
       </Section>
-      <Section title="📅 Skills Lab Activity Heatmap" subtitle="LEC × Week delivery timeline (#schools)">
-        <LecWeekHeatmap matrix={matrix} lecNums={heatLecs} totalSchools={totalSchools} />
+      <Section title={heatmapHeader.title} subtitle={heatmapHeader.subtitle}>
+        <LecWeekHeatmap
+          matrix={matrix}
+          lecNums={heatLecs}
+          totalSchools={totalSchools}
+          onCellClick={(n, w) => onDrill({ metric: 'lec_heatmap_cell', lecNum: n, week: parseInt(w.replace(/\D/g, ''), 10), region })}
+        />
+        <HeatmapInsights matrix={matrix} lecNums={heatLecs} totalSchools={totalSchools} term={term} clusters={clusters} onDrill={onDrill} />
+      </Section>
+      <Section title="📊 CU Performance Breakdown" subtitle="Recruitment, LECs, Activities, PB Quality, Observations by CU">
+        <CUBreakdown summaryData={summaryData} data={data} year={year} term={term} onSelectCU={onSelectCU} />
+      </Section>
+      <Section title="👁️ Mentor Observation Coverage by CU" subtitle="Observation status per CU">
+        <ObservationByCU data={data} />
       </Section>
       <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by CU">
         <ClubMilestonesByCU data={data} term={term} />
@@ -436,9 +447,6 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
           <SkillsDayByCU data={data} />
         </Section>
       ) : null}
-      <Section title="👁️ Mentor Observation Coverage by CU" subtitle="Observation status per CU">
-        <ObservationByCU data={data} />
-      </Section>
       <Section title="📅 Activity Report Timeliness" subtitle="Report submission schedule by CU">
         <ReportTimeliness data={data} />
       </Section>

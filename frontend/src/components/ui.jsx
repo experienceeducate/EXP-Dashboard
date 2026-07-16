@@ -4,7 +4,7 @@ import { C } from '../lib/config.js';
 
 // LEC × Week delivery heatmap (#schools per cell). Shared by National + Regional.
 // `matrix` = { lecN: { 'Wk n': count } } (see metrics.buildLecWeekMatrix).
-export function LecWeekHeatmap({ matrix, lecNums, totalSchools, emptyLabel }) {
+export function LecWeekHeatmap({ matrix, lecNums, totalSchools, emptyLabel, onCellClick }) {
   const weeks = [...new Set(lecNums.flatMap((n) => Object.keys(matrix[`lec${n}`] || {})))].sort(
     (a, b) => (parseInt(a.replace(/\D/g, ''), 10) || 0) - (parseInt(b.replace(/\D/g, ''), 10) || 0),
   );
@@ -40,9 +40,19 @@ export function LecWeekHeatmap({ matrix, lecNums, totalSchools, emptyLabel }) {
                   const intensity = count ? Math.max(0.12, (count / globalMax) * 0.85 + 0.1) : 0;
                   const bg = count ? `rgba(13,71,161,${intensity.toFixed(2)})` : '#f8f9fa';
                   const fg = count / globalMax > 0.55 ? '#fff' : '#0d47a1';
+                  const clickable = !!onCellClick && count > 0;
                   return (
                     <td key={w} style={{ padding: 3 }}>
-                      <div style={{ background: bg, borderRadius: 5, minHeight: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <div
+                        onClick={clickable ? () => onCellClick(n, w, count) : undefined}
+                        title={clickable ? `Click to see schools that delivered LEC ${n} in ${w}` : undefined}
+                        style={{
+                          background: bg, borderRadius: 5, minHeight: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          cursor: clickable ? 'pointer' : undefined, transition: 'opacity .15s',
+                        }}
+                        onMouseOver={clickable ? (e) => { e.currentTarget.style.opacity = '.75'; } : undefined}
+                        onMouseOut={clickable ? (e) => { e.currentTarget.style.opacity = '1'; } : undefined}
+                      >
                         <span style={{ fontWeight: 700, fontSize: '.85rem', color: fg }}>{count > 0 ? count : ''}</span>
                       </div>
                     </td>

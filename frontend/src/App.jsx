@@ -266,6 +266,7 @@ export default function App() {
             term={term}
             region={region}
             onSelectCU={(name) => { setView('cu'); setCu(name); }}
+            onDrill={setDrill}
           />
         ) : null}
         {view === 'cu' ? (
