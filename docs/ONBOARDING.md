@@ -9,7 +9,10 @@ Orientation map for a new engineer (or Claude Code session). Read in this order.
 4. `docs/ARCHITECTURE.md` — component map, the data model, API surface.
 5. `docs/DECISION.md` — the "why" behind the non-obvious choices (ADRs).
 6. `docs/FLOW.md` — step-by-step runtime traces (login, a scoped query).
-7. `CLAUDE.md` — the conventions you must follow when editing.
+7. `docs/METRICS.md` — metric definitions, formulas, RAG thresholds, BQ fields.
+8. `docs/DROPPED_SECTIONS.md` — which legacy UI sections are deferred and whether
+   they can be recalculated from BigQuery.
+9. `CLAUDE.md` — the conventions you must follow when editing.
 
 ## Mental model in three sentences
 A React SPA talks to a FastAPI backend that runs parameterised, access-scoped
@@ -31,6 +34,8 @@ See `README.md` → Local dev quick-start. TL;DR: fill `backend/.env`, run
 | Change the source table | `backend/app/core/tables.py` + `.env` |
 | Change auth / access scoping | `backend/app/auth.py`, `core/access.py` |
 | Change the UI | `frontend/src/App.jsx` |
+| Look up a metric formula / RAG threshold | `docs/METRICS.md` |
+| Know if a dropped section is recalculable | `docs/DROPPED_SECTIONS.md` |
 | Change deploy / CI | `.github/workflows/deploy.yml` |
 | Change cluster config | `k8s/**` (applied manually — see CONTEXT) |
 | See the original dashboard | `legacy/dashboard-v1.html` |

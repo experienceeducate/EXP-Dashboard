@@ -263,6 +263,314 @@ export function buildLecWeekMatrix(schoolData, year, term) {
   return matrix;
 }
 
+// ── LEC clustering (bad sequencing) ──────────────────────────────────────────
+// Schools that delivered ≥3 LECs sharing the same lecN_max_week (compressed
+// pacing). Mirrors legacy renderCUAlerts clustering + openClusterDrill.
+// Returns [{ school, cu, region, maxLecs, week, schoolId }] sorted worst-first.
+export function computeLecClusters(schoolData, year, term, minLecs = 3) {
+  const lecNums = getLECsForTerm(year, term === 'all' ? 'term1' : term);
+  const rows = schoolData.filter((d) => String(d.year) == year && (term === 'all' ? true : d.term === term));
+  const out = [];
+  rows.forEach((d) => {
+    const weekCounts = {};
+    lecNums.forEach((n) => {
+      if (!N(d[`schools_with_lec${n}`])) return;
+      const wk = String(d[`lec${n}_max_week`] || '').trim();
+      if (wk) weekCounts[wk] = (weekCounts[wk] || 0) + 1;
+    });
+    const vals = Object.values(weekCounts);
+    const maxInWeek = vals.length ? Math.max(...vals) : 0;
+    if (maxInWeek >= minLecs) {
+      const worst = Object.entries(weekCounts).sort((a, b) => b[1] - a[1])[0];
+      out.push({
+        school: d.school_name || d.school_id || 'Unknown',
+        schoolId: d.school_id,
+        cu: d.cu || '—',
+        region: d.region || '—',
+        maxLecs: maxInWeek,
+        week: worst ? worst[0] : '—',
+      });
+    }
+  });
+  return out.sort((a, b) => b.maxLecs - a.maxLecs);
+}
+
+// ── National Key Insights & Flags (legacy renderNationalKeyInsights) ─────────
+// CU-level threshold rollups. Returns [{ type, icon, title, metric, cus }].
+export function computeNationalInsights(summaryData, data, year, term) {
+  const lecNums = getLECsForTerm(year, term);
+  const isT1 = term === 'term1';
+  const insights = [];
+  if (data.length === 0) return insights;
+
+  // 1. LEC delivery pace — CUs > 1 LEC/school below national average.
+  const natAvgLECs = data.reduce((s, d) => s
+    + lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0) / Math.max(1, N(d.total_target_schools) || 1), 0) / data.length;
+  if (natAvgLECs >= 1) {
+    const lowLEC = data.filter((d) => {
+      const n = N(d.total_target_schools);
+      if (!n) return false;
+      const avg = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0) / n;
+      return avg < natAvgLECs - 1;
+    });
+    if (lowLEC.length > 0) {
+      insights.push({
+        type: 'warning', icon: '📉', metric: 'lec_delivery',
+        title: `${lowLEC.length} CU${lowLEC.length > 1 ? 's' : ''} behind national pace (avg ${natAvgLECs.toFixed(1)} LECs/school)`,
+        cus: lowLEC.map((d) => {
+          const avg = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0) / Math.max(1, N(d.total_target_schools) || 1);
+          return { cu: d.cu, region: d.region, note: `${avg.toFixed(1)} LECs/school` };
+        }),
+      });
+    }
+  }
+
+  // 2. Recruitment — T1 only, CUs below 80% of target.
+  if (isT1) {
+    const t1src = summaryData.filter((d) => d.year == year && d.term === 'term1');
+    const recSrc = t1src.length > 0 ? t1src : data;
+    const lowRec = recSrc.filter((d) => {
+      const n = N(d.total_target_schools);
+      return n > 0 && N(d.total_scholars_recruited) / (n * 45) < 0.8;
+    });
+    if (lowRec.length > 0) {
+      insights.push({
+        type: 'info', icon: '🎓', metric: 'recruitment',
+        title: `${lowRec.length} CU${lowRec.length > 1 ? 's' : ''} below 80% recruitment target`,
+        cus: lowRec.map((d) => ({ cu: d.cu, region: d.region, note: `${Math.round(N(d.total_scholars_recruited) / (N(d.total_target_schools) || 1) / 45 * 100)}%` })),
+      });
+    }
+  }
+
+  // 3. PB Milestones — no milestone reported, else low PB quality (<70%). Uses T1.
+  const t1pb = summaryData.filter((d) => d.year == year && d.term === 'term1');
+  const pbSrc = t1pb.length > 0 ? t1pb : data;
+  const noPB = pbSrc.filter((d) => N(d.total_target_schools) > 0 && (N(d.schools_completed_m1) + N(d.schools_completed_m2)) === 0);
+  if (noPB.length > 0) {
+    insights.push({
+      type: 'warning', icon: '📋', metric: 'pb_completion',
+      title: `${noPB.length} CU${noPB.length > 1 ? 's' : ''} with no PB milestones reported`,
+      cus: noPB.map((d) => ({ cu: d.cu, region: d.region })),
+    });
+  } else {
+    const lowPB = pbSrc.filter((d) => {
+      const tot = [0, 1, 2, 3].reduce((s, r) => s + N(d[`m1_total_rating_${r}`]) + N(d[`m2_total_rating_${r}`]), 0);
+      const good = N(d.m1_total_rating_2) + N(d.m1_total_rating_3) + N(d.m2_total_rating_2) + N(d.m2_total_rating_3);
+      return tot > 0 && good / tot < 0.7;
+    });
+    if (lowPB.length > 0) {
+      insights.push({
+        type: 'info', icon: '📗', metric: 'pb_quality',
+        title: `${lowPB.length} CU${lowPB.length > 1 ? 's' : ''} with PB quality below 70%`,
+        cus: lowPB.map((d) => {
+          const tot = [0, 1, 2, 3].reduce((s, r) => s + N(d[`m1_total_rating_${r}`]) + N(d[`m2_total_rating_${r}`]), 0);
+          const good = N(d.m1_total_rating_2) + N(d.m1_total_rating_3) + N(d.m2_total_rating_2) + N(d.m2_total_rating_3);
+          return { cu: d.cu, region: d.region, note: `${Math.round(good / tot * 100)}%` };
+        }),
+      });
+    }
+  }
+
+  // 4. Mentor observations — CUs with zero observed mentors.
+  const noObs = data.filter((d) => N(d.total_active_mentors) > 0 && N(d.total_observed_mentors) === 0);
+  if (noObs.length > 0) {
+    insights.push({
+      type: 'alert', icon: '👁️', metric: 'observations',
+      title: `${noObs.length} CU${noObs.length > 1 ? 's' : ''} with zero mentor observations`,
+      cus: noObs.map((d) => ({ cu: d.cu, region: d.region })),
+    });
+  }
+  return insights;
+}
+
+// ── Regional Issue Summary (legacy renderRegionalIssueSummary) ───────────────
+// data = CU rows for the region/term. Returns { issues, bottom5 }.
+export function computeRegionalIssues(data, summaryData, year, term) {
+  const lecNums = getLECsForTerm(year, term);
+  const isT1 = term === 'term1';
+  const issues = [];
+
+  const avgs = data.map((cu) => lecNums.reduce((s, n) => s + N(cu[`schools_with_lec${n}`]), 0) / Math.max(1, N(cu.total_target_schools) || 1));
+  const sorted = [...avgs].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const medianAvg = sorted.length === 0 ? 0 : (sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2);
+
+  data.forEach((cu) => {
+    const n = N(cu.total_target_schools);
+    const del = lecNums.reduce((s, ln) => s + N(cu[`schools_with_lec${ln}`]), 0);
+    const avg = n > 0 ? del / n : 0;
+    if (medianAvg >= 1 && avg < medianAvg - 1) {
+      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'LEC Behind Pace', value: `${avg.toFixed(1)} vs median ${medianAvg.toFixed(1)} LECs/school`, severity: 'high' });
+    }
+    if (N(cu.total_active_mentors) > 0 && N(cu.total_observed_mentors) === 0) {
+      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'No Observations', value: '0 mentors observed', severity: 'high' });
+    }
+    if (isT1) {
+      const rec = N(cu.total_scholars_recruited);
+      const tgt = n * 45;
+      if (tgt > 0 && rec / tgt < 0.8) {
+        issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'Recruitment', value: `${rec}/${tgt} (${Math.round(rec / tgt * 100)}%)`, severity: 'medium' });
+      }
+    }
+    const cuT1row = summaryData.find((d) => d.term === 'term1' && d.year == year && String(d.cu || '').trim().toLowerCase() === String(cu.cu || '').trim().toLowerCase());
+    const pbSchools = cuT1row
+      ? N(cuT1row.schools_completed_m1) + N(cuT1row.schools_completed_m2)
+      : N(cu.schools_completed_m1) + N(cu.schools_completed_m2);
+    if (n > 0 && pbSchools === 0) {
+      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'No PB Milestones', value: '0 schools reported', severity: 'medium' });
+    }
+  });
+
+  const bottom5 = [...data]
+    .filter((d) => N(d.total_target_schools) > 0)
+    .map((d) => {
+      const n = N(d.total_target_schools);
+      const del = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0);
+      const lecsExp = n * lecNums.length;
+      return { cu: d.cu, foa: d.foa_name || '–', n, del, lecsExp, pct: lecsExp > 0 ? Math.round(del / lecsExp * 100) : 0 };
+    })
+    .sort((a, b) => a.pct - b.pct)
+    .slice(0, 5);
+
+  return { issues, bottom5 };
+}
+
+// ── LEC delivery schedule (legacy renderCUPriorityAlerts SCHEDULE) ───────────
+const LEC_SCHEDULE = {
+  term1: { start: new Date('2026-02-09'), lecWeeks: { 1: 3, 2: 4, 3: 5, 4: 6, 5: 7 } },
+  term2: { start: new Date('2026-05-25'), lecWeeks: { 6: 1, 7: 2, 8: 3, 9: 4, 10: 5, 11: 6, 12: 7, 13: 8, 14: 9 } },
+};
+
+export function getLECsDueByToday(termKey) {
+  const sched = LEC_SCHEDULE[termKey];
+  if (!sched) return { lecs: 0, week: 0 };
+  const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+  const weekElapsed = Math.floor((Date.now() - sched.start.getTime()) / msPerWeek) + 1;
+  if (weekElapsed < 1) return { lecs: 0, week: 0 };
+  const lecs = Object.values(sched.lecWeeks).filter((wk) => wk <= weekElapsed).length;
+  return { lecs, week: weekElapsed };
+}
+
+// ── CU Priority Alerts (legacy renderCUPriorityAlerts) ───────────────────────
+// data = the CU's school rows (deduped internally). Returns { alerts, bottom5 }.
+export function computeCuPriorityAlerts(data, year, term) {
+  const lecNums = getLECsForTerm(year, term);
+  const isT1 = term === 'term1';
+  const byId = new Map();
+  data.forEach((d) => { if (!byId.has(String(d.school_id))) byId.set(String(d.school_id), d); });
+  const schools = [...byId.values()];
+  const mentorMap = new Map();
+  data.forEach((d) => { const m = String(d.mentor_id || ''); if (m && m !== 'null' && !mentorMap.has(m)) mentorMap.set(m, d); });
+  const mentors = [...mentorMap.values()];
+  const alerts = [];
+
+  const lecCount = (s) => lecNums.filter((n) => N(s[`schools_with_lec${n}`])).length;
+  const { lecs: lecsDue, week } = getLECsDueByToday(term === 'all' ? 'term2' : term);
+
+  // 1. Schools behind delivery schedule.
+  const behind = lecsDue <= 0 ? [] : schools.filter((s) => lecCount(s) < lecsDue);
+  if (behind.length > 0) {
+    alerts.push({
+      priority: behind.length > schools.length * 0.4 ? 'critical' : 'high',
+      category: 'LEC Sequencing',
+      title: `${behind.length} Schools Behind Delivery Schedule`,
+      description: `As of Week ${week} of the programme, ${lecsDue} LEC${lecsDue !== 1 ? 's' : ''} should have been delivered per the programme calendar. These schools are yet to meet that milestone.`,
+      metrics: [
+        { value: behind.length, label: 'Schools Behind Schedule' },
+        { value: `${schools.length ? Math.round(behind.length / schools.length * 100) : 0}%`, label: 'Of Total Schools' },
+        { value: `${lecsDue} LEC${lecsDue !== 1 ? 's' : ''}`, label: `Due by Week ${week}` },
+      ],
+      action: 'Review School Details',
+      schools: behind.map((s) => ({ name: `${s.school_name} (${lecCount(s)}/${lecsDue} LECs)`, mentor: s.mentor_name || '—' })),
+    });
+  }
+
+  // 2. Mentors not observed.
+  const notObserved = mentors.filter((m) => !N(m.total_mentor_observations));
+  if (notObserved.length > 0) {
+    alerts.push({
+      priority: 'high', category: 'Mentor Observation',
+      title: `${notObserved.length} Mentor${notObserved.length > 1 ? 's' : ''} Not Yet Observed`,
+      description: 'These mentors have not received any LEC observations this term. Schedule visits to ensure programme quality.',
+      metrics: [
+        { value: notObserved.length, label: 'Mentors Unobserved' },
+        { value: `${mentors.length ? Math.round(notObserved.length / mentors.length * 100) : 0}%`, label: 'Of Total Mentors' },
+        { value: '0', label: 'Observations Done' },
+      ],
+      action: 'Schedule Observations',
+      schools: notObserved.map((m) => ({ name: `${m.mentor_name || '—'} (${m.school_name})`, mentor: m.mentor_name || '—' })),
+    });
+  }
+
+  // 3. Schools with no PB milestone reported (only when some have).
+  const noPB = schools.filter((s) => !N(s.schools_completed_m1));
+  if (noPB.length > 0 && noPB.length < schools.length) {
+    alerts.push({
+      priority: 'medium', category: 'PB Milestone',
+      title: `${noPB.length} School${noPB.length > 1 ? 's' : ''} Yet to Report a PB Milestone`,
+      description: 'These schools have not submitted any Passbook milestone reports. Follow up with mentors on passbook completion status.',
+      metrics: [
+        { value: noPB.length, label: 'Schools Without PB' },
+        { value: `${schools.length - noPB.length}/${schools.length}`, label: 'Schools Reported' },
+        { value: `${schools.length ? Math.round((schools.length - noPB.length) / schools.length * 100) : 0}%`, label: 'Completion Rate' },
+      ],
+      action: 'Follow Up on PB Milestones',
+      schools: noPB.slice(0, 10).map((s) => ({ name: s.school_name, mentor: s.mentor_name || '—' })),
+    });
+  }
+
+  // 4. Low recruitment (T1 only, < 35 scholars).
+  if (isT1) {
+    const lowRec = schools.filter((s) => { const r = N(s.total_scholars_recruited); return r > 0 && r < 35; });
+    if (lowRec.length > 0) {
+      alerts.push({
+        priority: 'medium', category: 'Recruitment',
+        title: `${lowRec.length} School${lowRec.length > 1 ? 's' : ''} with Low Recruitment (<35 scholars)`,
+        description: 'These schools recruited fewer than 35 scholars, below the minimum expected. Understand barriers and consider re-recruitment activities.',
+        metrics: [
+          { value: lowRec.length, label: 'Schools Flagged' },
+          { value: '35', label: 'Min Target' },
+          { value: 'T1', label: 'Term' },
+        ],
+        action: 'Review Recruitment',
+        schools: lowRec.map((s) => ({ name: `${s.school_name} (${N(s.total_scholars_recruited)} recruited)`, mentor: s.mentor_name || '—' })),
+      });
+    }
+  }
+
+  // 5. LEC clustering (>60% of LECs in one week, ≥3 LECs).
+  const clustered = mentors.map((m) => {
+    const wks = {};
+    lecNums.forEach((n) => { const w = m[`lec${n}_max_week`]; if (w) wks[w] = (wks[w] || 0) + 1; });
+    const vals = Object.values(wks);
+    const maxW = vals.length ? Math.max(...vals) : 0;
+    const tot = vals.reduce((a, b) => a + b, 0);
+    return { m, rate: tot > 0 ? maxW / tot : 0, tot };
+  }).filter((x) => x.rate > 0.6 && x.tot >= 3);
+  if (clustered.length > 0) {
+    alerts.push({
+      priority: 'medium', category: 'Programme Quality',
+      title: `${clustered.length} Mentor${clustered.length > 1 ? 's' : ''} with LEC Clustering`,
+      description: 'Over 60% of LECs delivered in a single week. Verify actual delivery dates and advise on spreading sessions.',
+      metrics: [
+        { value: clustered.length, label: 'Mentors Flagged' },
+        { value: '>60%', label: 'LECs in 1 Week' },
+        { value: 'Quality', label: 'Risk' },
+      ],
+      action: 'Verify Delivery Dates',
+      schools: clustered.map((x) => ({ name: `${x.m.mentor_name || '—'} (${x.m.school_name})`, mentor: x.m.mentor_name || '—' })),
+    });
+  }
+
+  const denom = lecNums.length;
+  const bottom5 = schools
+    .map((s) => { const cnt = lecCount(s); return { s, cnt, pct: denom > 0 ? Math.round(cnt / denom * 100) : 0 }; })
+    .sort((a, b) => a.pct - b.pct)
+    .slice(0, 5);
+
+  return { alerts, bottom5, denom };
+}
+
 // ── Non-scholar participation buckets (spec §6) ──────────────────────────────
 export function computeNonScholar(schoolData, year, term) {
   const rows = schoolData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));

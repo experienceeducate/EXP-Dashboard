@@ -33,9 +33,16 @@ grid, schools-behind, milestone reporting, club/skills-day/timeliness, the mobil
 tab mirror; multi-level drill (region→CU→mentor collapsed to one level); the
 localStorage issue tracker. These are follow-ups — track before calling parity complete.
 
-**Not yet exercised end-to-end:** the app was verified via production build + lint
-+ backend auth smoke tests. A full browser run against live BigQuery (needs the SA
-key + a real query returning rows) is the remaining manual verification step.
+**Recalculation analysis:** `docs/DROPPED_SECTIONS.md` maps every deferred section
+to the BigQuery fields behind it — 16/16 are recalculable from the existing
+158-column model (front-end-only work). Genuine gaps: the issue tracker (user
+state, not data), per-row school-type/MOU/mentor-status tags (columns absent), and
+GM 4 (inactive). Metric formulas/thresholds live in `docs/METRICS.md`.
+
+**Verified end-to-end (2026-07-16):** deployed to prod and confirmed live —
+login → `/api/overview/summary` returned 46 CU + 825 school rows from BigQuery;
+both hosts serve over HTTPS. A full browser click-through of the rendered React
+charts against live data is the remaining nice-to-have check.
 
 ## The single-process invariant (most important constraint)
 The query cache (`core/cache.py`, `TTLCache` maxsize 512 / TTL 300s) is

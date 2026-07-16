@@ -8,11 +8,15 @@ import {
   getReportTimelinessSummary,
   computeNonScholar,
   buildLecWeekMatrix,
+  computeNationalInsights,
+  computeLecClusters,
   avgScholarsPerLec,
   sum,
 } from '../lib/metrics.js';
 import { ragColor, ragKpiClass, delta, num, getGMLabel } from '../lib/format.js';
 import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, Placeholder } from '../components/ui.jsx';
+
+const REGIONS = ['Central', 'East', 'North', 'South', 'West'];
 
 const N = (v) => Number(v) || 0;
 const TABS = [
@@ -216,7 +220,7 @@ function FunnelBar({ label, val, denom, color, onClick }) {
 }
 
 // ── LEC Delivery tab ─────────────────────────────────────────────────────────
-function LecTab({ schoolData, data, year, term, onDrill }) {
+function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const lecNums = term === 'all'
     ? [...(TERM_CONFIG.term1?.lecs || []), ...(TERM_CONFIG.term2?.lecs || [])]
     : getLECsForTerm(year, term);
@@ -231,6 +235,9 @@ function LecTab({ schoolData, data, year, term, onDrill }) {
     const avgS = schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—';
     return { label: `LEC ${n}`, lecNum: n, schoolsWith, scholars, nonScholars, compPct, avgS };
   });
+
+  const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term), [summaryData, data, year, term]);
+  const clusters = useMemo(() => computeLecClusters(schoolData, year, term), [schoolData, year, term]);
 
   const matrix = useMemo(() => buildLecWeekMatrix(schoolData, year, term === 'all' ? 'term1' : term), [schoolData, year, term]);
   const weeks = [...new Set(lecNums.flatMap((n) => Object.keys(matrix[`lec${n}`] || {})))].sort(
@@ -307,8 +314,69 @@ function LecTab({ schoolData, data, year, term, onDrill }) {
         )}
       </Section>
 
-      <Section title="🔍 Key Insights & Flags" subtitle="CUs needing attention">
-        <Placeholder label="Detailed CU flags drill is available via the KPI tiles above. Full flag list — coming soon." />
+      <LecKeyInsights onDrill={onDrill} clusters={clusters} insights={insights} />
+    </>
+  );
+}
+
+// ── LEC tab · Key Insights & Flags (legacy renderNationalKeyInsights + clustering) ─
+function LecKeyInsights({ onDrill, clusters, insights }) {
+  const colors = { warning: '#fff3cd', alert: '#f8d7da', info: '#e7f3ff' };
+  const borders = { warning: C.yellow, alert: C.red, info: C.blue };
+  return (
+    <>
+      <Section title="🔑 Key Insights & Flags" subtitle={insights.length > 0 ? `${insights.length} issue${insights.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
+        {insights.length === 0 ? (
+          <div style={{ padding: '1.5rem', textAlign: 'center', color: C.green }}>✅ No critical issues detected across all CUs.</div>
+        ) : (
+          insights.map((ins, idx) => (
+            <div
+              key={idx}
+              onClick={() => onDrill({ metric: ins.metric })}
+              style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer' }}
+            >
+              <div style={{ fontWeight: 700, marginBottom: '.35rem' }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.4rem' }}>
+                {ins.cus.map((c, i) => (
+                  <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: '#333' }}>
+                    {c.cu}{c.note ? ` (${c.note})` : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </Section>
+
+      <Section title="⚡ LEC Sequencing Flags" subtitle="Schools delivering 3+ LECs in a single week (compressed pacing)">
+        {clusters.length === 0 ? (
+          <div style={{ padding: '1.25rem', textAlign: 'center', color: C.green }}>✅ No LEC clustering detected this term.</div>
+        ) : (
+          <div className="table-wrap">
+            <table className="breakdown-table">
+              <thead>
+                <tr>
+                  <th>School</th>
+                  <th>CU</th>
+                  <th>Region</th>
+                  <th className="center">Max LECs / Week</th>
+                  <th>Worst Week</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clusters.map((c, i) => (
+                  <tr key={`${c.schoolId}-${i}`}>
+                    <td className="item-name">{c.school}</td>
+                    <td style={{ color: '#555' }}>{c.cu}</td>
+                    <td style={{ color: '#555' }}>{c.region}</td>
+                    <td className="center" style={{ fontWeight: 700, color: c.maxLecs >= 4 ? '#c0392b' : '#e67e22' }}>{c.maxLecs}</td>
+                    <td style={{ color: '#555' }}>{c.week}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Section>
     </>
   );
@@ -356,6 +424,9 @@ function PbTab({ summaryData, data, year, term, onDrill }) {
   return (
     <>
       <PbTabInsights summaryData={summaryData} data={data} year={year} onDrill={onDrill} />
+      <Section title="📋 PB Milestone Completion" subtitle="Schools that reported each milestone, by region">
+        <PbMilestoneCompletion summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
+      </Section>
       <Section title="📋 PB Quality by Milestone" subtitle="Good + Excellent ratings (score ≥ 2) by region">
         <PbQualityTable summaryData={summaryData} data={data} year={year} term={term} showAll={showAll} onToggle={() => setShowAll((s) => !s)} onDrill={onDrill} />
       </Section>
@@ -526,6 +597,61 @@ function PbQualityTable({ summaryData, year, term, showAll, onToggle, onDrill })
   );
 }
 
+// ── PB Milestone Completion by region (legacy renderNationalPBMilestone, term-aware) ─
+function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
+  // Term → milestones + source rows. M1/M2 from T1 rows; M3/M4 from T2 rows.
+  const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
+  const t2 = summaryData.filter((d) => d.year == year && d.term === 'term2');
+  let milestones;
+  if (term === 'term2') milestones = [{ m: 3, src: t2.length ? t2 : data }, { m: 4, src: t2.length ? t2 : data }];
+  else if (term === 'all') milestones = [{ m: 1, src: t1 }, { m: 2, src: t1 }, { m: 3, src: t2 }, { m: 4, src: t2 }];
+  else milestones = [{ m: 1, src: t1.length ? t1 : data }, { m: 2, src: t1.length ? t1 : data }];
+  milestones = milestones.filter((ms) => ms.src.length > 0);
+  if (milestones.length === 0) return <Placeholder label="No milestone completion data yet for this term." />;
+
+  const regions = REGIONS.filter((reg) => data.some((d) => String(d.region || '').toLowerCase() === reg.toLowerCase()));
+  const cell = (rows, m, regionFilter) => {
+    const rd = regionFilter ? rows.filter((d) => String(d.region || '').toLowerCase() === regionFilter.toLowerCase()) : rows;
+    const done = sum(rd, (d) => N(d[`schools_completed_m${m}`]));
+    const tot = sum(rd, (d) => N(d.total_target_schools));
+    const pct = tot > 0 ? Math.round((done / tot) * 100) : 0;
+    return { done, tot, pct };
+  };
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>Region</th>
+            {milestones.map((ms) => (
+              <th key={ms.m} className="center">Milestone {ms.m}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {regions.map((region) => (
+            <tr key={region} className="clickable" onClick={() => onDrill({ metric: 'pb_completion' })}>
+              <td className="item-name">{region} <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
+              {milestones.map((ms) => {
+                const c = cell(ms.src, ms.m, region);
+                return <td key={ms.m} className="center" style={{ fontWeight: 700, color: ragColor(c.pct) }}>{c.done}/{c.tot} ({c.pct}%)</td>;
+              })}
+            </tr>
+          ))}
+          <tr style={{ background: '#f8f9fa', fontWeight: 700, borderTop: `2px solid ${C.navy}` }}>
+            <td>NATIONAL</td>
+            {milestones.map((ms) => {
+              const c = cell(ms.src, ms.m, null);
+              return <td key={ms.m} className="center" style={{ color: ragColor(c.pct) }}>{c.done}/{c.tot} ({c.pct}%)</td>;
+            })}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function GmCompletion({ data }) {
   const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
   return (
@@ -561,7 +687,7 @@ function GmCompletion({ data }) {
 }
 
 // ── Programme Quality tab ────────────────────────────────────────────────────
-function QualityTab({ schoolData, data, year, term, onDrill }) {
+function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const obs = useMemo(() => computeObsCoverageByRegion(data), [data]);
   const rt = useMemo(() => getReportTimelinessSummary(data), [data]);
   const ns = useMemo(() => computeNonScholar(schoolData, year, term), [schoolData, year, term]);
@@ -623,6 +749,14 @@ function QualityTab({ schoolData, data, year, term, onDrill }) {
         </div>
       </Section>
 
+      <Section title={`${term === 'term2' ? '🔬 Skills Day' : term === 'all' ? '🎉 Community Day / 🔬 Skills Day' : '🎉 Community Day'}`} subtitle="Delivery and attendance by region">
+        <CommunitySkillsDay summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
+      </Section>
+
+      <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by region">
+        <ClubMilestones summaryData={summaryData} data={data} year={year} term={term} />
+      </Section>
+
       <Section title="📅 Activity Report Timeliness" subtitle={`${num(rt.total)} reports submitted · early + on-schedule = on track`}>
         <TimelinessLegend />
         <div className="table-wrap">
@@ -656,6 +790,155 @@ function QualityTab({ schoolData, data, year, term, onDrill }) {
         </div>
       </Section>
     </>
+  );
+}
+
+// ── Community Day (T1) / Skills Day (T2) by region (legacy renderNationalCommunityDay) ─
+function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
+  const cuDedup = (rows) => [...new Map(rows.map((d) => [d.cu, d])).values()];
+  const blocks = [];
+
+  if (term === 'term1' || term === 'all') {
+    const rows = term === 'all' ? summaryData.filter((d) => d.year == year && d.term === 'term1') : data;
+    const cuRows = term === 'all' ? cuDedup(rows) : rows;
+    const total = sum(cuRows, (d) => N(d.total_target_schools));
+    const withCD = sum(cuRows, (d) => N(d.schools_with_community_day));
+    const cdSch = sum(rows, (d) => N(d.cd_scholar_attendance));
+    const cdNon = sum(rows, (d) => N(d.cd_non_scholar_attendance));
+    const pct = total > 0 ? Math.round((withCD / total) * 100) : 0;
+    const avg = withCD > 0 ? (cdSch / withCD).toFixed(1) : '—';
+    const regRows = REGIONS.map((reg) => {
+      const ru = cuRows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
+      const rd = rows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
+      const rs = sum(ru, (d) => N(d.total_target_schools));
+      const rw = sum(ru, (d) => N(d.schools_with_community_day));
+      const rP = rs > 0 ? Math.round((rw / rs) * 100) : 0;
+      return { reg, rs, rw, rP, sch: sum(rd, (d) => N(d.cd_scholar_attendance)), ns: sum(rd, (d) => N(d.cd_non_scholar_attendance)) };
+    });
+    blocks.push(
+      <div key="cd" style={{ marginBottom: '1.25rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '.75rem', marginBottom: '.6rem', flexWrap: 'wrap' }}>
+          <div style={{ fontWeight: 700, fontSize: '.95rem', color: C.navy }}>🎉 Community Day (T1)</div>
+          <span style={{ fontSize: '1.4rem', fontWeight: 800, color: ragColor(pct) }}>{pct}%</span>
+          <span style={{ fontSize: '.6rem', color: '#0077b6', cursor: 'pointer' }} onClick={() => onDrill({ metric: 'community_day' })}>⌕ drill</span>
+          <span style={{ fontSize: '.85rem' }}><strong>{num(cdSch)}</strong> scholars · <strong>{num(cdNon)}</strong> non-scholars · Avg <strong>{avg}</strong>/school</span>
+        </div>
+        <table className="breakdown-table">
+          <thead><tr><th>Region</th><th className="center">Delivery</th><th className="center">Scholars</th><th className="center">Non-Scholars</th></tr></thead>
+          <tbody>
+            {regRows.map((r) => (
+              <tr key={r.reg}><td className="item-name">{r.reg}</td><td className="center" style={{ fontWeight: 700, color: ragColor(r.rP) }}>{r.rw}/{r.rs} ({r.rP}%)</td><td className="center">{num(r.sch)}</td><td className="center" style={{ color: '#888' }}>{num(r.ns)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>,
+    );
+  }
+
+  if (term === 'term2' || term === 'all') {
+    const rows = term === 'all' ? summaryData.filter((d) => d.year == year && d.term === 'term2') : data;
+    const cuRows = term === 'all' ? cuDedup(rows) : rows;
+    const total = sum(cuRows, (d) => N(d.total_target_schools));
+    const withSD = sum(cuRows, (d) => N(d.schools_with_skills_day));
+    const sdSch = sum(rows, (d) => N(d.sd_total_scholars));
+    const sdMale = sum(rows, (d) => N(d.sd_male_scholars));
+    const sdFemale = sum(rows, (d) => N(d.sd_female_scholars));
+    const sdNon = sum(rows, (d) => N(d.sd_total_non_scholars));
+    const pct = total > 0 ? Math.round((withSD / total) * 100) : 0;
+    const avg = withSD > 0 ? (sdSch / withSD).toFixed(1) : '—';
+    if (withSD > 0) {
+      const regRows = REGIONS.map((reg) => {
+        const ru = cuRows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
+        const rd = rows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
+        const rs = sum(ru, (d) => N(d.total_target_schools));
+        const rw = sum(ru, (d) => N(d.schools_with_skills_day));
+        const rP = rs > 0 ? Math.round((rw / rs) * 100) : 0;
+        const rSch = sum(rd, (d) => N(d.sd_total_scholars));
+        const rMale = sum(rd, (d) => N(d.sd_male_scholars));
+        const rFemale = sum(rd, (d) => N(d.sd_female_scholars));
+        return { reg, rs, rw, rP, rSch, rMale, rFemale };
+      });
+      blocks.push(
+        <div key="sd">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '.75rem', marginBottom: '.6rem', flexWrap: 'wrap' }}>
+            <div style={{ fontWeight: 700, fontSize: '.95rem', color: C.navy }}>🔬 Skills Day (T2)</div>
+            <span style={{ fontSize: '1.4rem', fontWeight: 800, color: ragColor(pct) }}>{pct}%</span>
+            <span style={{ fontSize: '.6rem', color: '#0077b6', cursor: 'pointer' }} onClick={() => onDrill({ metric: 'skills_day' })}>⌕ drill</span>
+            <span style={{ fontSize: '.85rem' }}><strong>{withSD}</strong>/{total} schools · <strong>{num(sdSch)}</strong> scholars{sdMale > 0 || sdFemale > 0 ? <> · M <strong>{num(sdMale)}</strong> · F <strong>{num(sdFemale)}</strong></> : null}{sdNon > 0 ? <> · NS <strong>{num(sdNon)}</strong></> : null} · Avg <strong>{avg}</strong>/school</span>
+          </div>
+          <table className="breakdown-table">
+            <thead><tr><th>Region</th><th className="center">Schools</th><th className="center">Scholars</th><th className="center" style={{ color: C.blue }}>Male</th><th className="center" style={{ color: C.red }}>Female</th></tr></thead>
+            <tbody>
+              {regRows.map((r) => (
+                <tr key={r.reg}>
+                  <td className="item-name">{r.reg}</td>
+                  <td className="center" style={{ fontWeight: 700, color: ragColor(r.rP) }}>{r.rw}/{r.rs} ({r.rP}%)</td>
+                  <td className="center">{num(r.rSch)}</td>
+                  <td className="center" style={{ color: C.blue }}>{r.rMale > 0 ? `${num(r.rMale)} (${r.rSch > 0 ? Math.round((r.rMale / r.rSch) * 100) : 0}%)` : '—'}</td>
+                  <td className="center" style={{ color: C.red }}>{r.rFemale > 0 ? `${num(r.rFemale)} (${r.rSch > 0 ? Math.round((r.rFemale / r.rSch) * 100) : 0}%)` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+    }
+  }
+
+  if (blocks.length === 0) return <Placeholder label="No community/skills day data for the selected term." />;
+  return <div>{blocks}</div>;
+}
+
+// ── Club Milestones & BMP by region (legacy renderNationalClubMilestones) ─────
+function ClubMilestones({ summaryData, data, year, term }) {
+  const all = [
+    { key: 'schools_with_club_meeting_1', label: 'Club Meeting 1', terms: ['term1', 'all'] },
+    { key: 'schools_with_club_meeting_2', label: 'Club Meeting 2', terms: ['term1', 'all'] },
+    { key: 'schools_with_club_meeting_3', label: 'Club Meeting 3', terms: ['term2', 'all'] },
+    { key: 'schools_with_club_meeting_4', label: 'Club Meeting 4', terms: ['term2', 'all'] },
+    { key: 'schools_with_bmp', label: 'Business Model Presentation', terms: ['term2', 'all'] },
+  ];
+  const active = all.filter((m) => m.terms.includes(term));
+  if (active.length === 0) return <Placeholder label="No club milestones for the selected term." />;
+
+  const rows = term === 'all' ? summaryData.filter((d) => d.year == year) : data;
+  const cuRows = [...new Map(rows.map((d) => [d.cu, d])).values()];
+  const total = sum(cuRows, (d) => N(d.total_target_schools));
+  if (total === 0) return <Placeholder label="No club milestone data yet." />;
+  const regions = REGIONS.filter((reg) => rows.some((d) => String(d.region || '').toLowerCase() === reg.toLowerCase()));
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>Milestone</th>
+            <th className="center">National</th>
+            {regions.map((r) => (<th key={r} className="center">{r}</th>))}
+          </tr>
+        </thead>
+        <tbody>
+          {active.map((m) => {
+            const natCount = sum(rows, (d) => N(d[m.key]));
+            const natPct = total > 0 ? Math.round((natCount / total) * 100) : 0;
+            return (
+              <tr key={m.key}>
+                <td className="item-name">{m.label}</td>
+                <td className="center" style={{ fontWeight: 700, color: ragColor(natPct) }}>{natCount}/{total} ({natPct}%)</td>
+                {regions.map((reg) => {
+                  const rr = rows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
+                  const rCU = [...new Map(rr.map((d) => [d.cu, d])).values()];
+                  const rTot = sum(rCU, (d) => N(d.total_target_schools));
+                  const rCount = sum(rr, (d) => N(d[m.key]));
+                  const rP = rTot > 0 ? Math.round((rCount / rTot) * 100) : 0;
+                  return <td key={reg} className="center" style={{ fontWeight: 600, color: rCount > 0 ? ragColor(rP) : '#ccc' }}>{rCount > 0 ? `${rCount} (${rP}%)` : '—'}</td>;
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -711,9 +994,9 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
         ))}
       </div>
       {tab === 'exec' ? <ExecTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
-      {tab === 'lec' ? <LecTab schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
+      {tab === 'lec' ? <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
       {tab === 'pb' ? <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
-      {tab === 'quality' ? <QualityTab schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
+      {tab === 'quality' ? <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
     </div>
   );
 }
