@@ -25,13 +25,14 @@ const METRIC_LABELS = {
   lec_duration: 'Avg Session Duration',
   total_schools: 'Total Schools',
   lec_clustering: 'LEC Clustering',
+  club_milestone: 'Club Milestone',
 };
 
-const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day']);
+const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day', 'club_milestone']);
 
 // Evaluate a metric for a group of rows. `schoolCount`/`t1SchoolCount` are the
 // denominators (CU rows use total_target_schools; mentor uses school-row count).
-function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount, lecNums, lecNum, mentorLevel }) {
+function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount, lecNums, lecNum, mentorLevel, milestoneKey }) {
   if (metric === 'lec_delivery') {
     const del = sum(rows, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
     const exp = schoolCount * lecNums.length;
@@ -91,12 +92,16 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
     const sd = sum(rows, (d) => N(d.schools_with_skills_day));
     return { val: schoolCount > 0 ? Math.round((sd / schoolCount) * 100) : 0, sub: `${sd} of ${schoolCount} schools` };
   }
+  if (metric === 'club_milestone') {
+    const done = sum(rows, (d) => N(d[milestoneKey]));
+    return { val: schoolCount > 0 ? Math.round((done / schoolCount) * 100) : 0, sub: `${done} of ${schoolCount} schools` };
+  }
   // total_schools / fallback
   return { val: schoolCount, sub: '' };
 }
 
 // Region-level rows (from CU summaryData).
-function regionRows(metric, summaryData, year, term, lecNum) {
+function regionRows(metric, summaryData, year, term, lecNum, milestoneKey) {
   const lecNums = getLECsForTerm(year, term);
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
   const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
@@ -109,7 +114,7 @@ function regionRows(metric, summaryData, year, term, lecNum) {
     const rdObs = obsSrc.filter((d) => match(d, reg));
     const forSchools = rd.length > 0 ? rd : rdT1;
     const { val, sub } = evalMetric(metric, {
-      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum,
+      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum, milestoneKey,
       schoolCount: sum(forSchools, (d) => N(d.total_target_schools)),
       t1SchoolCount: sum(rdT1, (d) => N(d.total_target_schools)),
     });
@@ -118,7 +123,7 @@ function regionRows(metric, summaryData, year, term, lecNum) {
 }
 
 // CU-level rows within a region.
-function cuRows(metric, summaryData, year, term, region, lecNum) {
+function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey) {
   const lecNums = getLECsForTerm(year, term);
   const inRegion = (d) => String(d.region || '').trim().toLowerCase() === String(region).trim().toLowerCase();
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inRegion(d));
@@ -132,12 +137,27 @@ function cuRows(metric, summaryData, year, term, region, lecNum) {
     const rdObs = byCu(obsSrc, c);
     const forSchools = rd.length > 0 ? rd : rdT1;
     const { val, sub } = evalMetric(metric, {
-      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum,
+      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum, milestoneKey,
       schoolCount: sum(forSchools, (d) => N(d.total_target_schools)),
       t1SchoolCount: sum(rdT1, (d) => N(d.total_target_schools)),
     });
     return { key: c, name: c, val, sub };
   });
+}
+
+// School-level rows within a CU for per-school ✓/✗ indicators (GM, club milestones,
+// BMP) — legacy _kpiDrillCU "school-level" branch, not a mentor aggregate.
+function schoolFieldRows(schoolData, year, term, cu, fieldKey) {
+  const inCu = (d) => String(d.cu || '').toLowerCase() === String(cu).toLowerCase();
+  const rows = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inCu(d));
+  const map = new Map();
+  rows.forEach((r) => {
+    const name = r.school_name || r.school_id || 'Unknown';
+    if (!map.has(name)) map.set(name, r);
+  });
+  return [...map.entries()]
+    .map(([name, r]) => ({ key: name, name, mentor: r.mentor_name || '—', held: N(r[fieldKey]) > 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // Mentor-level rows within a CU (aggregate school rows).
@@ -193,10 +213,11 @@ function MetricDefCard({ metric }) {
 }
 
 export default function DrillPanel({ drill, summaryData, schoolData, year, term, onClose }) {
-  // stack: [] = regions · [region] = CUs · [region, cu] = mentors.
-  const [stack, setStack] = useState([]);
+  // stack: [] = regions · [region] = CUs · [region, cu] = mentors (or schools, for GM / club milestones).
+  const [stack, setStack] = useState(() => (drill && drill.initialRegion ? [drill.initialRegion] : []));
   if (!drill) return null;
-  const { metric, lecNum } = drill;
+  const { metric, lecNum, milestoneKey } = drill;
+  const isSchoolLevel = metric === 'gm' || metric === 'club_milestone';
 
   // LEC clustering is a flat schools list (legacy openClusterDrill), not a
   // region → CU → mentor aggregate — handle it separately.
@@ -245,18 +266,127 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
     );
   }
 
-  const label = metric === 'lec_single' ? `LEC ${lecNum || ''}` : METRIC_LABELS[metric] || metric;
+  // Heatmap cell drill — schools that delivered a given LEC in a given week
+  // (legacy drillHeatmapCell), grouped by region → CU.
+  if (metric === 'lec_heatmap_cell') {
+    const { week } = drill;
+    const weekLabel = `Week ${week}`;
+    const matched = (schoolData || []).filter((d) => {
+      if (d.year != year) return false;
+      if (term !== 'all' && d.term !== term) return false;
+      if (N(d[`schools_with_lec${lecNum}`]) !== 1) return false;
+      return String(d[`lec${lecNum}_max_week`] || '').trim() === weekLabel;
+    });
+    const totalScholars = sum(matched, (d) => N(d[`lec${lecNum}_scholars`]));
+    const totalNonScholars = sum(matched, (d) => N(d[`lec${lecNum}_non_scholars`]));
+
+    const byRegion = new Map();
+    matched.forEach((d) => {
+      const reg = d.region || 'Unknown';
+      const cu = d.cu || 'Unknown';
+      if (!byRegion.has(reg)) byRegion.set(reg, new Map());
+      const cus = byRegion.get(reg);
+      if (!cus.has(cu)) cus.set(cu, { schools: [], scholars: 0, nonScholars: 0 });
+      const entry = cus.get(cu);
+      entry.schools.push(d.school_name || `School ${d.school_id}`);
+      entry.scholars += N(d[`lec${lecNum}_scholars`]);
+      entry.nonScholars += N(d[`lec${lecNum}_non_scholars`]);
+    });
+
+    return (
+      <>
+        <div className="drill-backdrop" onClick={onClose} />
+        <aside className="drill-panel" role="dialog" aria-label={`LEC ${lecNum} — Week ${week} breakdown`}>
+          <div className="drill-head">
+            <button className="drill-close" onClick={onClose} aria-label="Close">×</button>
+            <div className="drill-title">LEC {lecNum} — Week {week}</div>
+            <div className="drill-subtitle">
+              {matched.length} school{matched.length !== 1 ? 's' : ''} delivered LEC {lecNum} in Week {week} · {totalScholars.toLocaleString()} scholars reached
+            </div>
+          </div>
+          <div className="drill-body">
+            {matched.length === 0 ? (
+              <p style={{ color: '#888', padding: '1rem' }}>No school-level records found for this cell.</p>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                  <div style={{ background: '#eef2ff', borderRadius: 8, padding: '.6rem 1rem', textAlign: 'center' }}>
+                    <div style={{ fontSize: '.7rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.05em' }}>Schools</div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: C.navy }}>{matched.length}</div>
+                  </div>
+                  <div style={{ background: '#e8f5e9', borderRadius: 8, padding: '.6rem 1rem', textAlign: 'center' }}>
+                    <div style={{ fontSize: '.7rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.05em' }}>Scholars</div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: C.green }}>{totalScholars.toLocaleString()}</div>
+                  </div>
+                  {totalNonScholars > 0 ? (
+                    <div style={{ background: '#fff8e1', borderRadius: 8, padding: '.6rem 1rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '.7rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.05em' }}>Non-Scholars</div>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 800, color: C.yellow }}>{totalNonScholars.toLocaleString()}</div>
+                    </div>
+                  ) : null}
+                </div>
+                {[...byRegion.keys()].sort().map((reg) => {
+                  const cus = byRegion.get(reg);
+                  return (
+                    <div key={reg} style={{ marginBottom: '1.25rem' }}>
+                      <div style={{ fontWeight: 700, fontSize: '.85rem', textTransform: 'uppercase', letterSpacing: '.06em', color: C.navy, borderBottom: `2px solid ${C.navy}`, paddingBottom: '.3rem', marginBottom: '.5rem' }}>
+                        📍 {reg}
+                      </div>
+                      <table className="breakdown-table">
+                        <thead>
+                          <tr>
+                            <th>CU</th>
+                            <th className="center">Schools</th>
+                            <th className="center">Scholars</th>
+                            <th className="center">Non-Scholars</th>
+                            <th>School Names</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...cus.keys()].sort().map((cu) => {
+                            const d = cus.get(cu);
+                            const list = d.schools.slice(0, 5).join(', ') + (d.schools.length > 5 ? ` +${d.schools.length - 5} more` : '');
+                            return (
+                              <tr key={cu}>
+                                <td className="item-name">{cu}</td>
+                                <td className="center">{d.schools.length}</td>
+                                <td className="center" style={{ color: C.green, fontWeight: 700 }}>{d.scholars.toLocaleString()}</td>
+                                <td className="center" style={{ color: '#888' }}>{d.nonScholars > 0 ? d.nonScholars.toLocaleString() : '—'}</td>
+                                <td style={{ fontSize: '.8rem', color: '#555' }}>{list}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        </aside>
+      </>
+    );
+  }
+
+  const label = metric === 'lec_single' ? `LEC ${lecNum || ''}`
+    : metric === 'club_milestone' ? (drill.milestoneLabel || METRIC_LABELS.club_milestone)
+      : METRIC_LABELS[metric] || metric;
   const isPct = PCT_METRICS.has(metric);
 
-  const level = stack.length === 0 ? 'region' : stack.length === 1 ? 'cu' : 'mentor';
+  const level = stack.length === 0 ? 'region' : stack.length === 1 ? 'cu' : (isSchoolLevel ? 'school' : 'mentor');
   let rows;
   let colHeader;
   if (level === 'region') {
-    rows = regionRows(metric, summaryData, year, term, lecNum);
+    rows = regionRows(metric, summaryData, year, term, lecNum, milestoneKey);
     colHeader = 'Region';
   } else if (level === 'cu') {
-    rows = cuRows(metric, summaryData, year, term, stack[0], lecNum);
+    rows = cuRows(metric, summaryData, year, term, stack[0], lecNum, milestoneKey);
     colHeader = 'Cluster Unit';
+  } else if (level === 'school') {
+    const fieldKey = metric === 'gm' ? 'schools_with_gm' : milestoneKey;
+    rows = schoolFieldRows(schoolData, year, term, stack[1], fieldKey).map((r) => ({ key: r.key, name: r.name, val: r.held ? '✓' : '✗', sub: r.mentor, held: r.held }));
+    colHeader = 'School';
   } else {
     rows = mentorRows(metric, schoolData, year, term, stack[1], lecNum);
     colHeader = 'Mentor';
@@ -264,8 +394,9 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
 
   const crumbLabels = ['All Regions', stack[0], stack[1]].filter(Boolean);
   const subtitle = level === 'region' ? 'Regional breakdown — click a region to drill into CUs'
-    : level === 'cu' ? `CUs in ${stack[0]} — click a CU to drill into mentors`
-      : `Mentors in ${stack[1]}`;
+    : level === 'cu' ? `CUs in ${stack[0]} — click a CU to drill into ${isSchoolLevel ? 'schools' : 'mentors'}`
+      : level === 'school' ? `Schools in ${stack[1]}`
+        : `Mentors in ${stack[1]}`;
 
   const drillInto = (name) => {
     if (level === 'region') setStack([name]);
@@ -318,11 +449,12 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
               {rows.length === 0 ? (
                 <tr><td colSpan={3} style={{ color: '#888', padding: '1rem' }}>No data at this level.</td></tr>
               ) : rows.map((r) => {
-                const clickable = level !== 'mentor';
+                const clickable = level !== 'mentor' && level !== 'school';
+                const valueColor = level === 'school' ? (r.held ? C.green : C.red) : (isPct ? ragColor(r.val) : C.navy);
                 return (
                   <tr key={r.key} className={clickable ? 'clickable' : undefined} onClick={clickable ? () => drillInto(r.name) : undefined}>
                     <td className="item-name">{r.name}{clickable ? <span style={{ fontSize: '.65rem', color: '#0077b6' }}> ⌕</span> : null}</td>
-                    <td className="center" style={{ fontWeight: 800, color: isPct ? ragColor(r.val) : C.navy }}>{r.val}{isPct ? '%' : ''}</td>
+                    <td className="center" style={{ fontWeight: 800, color: valueColor }}>{r.val}{level !== 'school' && isPct ? '%' : ''}</td>
                     <td style={{ color: '#555' }}>{r.sub}</td>
                   </tr>
                 );

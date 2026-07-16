@@ -27,6 +27,28 @@ body { margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; backgro
 .header-select option { background:#0e313e; color:#fff; }
 .header-clear-btn { background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.2); color:#fff; border-radius:6px; padding:.4rem .6rem; cursor:pointer; font-size:.8rem; }
 .header-clear-btn:hover { background:rgba(255,255,255,.1); }
+.header-input-wrap { position:relative; display:inline-flex; align-items:center; }
+.header-input-wrap .header-input { padding-right:1.9rem; }
+.header-input-clear {
+  position:absolute; right:.3rem; top:50%; transform:translateY(-50%);
+  background:none; border:none; color:rgba(255,255,255,.65); cursor:pointer;
+  font-size:.85rem; line-height:1; padding:.3rem; border-radius:4px;
+}
+.header-input-clear:hover { color:#fff; background:rgba(255,255,255,.15); }
+
+/* Mobile: full-width stacked filters + 16px inputs (prevents iOS Safari's
+   auto-zoom-on-focus, which otherwise fires on any input font-size <16px). */
+@media (max-width:640px) {
+  .header-top { padding:.6rem 1rem; }
+  .header-right { width:100%; }
+  .header-select, .header-input-wrap, .header-input-wrap .header-input {
+    width:100%;
+  }
+  .header-select, .header-input {
+    font-size:1rem; padding:.55rem .7rem; min-height:2.6rem;
+  }
+  .header-clear-btn { width:100%; padding:.55rem .7rem; }
+}
 #userInfo { color:#B8C7D6; font-size:.8rem; padding:0 .4rem; }
 .btn { border:1px solid rgba(255,255,255,.25); background:rgba(255,255,255,.1); color:#fff; border-radius:6px; padding:.4rem .8rem; cursor:pointer; font-size:.82rem; font-weight:600; }
 .btn:hover { background:rgba(255,255,255,.2); }
