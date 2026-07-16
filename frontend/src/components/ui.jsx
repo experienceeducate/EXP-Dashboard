@@ -1,5 +1,67 @@
 // Small reusable presentational components shared across views.
 import { ragColor } from '../lib/format.js';
+import { C } from '../lib/config.js';
+
+// LEC × Week delivery heatmap (#schools per cell). Shared by National + Regional.
+// `matrix` = { lecN: { 'Wk n': count } } (see metrics.buildLecWeekMatrix).
+export function LecWeekHeatmap({ matrix, lecNums, totalSchools, emptyLabel }) {
+  const weeks = [...new Set(lecNums.flatMap((n) => Object.keys(matrix[`lec${n}`] || {})))].sort(
+    (a, b) => (parseInt(a.replace(/\D/g, ''), 10) || 0) - (parseInt(b.replace(/\D/g, ''), 10) || 0),
+  );
+  const allVals = lecNums.flatMap((n) => Object.values(matrix[`lec${n}`] || {}));
+  const globalMax = Math.max(...allVals, 1);
+  if (weeks.length === 0) {
+    return <Placeholder label={emptyLabel || 'No LEC delivery data yet for this term.'} />;
+  }
+  return (
+    <div className="table-wrap">
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '.85rem' }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left', padding: '.5rem .75rem', background: '#f8f9fa', fontWeight: 700, color: C.navy }}>LEC</th>
+            {weeks.map((w) => (
+              <th key={w} style={{ minWidth: 56, textAlign: 'center', padding: '.4rem .25rem', fontSize: '.72rem', color: '#555', background: '#f8f9fa' }}>{w}</th>
+            ))}
+            {totalSchools != null ? (
+              <th style={{ minWidth: 70, textAlign: 'center', padding: '.4rem .5rem', background: '#f8f9fa', fontWeight: 700, color: C.navy }}>Total</th>
+            ) : null}
+          </tr>
+        </thead>
+        <tbody>
+          {lecNums.map((n) => {
+            const lecData = matrix[`lec${n}`] || {};
+            const lecTotal = Object.values(lecData).reduce((s, v) => s + v, 0);
+            const pctDel = totalSchools > 0 ? Math.round((lecTotal / totalSchools) * 100) : 0;
+            return (
+              <tr key={n} style={{ borderBottom: '1px solid #e9ecef' }}>
+                <th style={{ textAlign: 'left', padding: '.45rem .75rem', fontWeight: 700, color: C.navy, background: '#fafbff' }}>LEC {n}</th>
+                {weeks.map((w) => {
+                  const count = lecData[w] || 0;
+                  const intensity = count ? Math.max(0.12, (count / globalMax) * 0.85 + 0.1) : 0;
+                  const bg = count ? `rgba(13,71,161,${intensity.toFixed(2)})` : '#f8f9fa';
+                  const fg = count / globalMax > 0.55 ? '#fff' : '#0d47a1';
+                  return (
+                    <td key={w} style={{ padding: 3 }}>
+                      <div style={{ background: bg, borderRadius: 5, minHeight: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <span style={{ fontWeight: 700, fontSize: '.85rem', color: fg }}>{count > 0 ? count : ''}</span>
+                      </div>
+                    </td>
+                  );
+                })}
+                {totalSchools != null ? (
+                  <td style={{ padding: '.45rem .5rem', textAlign: 'center' }}>
+                    <div style={{ fontWeight: 700, color: pctDel >= 80 ? C.green : pctDel >= 50 ? C.blue : '#aaa' }}>{lecTotal > 0 ? lecTotal : '—'}</div>
+                    <div style={{ fontSize: '.7rem', color: '#888' }}>{lecTotal > 0 ? `${pctDel}%` : ''}</div>
+                  </td>
+                ) : null}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export function Section({ title, subtitle, children, id }) {
   return (

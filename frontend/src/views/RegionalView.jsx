@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
-import { avgScholarsPerLec, getReportTimelinessSummary, sum } from '../lib/metrics.js';
-import { formatPercentage, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel } from '../lib/format.js';
-import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
+import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeRegionalIssues, sum } from '../lib/metrics.js';
+import { formatPercentage, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
+import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap } from '../components/ui.jsx';
 import { TimelinessBar, TimelinessLegend } from './NationalView.jsx';
 
 const N = (v) => Number(v) || 0;
+const rag = (pct) => (pct >= 80 ? C.green : pct >= 60 ? C.yellow : C.red);
 
 function ScoreCards({ summaryData, data, year, term }) {
   const lecNums = getLECsForTerm(year, term);
@@ -200,12 +201,216 @@ function ReportTimeliness({ data }) {
   );
 }
 
-export default function RegionalView({ summaryData, year, term, region, onSelectCU }) {
+// ── Issue Summary (legacy renderRegionalIssueSummary) ────────────────────────
+function IssueSummary({ data, summaryData, year, term, onSelectCU }) {
+  const { issues, bottom5 } = useMemo(() => computeRegionalIssues(data, summaryData, year, term), [data, summaryData, year, term]);
+  const sevBg = { high: '#f8d7da', medium: '#fff3cd' };
+  const sevBorder = { high: C.red, medium: C.yellow };
+  return (
+    <>
+      <Section title={`🚨 Regional Issues${issues.length ? ` (${issues.length})` : ''}`} subtitle="CUs requiring immediate attention">
+        {issues.length === 0 ? (
+          <div style={{ padding: '1.25rem', textAlign: 'center', color: C.green }}>✅ No flagged issues in this region.</div>
+        ) : (
+          <div className="table-wrap">
+            <table className="breakdown-table">
+              <thead><tr><th>CU</th><th>FOA</th><th>Issue</th><th>Detail</th></tr></thead>
+              <tbody>
+                {issues.map((i, idx) => (
+                  <tr key={`${i.cu}-${i.type}-${idx}`} className="clickable" onClick={() => onSelectCU(i.cu)}>
+                    <td className="item-name">{i.cu}</td>
+                    <td>{i.foa}</td>
+                    <td><span style={{ background: sevBg[i.severity], padding: '.2rem .5rem', borderRadius: 4, borderLeft: `3px solid ${sevBorder[i.severity]}`, fontWeight: 600 }}>{i.type}</span></td>
+                    <td>{i.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+      <Section title="📊 Bottom 5 CUs — LEC Delivery" subtitle="Lowest LEC delivery rate in this region">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead><tr><th>CU</th><th>FOA</th><th className="center">Schools</th><th className="center">LECs Delivered</th><th className="center">Delivery %</th><th style={{ minWidth: 140 }}>Progress</th></tr></thead>
+            <tbody>
+              {bottom5.map((c) => (
+                <tr key={c.cu} className="clickable" onClick={() => onSelectCU(c.cu)}>
+                  <td className="item-name">{c.cu}</td>
+                  <td>{c.foa}</td>
+                  <td className="center">{c.n}</td>
+                  <td className="center">{c.del}/{c.lecsExp}</td>
+                  <td className="center" style={{ fontWeight: 700, color: ragColor(c.pct) }}>{c.pct}%</td>
+                  <td style={{ minWidth: 140 }}><ProgressCell pct={c.pct} minWidth={140} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    </>
+  );
+}
+
+// ── Activity Completion & Participation (legacy renderRegionalActivityCompletion) ─
+function ActivityCompletion({ data, year, term }) {
+  const lecNums = getLECsForTerm(year, term);
+  const totalSchools = sum(data, (d) => N(d.total_target_schools));
+
+  const lecRows = lecNums.map((n) => {
+    const schoolsWith = sum(data, (d) => N(d[`schools_with_lec${n}`]));
+    const scholars = sum(data, (d) => N(d[`lec${n}_scholars`]));
+    const nonScholars = sum(data, (d) => N(d[`lec${n}_non_scholars`]));
+    const pct = totalSchools > 0 ? Math.round((schoolsWith / totalSchools) * 100) : 0;
+    return { label: `LEC ${n}`, schoolsWith, scholars, nonScholars, pct, avg: schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—' };
+  });
+  const lecDeliveries = lecRows.reduce((s, r) => s + r.schoolsWith, 0);
+  const lecScholars = lecRows.reduce((s, r) => s + r.scholars, 0);
+  const lecNon = lecRows.reduce((s, r) => s + r.nonScholars, 0);
+  const lecsExp = totalSchools * lecNums.length;
+  const lecPct = lecsExp > 0 ? Math.round((lecDeliveries / lecsExp) * 100) : 0;
+
+  const gmSessions = term === 'term2'
+    ? [{ label: 'GM 2', field: 'schools_with_gm2', schl: 'gm2_total_scholars' }, { label: 'GM 3', field: 'schools_with_gm3', schl: 'gm3_total_scholars' }]
+    : [{ label: 'GM 1', field: 'schools_with_gm1', schl: 'gm1_total_scholars' }];
+  const cdField = term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
+  const withCD = sum(data, (d) => N(d[cdField]));
+  const cdScholars = term === 'term2' ? sum(data, (d) => N(d.sd_total_scholars)) : sum(data, (d) => N(d.cd_scholar_attendance));
+  const cdNon = term === 'term2' ? 0 : sum(data, (d) => N(d.cd_non_scholar_attendance));
+  const pbSchools = sum(data, (d) => N(d.schools_completed_m1));
+  const pbPct = totalSchools > 0 ? Math.round((pbSchools / totalSchools) * 100) : 0;
+
+  const Row = ({ label, schoolsWith, pct, scholars, nonScholars, avg, denom, denomLabel, bold }) => (
+    <tr style={bold ? { fontWeight: 700, background: '#f8f9fa', borderTop: '2px solid #dee2e6' } : undefined}>
+      <td style={{ padding: '.55rem .75rem', fontWeight: bold ? 700 : 500, color: C.navy }}>{label}</td>
+      <td className="center"><strong style={{ color: rag(pct) }}>{num(schoolsWith)}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{num(denom != null ? denom : totalSchools)}{denomLabel || ''}</span></td>
+      <td style={{ minWidth: 140 }}><ProgressCell pct={pct} minWidth={140} /></td>
+      <td className="center" style={{ fontWeight: 600 }}>{scholars > 0 ? num(scholars) : '—'}</td>
+      <td className="center" style={{ color: '#666' }}>{nonScholars > 0 ? num(nonScholars) : '—'}</td>
+      <td className="center" style={{ fontWeight: 600 }}>{avg}</td>
+    </tr>
+  );
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>Activity</th>
+            <th className="center">Schools Delivered</th>
+            <th>Completion Rate</th>
+            <th className="center">Scholars</th>
+            <th className="center">Non-Scholars</th>
+            <th className="center">Avg Scholars/School</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lecRows.map((r) => <Row key={r.label} label={r.label} schoolsWith={r.schoolsWith} pct={r.pct} scholars={r.scholars} nonScholars={r.nonScholars} avg={r.avg} />)}
+          <Row label={`Skills Labs (${term === 'all' ? 'All' : term.replace('term', 'T')} Total)`} schoolsWith={lecDeliveries} pct={lecPct} scholars={lecScholars} nonScholars={lecNon} avg={lecDeliveries > 0 ? (lecScholars / lecDeliveries).toFixed(1) : '—'} denom={lecsExp} denomLabel=" sessions" bold />
+          {gmSessions.map((gs) => {
+            const cnt = sum(data, (d) => N(d[gs.field]));
+            const sch = sum(data, (d) => N(d[gs.schl]));
+            const pct = totalSchools > 0 ? Math.round((cnt / totalSchools) * 100) : 0;
+            return <Row key={gs.label} label={gs.label} schoolsWith={cnt} pct={pct} scholars={sch} nonScholars={0} avg={cnt > 0 ? (sch / cnt).toFixed(1) : '—'} />;
+          })}
+          {withCD > 0 ? <Row label={getNonLECActivityLabel(term)} schoolsWith={withCD} pct={totalSchools > 0 ? Math.round((withCD / totalSchools) * 100) : 0} scholars={cdScholars} nonScholars={cdNon} avg={withCD > 0 ? (cdScholars / withCD).toFixed(1) : '—'} /> : null}
+          <Row label="PB Milestone (Passbook)" schoolsWith={pbSchools} pct={pbPct} scholars={0} nonScholars={0} avg="—" />
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Club Milestones & BMP by CU (per-CU, legacy §2.13) ───────────────────────
+function ClubMilestonesByCU({ data, term }) {
+  const all = [
+    { key: 'schools_with_club_meeting_1', label: 'CM 1', terms: ['term1', 'all'] },
+    { key: 'schools_with_club_meeting_2', label: 'CM 2', terms: ['term1', 'all'] },
+    { key: 'schools_with_club_meeting_3', label: 'CM 3', terms: ['term2', 'all'] },
+    { key: 'schools_with_club_meeting_4', label: 'CM 4', terms: ['term2', 'all'] },
+    { key: 'schools_with_bmp', label: 'BMP', terms: ['term2', 'all'] },
+  ];
+  const active = all.filter((m) => m.terms.includes(term));
+  if (active.length === 0) return <Placeholder label="No club milestones for the selected term." />;
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr><th>CU</th><th className="center">Schools</th>{active.map((m) => (<th key={m.key} className="center">{m.label}</th>))}</tr>
+        </thead>
+        <tbody>
+          {data.map((cu) => {
+            const n = N(cu.total_target_schools);
+            return (
+              <tr key={cu.cu}>
+                <td className="item-name">{cu.cu}</td>
+                <td className="center">{n}</td>
+                {active.map((m) => {
+                  const cnt = N(cu[m.key]);
+                  const pct = n > 0 ? Math.round((cnt / n) * 100) : 0;
+                  return <td key={m.key} className="center" style={{ fontWeight: 600, color: cnt > 0 ? ragColor(pct) : '#ccc' }}>{cnt > 0 ? `${cnt}/${n} (${pct}%)` : '—'}</td>;
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Skills Day gender table by CU (legacy §2.11; T2/All only) ─────────────────
+function SkillsDayByCU({ data }) {
+  const rows = data.filter((d) => N(d.schools_with_skills_day) > 0 || N(d.sd_total_scholars) > 0);
+  if (rows.length === 0) return <Placeholder label="No Skills Day data for this region yet." />;
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr><th>CU</th><th className="center">Completion</th><th className="center">Scholars</th><th className="center" style={{ color: C.blue }}>Male</th><th className="center" style={{ color: C.red }}>Female</th><th className="center">Non-Scholars</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((cu) => {
+            const n = N(cu.total_target_schools);
+            const withSD = N(cu.schools_with_skills_day);
+            const pct = n > 0 ? Math.round((withSD / n) * 100) : 0;
+            const sch = N(cu.sd_total_scholars);
+            const male = N(cu.sd_male_scholars);
+            const female = N(cu.sd_female_scholars);
+            return (
+              <tr key={cu.cu}>
+                <td className="item-name">{cu.cu}</td>
+                <td className="center" style={{ fontWeight: 700, color: ragColor(pct) }}>{withSD}/{n} ({pct}%)</td>
+                <td className="center">{num(sch)}</td>
+                <td className="center" style={{ color: C.blue }}>{male > 0 ? `${num(male)} (${sch > 0 ? Math.round((male / sch) * 100) : 0}%)` : '—'}</td>
+                <td className="center" style={{ color: C.red }}>{female > 0 ? `${num(female)} (${sch > 0 ? Math.round((female / sch) * 100) : 0}%)` : '—'}</td>
+                <td className="center" style={{ color: '#888' }}>{num(N(cu.sd_total_non_scholars))}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export default function RegionalView({ summaryData, schoolData, year, term, region, onSelectCU }) {
   const data = useMemo(() => {
     let rows = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
     if (region) rows = rows.filter((d) => String(d.region || '').toLowerCase() === String(region).toLowerCase());
     return rows;
   }, [summaryData, year, term, region]);
+
+  // Region-scoped school rows for the Skills Lab heatmap.
+  const regionSchoolData = useMemo(
+    () => (schoolData || []).filter((d) => !region || String(d.region || '').toLowerCase() === String(region).toLowerCase()),
+    [schoolData, region],
+  );
+  const heatTerm = term === 'all' ? 'term1' : term;
+  const matrix = useMemo(() => buildLecWeekMatrix(regionSchoolData, year, heatTerm), [regionSchoolData, year, heatTerm]);
+  const heatLecs = getLECsForTerm(year, heatTerm);
+  const totalSchools = useMemo(() => sum(data, (d) => N(d.total_target_schools)), [data]);
+  const showSkillsDay = term === 'term2' || term === 'all';
 
   if (!region) return <Placeholder label="Select a region from the dropdown above to view its performance." />;
   if (data.length === 0) return <Placeholder label="No data for the selected region / term." />;
@@ -213,9 +418,24 @@ export default function RegionalView({ summaryData, year, term, region, onSelect
   return (
     <div>
       <ScoreCards summaryData={summaryData} data={data} year={year} term={term} />
+      <IssueSummary data={data} summaryData={summaryData} year={year} term={term} onSelectCU={onSelectCU} />
       <Section title="📊 CU Performance Breakdown" subtitle="Recruitment, LECs, Activities, PB Quality, Observations by CU">
         <CUBreakdown summaryData={summaryData} data={data} year={year} term={term} onSelectCU={onSelectCU} />
       </Section>
+      <Section title="✅ Activity Completion & Participation" subtitle="Delivery and participation across the region">
+        <ActivityCompletion data={data} year={year} term={term} />
+      </Section>
+      <Section title="📅 Skills Lab Activity Heatmap" subtitle="LEC × Week delivery timeline (#schools)">
+        <LecWeekHeatmap matrix={matrix} lecNums={heatLecs} totalSchools={totalSchools} />
+      </Section>
+      <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by CU">
+        <ClubMilestonesByCU data={data} term={term} />
+      </Section>
+      {showSkillsDay ? (
+        <Section title="🔬 Skills Day — Gender Breakdown" subtitle="Skills Day attendance disaggregated by gender, by CU">
+          <SkillsDayByCU data={data} />
+        </Section>
+      ) : null}
       <Section title="👁️ Mentor Observation Coverage by CU" subtitle="Observation status per CU">
         <ObservationByCU data={data} />
       </Section>

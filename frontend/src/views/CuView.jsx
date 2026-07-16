@@ -1,10 +1,13 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
-import { sum } from '../lib/metrics.js';
+import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary } from '../lib/metrics.js';
 import { formatPercentage, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
+import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
+import { TimelinessBar, TimelinessLegend } from './NationalView.jsx';
 
 const N = (v) => Number(v) || 0;
+const WEEKS = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6', 'Week 7', 'Week 8'];
 
 function dedupSchools(rows) {
   const map = new Map();
@@ -369,6 +372,398 @@ function CuMentorPerformance({ schoolData, data, year, term, cu }) {
   );
 }
 
+// ── Priority Alerts + issue tracker (legacy renderCUPriorityAlerts) ──────────
+const STATUS_META = {
+  open: { label: '! Open', bg: '#fff3cd', fg: '#7a5b1f' },
+  'in-progress': { label: '⟳ In Progress', bg: '#e7f3ff', fg: '#084298' },
+  resolved: { label: '✓ Resolved', bg: '#d4edda', fg: '#155724' },
+};
+const PRIORITY_ICON = { critical: '🔴', high: '🟠', medium: '🟡' };
+const PRIORITY_COLOR = { critical: C.red, high: '#e67e22', medium: C.yellow };
+
+function AlertResolution({ alert, issueKey, onSaved }) {
+  const iss = getIssueStatus(issueKey);
+  const [status, setStatus] = useState(iss.status === 'resolved' ? 'resolved' : iss.status === 'in-progress' ? 'in-progress' : 'in-progress');
+  const [notes, setNotes] = useState('');
+  const timeline = [...(iss.timeline || [])].reverse();
+
+  const save = () => {
+    updateIssueStatus(issueKey, status, notes.trim() || `Marked ${status}`, 'Dashboard User');
+    setNotes('');
+    onSaved();
+  };
+
+  return (
+    <div style={{ marginTop: '.75rem', paddingTop: '.75rem', borderTop: '1px dashed #dee2e6' }}>
+      <div style={{ fontSize: '.85rem', color: '#444', marginBottom: '.5rem' }}>{alert.description}</div>
+      <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', marginBottom: '.6rem' }}>
+        {alert.metrics.map((m, i) => (
+          <div key={i} style={{ background: '#f8f9fa', borderRadius: 6, padding: '.4rem .7rem', textAlign: 'center' }}>
+            <div style={{ fontWeight: 800, color: C.navy }}>{m.value}</div>
+            <div style={{ fontSize: '.7rem', color: '#888' }}>{m.label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.35rem', marginBottom: '.6rem' }}>
+        {alert.schools.slice(0, 12).map((s, i) => (
+          <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .55rem', fontSize: '.75rem' }}>{s.name}</span>
+        ))}
+        {alert.schools.length > 12 ? <span style={{ fontSize: '.75rem', color: '#888' }}>+{alert.schools.length - 12} more</span> : null}
+      </div>
+      {timeline.length > 0 ? (
+        <div style={{ marginBottom: '.6rem' }}>
+          <div style={{ fontSize: '.75rem', fontWeight: 700, color: C.navy, marginBottom: '.35rem' }}>📅 Resolution Timeline</div>
+          {timeline.map((t, i) => (
+            <div key={i} style={{ fontSize: '.78rem', color: '#555', borderLeft: `3px solid ${STATUS_META[t.status]?.fg || '#ccc'}`, paddingLeft: '.5rem', marginBottom: '.3rem' }}>
+              <strong>{(t.status || '').replace('-', ' ').toUpperCase()}</strong> · {new Date(t.timestamp).toLocaleString()}<br />
+              {t.notes} <span style={{ color: '#999' }}>— {t.user}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #ccc' }}>
+          <option value="open">Open</option>
+          <option value="in-progress">In Progress</option>
+          <option value="resolved">Resolved</option>
+        </select>
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Add a resolution note…" style={{ flex: 1, minWidth: 180, padding: '.35rem .6rem', borderRadius: 6, border: '1px solid #ccc' }} />
+        <button type="button" onClick={save} style={{ padding: '.4rem .9rem', borderRadius: 6, border: 'none', background: C.navy, color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+function PriorityAlerts({ data, year, term, cu }) {
+  const { alerts, bottom5, denom } = useMemo(() => computeCuPriorityAlerts(data, year, term), [data, year, term]);
+  const [openIdx, setOpenIdx] = useState(null);
+  const [, setTick] = useState(0);
+
+  return (
+    <>
+      <Section title="🚨 Priority Actions for FOA" subtitle={`${alerts.length} alert${alerts.length !== 1 ? 's' : ''} · click to update resolution status`}>
+        {alerts.length === 0 ? (
+          <div style={{ padding: '2rem', textAlign: 'center', background: '#f0fdf4', borderRadius: 8 }}>
+            <div style={{ fontSize: '2rem' }}>✅</div>
+            <h3 style={{ color: C.green, margin: '.25rem 0' }}>No Critical Issues</h3>
+            <p style={{ color: '#555', fontSize: '.9rem' }}>All schools and mentors are on track.</p>
+          </div>
+        ) : (
+          alerts.map((alert, i) => {
+            const issueKey = getIssueKey(cu, alert.category, alert.title);
+            const st = getIssueStatus(issueKey).status || 'open';
+            const meta = STATUS_META[st] || STATUS_META.open;
+            return (
+              <div key={issueKey} style={{ border: '1px solid #e9ecef', borderLeft: `4px solid ${PRIORITY_COLOR[alert.priority]}`, borderRadius: 8, padding: '.9rem 1.1rem', marginBottom: '.85rem', opacity: st === 'resolved' ? 0.75 : 1 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '.5rem', cursor: 'pointer' }} onClick={() => setOpenIdx(openIdx === i ? null : i)}>
+                  <div>
+                    <div style={{ fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.5px', color: '#888', fontWeight: 700 }}>{PRIORITY_ICON[alert.priority]} {alert.category}</div>
+                    <div style={{ fontWeight: 700, color: C.navy }}>{alert.title}</div>
+                  </div>
+                  <span style={{ background: meta.bg, color: meta.fg, padding: '.2rem .6rem', borderRadius: 999, fontSize: '.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>{meta.label}</span>
+                </div>
+                {openIdx === i ? <AlertResolution alert={alert} issueKey={issueKey} onSaved={() => setTick((t) => t + 1)} /> : null}
+              </div>
+            );
+          })
+        )}
+      </Section>
+
+      <Section title="📊 Bottom 5 Schools — LEC Delivery" subtitle="Schools with fewest LECs delivered this term">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead><tr><th>School</th><th>Mentor</th><th className="center">LECs Done</th><th className="center">of {denom} due</th><th style={{ minWidth: 140 }}>Progress</th></tr></thead>
+            <tbody>
+              {bottom5.map(({ s, cnt, pct }) => (
+                <tr key={s.school_id}>
+                  <td className="item-name">{s.school_name}</td>
+                  <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
+                  <td className="center" style={{ fontWeight: 700, color: ragColor(pct) }}>{cnt}</td>
+                  <td className="center" style={{ fontWeight: 700, color: ragColor(pct) }}>{pct}%</td>
+                  <td style={{ minWidth: 140 }}><ProgressCell pct={pct} minWidth={140} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+    </>
+  );
+}
+
+// ── School Skills Lab Sequencing grid (legacy renderCUSequencing) ────────────
+function SchoolSequencing({ data, year, term }) {
+  const lecNums = getLECsForTerm(year, term);
+  const schools = dedupSchools(data);
+  const clusterIds = useMemo(() => new Set(computeLecClusters(data, year, term).map((c) => String(c.schoolId))), [data, year, term]);
+  return (
+    <div className="table-wrap">
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.85rem' }}>
+        <thead>
+          <tr>
+            <th style={{ textAlign: 'left', padding: '.5rem .6rem', background: '#f8f9fa', fontWeight: 700, color: C.navy }}>School</th>
+            {WEEKS.map((w) => (<th key={w} style={{ textAlign: 'center', padding: '.5rem', fontSize: '.75rem', background: '#f8f9fa', color: '#555' }}>{w}</th>))}
+          </tr>
+        </thead>
+        <tbody>
+          {schools.map((s) => (
+            <tr key={s.school_id} style={{ borderBottom: '1px solid #e9ecef' }}>
+              <th style={{ textAlign: 'left', padding: '.4rem .6rem', fontWeight: 600, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.school_name}>
+                {clusterIds.has(String(s.school_id)) ? '⚡ ' : ''}{s.school_name}
+              </th>
+              {WEEKS.map((w) => {
+                const count = lecNums.filter((ln) => N(s[`schools_with_lec${ln}`]) && s[`lec${ln}_max_week`] === w).length;
+                const bg = count === 0 ? '#f8f9fa' : count >= 2 ? 'rgba(201,85,74,.85)' : 'rgba(13,71,161,.55)';
+                const fg = count === 0 ? '#ccc' : '#fff';
+                return (
+                  <td key={w} style={{ padding: 3 }}>
+                    <div style={{ background: bg, borderRadius: 5, minHeight: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', color: fg, fontWeight: 700 }}>{count > 0 ? count : ''}</div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Schools Behind Schedule (legacy renderCUSchoolsBehind, v6.5 term-aware) ──
+function SchoolsBehind({ schoolData, data, year, term, cu }) {
+  const lecNums = getLECsForTerm(year, term);
+  const actField = term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
+  const actLabel = term === 'term2' ? 'Skills Day' : 'Comm Day';
+  const gmFields = term === 'term1' ? [{ key: 'schools_with_gm1', label: 'GM 1' }]
+    : term === 'term2' ? [{ key: 'schools_with_gm2', label: 'GM 2' }, { key: 'schools_with_gm3', label: 'GM 3' }]
+      : [{ key: 'schools_with_gm1', label: 'GM 1' }, { key: 'schools_with_gm2', label: 'GM 2' }, { key: 'schools_with_gm3', label: 'GM 3' }];
+  const cmFields = term === 'term1' ? [{ key: 'schools_with_club_meeting_1', label: 'CM 1' }, { key: 'schools_with_club_meeting_2', label: 'CM 2' }]
+    : term === 'term2' ? [{ key: 'schools_with_club_meeting_3', label: 'CM 3' }, { key: 'schools_with_club_meeting_4', label: 'CM 4' }]
+      : [{ key: 'schools_with_club_meeting_1', label: 'CM 1' }, { key: 'schools_with_club_meeting_2', label: 'CM 2' }, { key: 'schools_with_club_meeting_3', label: 'CM 3' }, { key: 'schools_with_club_meeting_4', label: 'CM 4' }];
+
+  const schools = dedupSchools(data);
+  const cuName = String(cu || '').trim().toLowerCase();
+  const t1Map = new Map();
+  schoolData.filter((d) => d.term === 'term1' && String(d.year) == year && String(d.cu || '').trim().toLowerCase() === cuName)
+    .forEach((r) => { if (!t1Map.has(String(r.school_id))) t1Map.set(String(r.school_id), r); });
+
+  const behind = schools.filter((s) => {
+    const del = lecNums.filter((ln) => N(s[`schools_with_lec${ln}`])).length;
+    return del < lecNums.length || !N(s[actField]) || gmFields.some((g) => !N(s[g.key])) || cmFields.some((c) => !N(s[c.key]));
+  });
+  if (behind.length === 0) return <div style={{ textAlign: 'center', padding: '2rem', color: C.green }}>✅ All schools are on track!</div>;
+
+  const chk = (v) => <span style={{ color: v ? C.green : C.red }}>{v ? '✓' : '✗'}</span>;
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>School</th><th>Mentor</th><th className="center">Recruited (T1)</th><th className="center">LECs (x/{lecNums.length})</th>
+            {gmFields.map((g) => (<th key={g.key} className="center">{g.label}</th>))}
+            <th className="center">{actLabel}</th>
+            {cmFields.map((c) => (<th key={c.key} className="center">{c.label}</th>))}
+            <th>Action Needed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {behind.map((s) => {
+            const del = lecNums.filter((ln) => N(s[`schools_with_lec${ln}`])).length;
+            const t1 = t1Map.get(String(s.school_id));
+            const rec = t1 ? N(t1.total_scholars_recruited) : N(s.total_scholars_recruited);
+            const actions = [];
+            if (del < lecNums.length) actions.push(`${lecNums.length - del} LEC Pending`);
+            gmFields.forEach((g) => { if (!N(s[g.key])) actions.push(`${g.label} pending`); });
+            if (!N(s[actField])) actions.push(`${actLabel} pending`);
+            cmFields.forEach((c) => { if (!N(s[c.key])) actions.push(`${c.label} pending`); });
+            return (
+              <tr key={s.school_id}>
+                <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
+                <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
+                <td className="center" style={{ fontWeight: 700 }}>{rec > 0 ? rec : '—'}</td>
+                <td className="center" style={{ fontWeight: 700, color: del / lecNums.length >= 0.8 ? C.green : C.red }}>{del}/{lecNums.length}</td>
+                {gmFields.map((g) => (<td key={g.key} className="center">{chk(N(s[g.key]))}</td>))}
+                <td className="center">{chk(N(s[actField]))}</td>
+                {cmFields.map((c) => (<td key={c.key} className="center">{chk(N(s[c.key]))}</td>))}
+                <td style={{ color: C.red, fontWeight: 600 }}>{actions.join(', ')}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Milestone Reporting (legacy renderCUMilestoneReporting) ──────────────────
+function MilestoneReporting({ data, term }) {
+  const mDefs = term === 'term2'
+    ? [{ label: 'M3', comp: 'schools_completed_m3' }, { label: 'M4', comp: 'schools_completed_m4' }]
+    : term === 'all'
+      ? [{ label: 'M1', comp: 'schools_completed_m1' }, { label: 'M2', comp: 'schools_completed_m2' }, { label: 'M3', comp: 'schools_completed_m3' }, { label: 'M4', comp: 'schools_completed_m4' }]
+      : [{ label: 'M1', comp: 'schools_completed_m1' }, { label: 'M2', comp: 'schools_completed_m2' }];
+  const schools = dedupSchools(data);
+  const n = schools.length;
+  const totalExpected = n * mDefs.length;
+  let totalReported = 0;
+  const chk = (v) => <span style={{ color: v ? C.green : C.red }}>{v ? '✓' : '✗'}</span>;
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>School</th><th>Mentor</th>
+            {mDefs.map((m) => (<th key={m.comp} className="center">{m.label}</th>))}
+            <th className="center">Missing</th><th style={{ minWidth: 130 }}>Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {schools.map((s) => {
+            const reported = mDefs.filter((m) => N(s[m.comp])).length;
+            const missing = mDefs.length - reported;
+            const rate = formatPercentage(reported, mDefs.length);
+            totalReported += reported;
+            return (
+              <tr key={s.school_id}>
+                <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
+                <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
+                {mDefs.map((m) => (<td key={m.comp} className="center">{chk(N(s[m.comp]))}</td>))}
+                <td className="center" style={{ fontWeight: 700, color: missing === 0 ? C.green : C.red }}>{missing === 0 ? '✅ 0' : `🔴 ${missing}`}</td>
+                <td style={{ minWidth: 130 }}><ProgressCell pct={rate} minWidth={130} /></td>
+              </tr>
+            );
+          })}
+          <tr style={{ background: '#f0f4ff', fontWeight: 800, borderTop: `2px solid ${C.navy}` }}>
+            <td colSpan={2}>CU TOTAL</td>
+            {mDefs.map((m) => (<td key={m.comp} />))}
+            <td className="center">{totalExpected - totalReported}</td>
+            <td style={{ minWidth: 130 }}><ProgressCell pct={formatPercentage(totalReported, totalExpected)} minWidth={130} /></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Club Milestones & BMP per school (✓/✗) ───────────────────────────────────
+function ClubMilestonesBySchool({ data, term }) {
+  const all = [
+    { key: 'schools_with_club_meeting_1', label: 'CM 1', terms: ['term1', 'all'] },
+    { key: 'schools_with_club_meeting_2', label: 'CM 2', terms: ['term1', 'all'] },
+    { key: 'schools_with_club_meeting_3', label: 'CM 3', terms: ['term2', 'all'] },
+    { key: 'schools_with_club_meeting_4', label: 'CM 4', terms: ['term2', 'all'] },
+    { key: 'schools_with_bmp', label: 'BMP', terms: ['term2', 'all'] },
+  ];
+  const active = all.filter((m) => m.terms.includes(term));
+  if (active.length === 0) return <Placeholder label="No club milestones for the selected term." />;
+  const schools = dedupSchools(data);
+  const chk = (v) => <span style={{ color: v ? C.green : C.red }}>{v ? '✓' : '✗'}</span>;
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr><th>School</th><th>Mentor</th>{active.map((m) => (<th key={m.key} className="center">{m.label}</th>))}</tr>
+        </thead>
+        <tbody>
+          {schools.map((s) => (
+            <tr key={s.school_id}>
+              <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
+              <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
+              {active.map((m) => (<td key={m.key} className="center">{chk(N(s[m.key]))}</td>))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Skills Day per school (T2/All) ───────────────────────────────────────────
+function SkillsDayBySchool({ data }) {
+  const schools = dedupSchools(data).filter((s) => N(s.schools_with_skills_day) > 0 || N(s.sd_total_scholars) > 0);
+  if (schools.length === 0) return <Placeholder label="No Skills Day data for this CU yet." />;
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr><th>School</th><th>Mentor</th><th className="center">Delivered</th><th className="center">Scholars</th><th className="center" style={{ color: C.blue }}>Male</th><th className="center" style={{ color: C.red }}>Female</th><th className="center">Non-Scholars</th></tr>
+        </thead>
+        <tbody>
+          {schools.map((s) => {
+            const sch = N(s.sd_total_scholars);
+            const male = N(s.sd_male_scholars);
+            const female = N(s.sd_female_scholars);
+            return (
+              <tr key={s.school_id}>
+                <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
+                <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
+                <td className="center"><span style={{ color: N(s.schools_with_skills_day) ? C.green : C.red }}>{N(s.schools_with_skills_day) ? '✓' : '✗'}</span></td>
+                <td className="center">{num(sch)}</td>
+                <td className="center" style={{ color: C.blue }}>{male > 0 ? num(male) : '—'}</td>
+                <td className="center" style={{ color: C.red }}>{female > 0 ? num(female) : '—'}</td>
+                <td className="center" style={{ color: '#888' }}>{num(N(s.sd_total_non_scholars))}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Report Timeliness by school + CU total (legacy §2.8) ─────────────────────
+function CuReportTimeliness({ data }) {
+  const schools = dedupSchools(data);
+  const cuTotal = getReportTimelinessSummary(schools);
+  if (cuTotal.total === 0) return <Placeholder label="No report data yet." />;
+  return (
+    <>
+      <TimelinessLegend />
+      <div className="table-wrap">
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.875rem' }}>
+          <thead>
+            <tr style={{ background: C.navy, color: '#fff' }}>
+              {['School', 'Total', 'Early', 'On Schedule', '1 Wk Delay', 'Late', 'Unscheduled', 'Breakdown'].map((h, i) => (
+                <th key={h} style={{ padding: '.6rem .75rem', textAlign: i === 0 || i === 7 ? 'left' : 'center' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {schools.map((s) => {
+              const cs = getReportTimelinessSummary([s]);
+              if (cs.total === 0) return null;
+              return (
+                <tr key={s.school_id} style={{ borderBottom: '1px solid #e9ecef' }}>
+                  <td style={{ padding: '.5rem .75rem', fontWeight: 600 }}>{s.school_name || '—'}</td>
+                  <td style={{ textAlign: 'center' }}>{cs.total}</td>
+                  <td style={{ textAlign: 'center', color: '#198754', fontWeight: 700 }}>{cs.early} ({cs.earlyPct}%)</td>
+                  <td style={{ textAlign: 'center', color: '#20c997', fontWeight: 700 }}>{cs.onTime} ({cs.onTimePct}%)</td>
+                  <td style={{ textAlign: 'center', color: '#ffc107', fontWeight: 700 }}>{cs.week1} ({cs.week1Pct}%)</td>
+                  <td style={{ textAlign: 'center', color: '#dc3545', fontWeight: 700 }}>{cs.late} ({cs.latePct}%)</td>
+                  <td style={{ textAlign: 'center', color: '#adb5bd' }}>{cs.unsched}</td>
+                  <td style={{ padding: '.5rem .75rem', minWidth: 120 }}><TimelinessBar s={cs} /></td>
+                </tr>
+              );
+            })}
+            <tr style={{ background: '#f0f4ff', fontWeight: 800, borderTop: `2px solid ${C.navy}` }}>
+              <td style={{ padding: '.5rem .75rem' }}>CU TOTAL</td>
+              <td style={{ textAlign: 'center' }}>{cuTotal.total}</td>
+              <td style={{ textAlign: 'center' }}>{cuTotal.early} ({cuTotal.earlyPct}%)</td>
+              <td style={{ textAlign: 'center' }}>{cuTotal.onTime} ({cuTotal.onTimePct}%)</td>
+              <td style={{ textAlign: 'center' }}>{cuTotal.week1} ({cuTotal.week1Pct}%)</td>
+              <td style={{ textAlign: 'center' }}>{cuTotal.late} ({cuTotal.latePct}%)</td>
+              <td style={{ textAlign: 'center' }}>{cuTotal.unsched}</td>
+              <td style={{ padding: '.5rem .75rem', minWidth: 120 }}><TimelinessBar s={cuTotal} /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
 export default function CuView({ schoolData, cuData, year, term, cu, allowedCUs, schoolFilter, mentorFilter, onSelectCU }) {
   // Overview data — schoolData for the year/term scoped to accessible CUs.
   const overviewData = useMemo(() => {
@@ -401,14 +796,37 @@ export default function CuView({ schoolData, cuData, year, term, cu, allowedCUs,
 
   if (cuRows.length === 0) return <Placeholder label="No school data for the selected CU." />;
 
+  const showSkillsDay = term === 'term2' || term === 'all';
+
   return (
     <div>
       <CuScoreCards schoolData={schoolData} data={cuRows} year={year} term={term} cu={cu} />
+      <PriorityAlerts data={cuRows} year={year} term={term} cu={cu} />
       <Section title="✅ Activity Completion & Participation" subtitle="Per-school LEC delivery, milestones and participation">
         <CuActivityCompletion data={cuRows} year={year} term={term} />
       </Section>
       <Section title="👨‍🏫 Mentor Performance" subtitle="Delivery, retention and observations by mentor">
         <CuMentorPerformance schoolData={schoolData} data={cuRows} year={year} term={term} cu={cu} />
+      </Section>
+      <Section title="📅 School Skills Lab Sequencing" subtitle="LECs delivered per school per week (⚡ = 3+ LECs in one week)">
+        <SchoolSequencing data={cuRows} year={year} term={term} />
+      </Section>
+      <Section title="⏰ Schools Behind Schedule" subtitle="Lagging schools with pending activities (term-aware)">
+        <SchoolsBehind schoolData={schoolData} data={cuRows} year={year} term={term} cu={cu} />
+      </Section>
+      <Section title="📋 Milestone Reporting" subtitle="Passbook milestone completion by school">
+        <MilestoneReporting data={cuRows} term={term} />
+      </Section>
+      <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by school">
+        <ClubMilestonesBySchool data={cuRows} term={term} />
+      </Section>
+      {showSkillsDay ? (
+        <Section title="🔬 Skills Day" subtitle="Skills Day delivery and attendance by school">
+          <SkillsDayBySchool data={cuRows} />
+        </Section>
+      ) : null}
+      <Section title="📅 Report Timeliness" subtitle="Report submission schedule by school">
+        <CuReportTimeliness data={cuRows} />
       </Section>
     </div>
   );

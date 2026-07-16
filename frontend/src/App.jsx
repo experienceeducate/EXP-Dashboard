@@ -237,6 +237,7 @@ export default function App() {
         {view === 'regional' ? (
           <RegionalView
             summaryData={summaryData}
+            schoolData={schoolData}
             year={year}
             term={term}
             region={region}
@@ -259,7 +260,7 @@ export default function App() {
       </main>
 
       {drill ? (
-        <DrillPanel drill={drill} summaryData={summaryData} year={year} term={term} onClose={() => setDrill(null)} />
+        <DrillPanel drill={drill} summaryData={summaryData} schoolData={schoolData} year={year} term={term} onClose={() => setDrill(null)} />
       ) : null}
 
       <div className="debug-pill">
