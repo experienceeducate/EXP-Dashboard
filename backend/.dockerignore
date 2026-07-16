@@ -1,0 +1,22 @@
+# NEVER ship service-account keys or any JSON credentials into an image layer.
+*.json
+*.pem
+*.key
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+
+# Tests & dev
+tests/
+requirements-dev.txt

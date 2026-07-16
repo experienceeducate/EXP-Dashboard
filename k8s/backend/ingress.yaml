@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: exp-dashboard-api
+  namespace: data-ingestion
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+spec:
+  tls:
+    - hosts:
+        - exp-dashboard-api.educateapps.work
+      secretName: exp-dashboard-api-tls
+  rules:
+    - host: exp-dashboard-api.educateapps.work
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: exp-dashboard-server
+                port:
+                  number: 80
