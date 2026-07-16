@@ -1,0 +1,114 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  SERVER_IMAGE: patrickgichini/exp-dashboard-server
+  APP_IMAGE: patrickgichini/exp-dashboard-app
+  K8S_NAMESPACE: data-ingestion
+  API_HOST: https://exp-dashboard-api.educateapps.work
+
+jobs:
+  # ── Decide which images need building ──────────────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            frontend:
+              - 'frontend/**'
+
+  # ── Backend test gate (runs on PRs and pushes) ─────────────────────────────
+  backend-tests:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.14'
+      - name: Install deps
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+      - name: Run pytest
+        working-directory: backend
+        run: python -m pytest
+
+  # ── Build + push + digest-pin (main only) ──────────────────────────────────
+  deploy-backend:
+    needs: [changes, backend-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build & push
+        id: push
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: backend
+          push: true
+          tags: |
+            ${{ env.SERVER_IMAGE }}:latest
+            ${{ env.SERVER_IMAGE }}:${{ github.sha }}
+      - name: Configure kubectl
+        uses: digitalocean/action-doctl@135ac0aa0eed4437d547c6f12c364d3006b42824 # v2.5.1
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: Save kubeconfig
+        run: doctl kubernetes cluster kubeconfig save educate-apps-cluster
+      - name: Digest-pin rollout
+        run: |
+          kubectl set image deployment/exp-dashboard-server \
+            server=${{ env.SERVER_IMAGE }}@${{ steps.push.outputs.digest }} \
+            -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/exp-dashboard-server -n ${{ env.K8S_NAMESPACE }}
+
+  deploy-frontend:
+    needs: changes
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build & push
+        id: push
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: frontend
+          push: true
+          build-args: |
+            VITE_API_URL=${{ env.API_HOST }}
+          tags: |
+            ${{ env.APP_IMAGE }}:latest
+            ${{ env.APP_IMAGE }}:${{ github.sha }}
+      - name: Configure kubectl
+        uses: digitalocean/action-doctl@135ac0aa0eed4437d547c6f12c364d3006b42824 # v2.5.1
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      - name: Save kubeconfig
+        run: doctl kubernetes cluster kubeconfig save educate-apps-cluster
+      - name: Digest-pin rollout
+        run: |
+          kubectl set image deployment/exp-dashboard-app \
+            app=${{ env.APP_IMAGE }}@${{ steps.push.outputs.digest }} \
+            -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/exp-dashboard-app -n ${{ env.K8S_NAMESPACE }}

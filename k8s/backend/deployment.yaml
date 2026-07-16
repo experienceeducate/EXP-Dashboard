@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exp-dashboard-server
+  namespace: data-ingestion
+  labels:
+    app: exp-dashboard-server
+spec:
+  # SINGLE REPLICA — in-memory TTL cache is process-bound. Do not scale past 1
+  # without moving the cache to Redis. See docs/CONTEXT.md.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: exp-dashboard-server
+  template:
+    metadata:
+      labels:
+        app: exp-dashboard-server
+    spec:
+      containers:
+        - name: server
+          image: patrickgichini/exp-dashboard-server:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: exp-dashboard-credentials
+          env:
+            - name: GOOGLE_SERVICE_ACCOUNT_KEY
+              value: /var/secrets/gcp/key.json
+          volumeMounts:
+            - name: gcp-key
+              mountPath: /var/secrets/gcp
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+      volumes:
+        - name: gcp-key
+          secret:
+            secretName: gcp-service-account-key

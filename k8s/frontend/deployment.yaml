@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: exp-dashboard-app
+  namespace: data-ingestion
+  labels:
+    app: exp-dashboard-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: exp-dashboard-app
+  template:
+    metadata:
+      labels:
+        app: exp-dashboard-app
+    spec:
+      containers:
+        - name: app
+          image: patrickgichini/exp-dashboard-app:latest
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10

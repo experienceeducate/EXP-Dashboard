@@ -1,0 +1,18 @@
+# gitleaks config — extends the default ruleset, adds an allowlist for
+# verified false positives. secret-scan.yml hard-fails on any real finding.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Verified false positives"
+paths = [
+  '''backend/\.env\.example''',
+  '''legacy/dashboard-v1\.html''',   # legacy single-file app; public GAS URL only, no secrets
+  '''(^|/)index\.html$''',           # same legacy app under its historical path + the Vite entry
+  '''.*\.md''',
+]
+regexes = [
+  # Placeholder values used in docs/examples.
+  '''change-me.*''',
+  '''your-.*-here''',
+]
