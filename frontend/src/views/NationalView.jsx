@@ -10,6 +10,7 @@ import {
   buildLecWeekMatrix,
   computeNationalInsights,
   computeLecClusters,
+  getLECsDueByToday,
   avgScholarsPerLec,
   sum,
 } from '../lib/metrics.js';
@@ -246,6 +247,29 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const allVals = lecNums.flatMap((n) => Object.values(matrix[`lec${n}`] || {}));
   const globalMax = Math.max(...allVals, 1);
 
+  const heatmapHeader = (() => {
+    let leadLec = null;
+    let leadPct = 0;
+    let trailLec = null;
+    let trailPct = 100;
+    let peakWeek = null;
+    let peakCount = 0;
+    lecNums.forEach((n) => {
+      const lecData = matrix[`lec${n}`] || {};
+      const tot = Object.values(lecData).reduce((s, v) => s + v, 0);
+      const pct = totalSchools > 0 ? Math.round((tot / totalSchools) * 100) : 0;
+      if (pct > leadPct) { leadPct = pct; leadLec = n; }
+      if (tot > 0 && pct < trailPct) { trailPct = pct; trailLec = n; }
+      Object.entries(lecData).forEach(([wk, cnt]) => { if (cnt > peakCount) { peakCount = cnt; peakWeek = wk; } });
+    });
+    const dropStr = leadLec && trailLec && leadLec !== trailLec ? ` — drops to ${trailPct}% at LEC ${trailLec}` : '';
+    const title = leadLec ? `📅 LEC ${leadLec} leads at ${leadPct}%${dropStr}` : '📅 Skills Lab Activity Heatmap';
+    const subtitle = peakWeek
+      ? `${peakCount} schools delivered in ${peakWeek} (busiest week) · click any cell for school-level detail`
+      : 'LEC × Week delivery timeline across all CUs';
+    return { title, subtitle };
+  })();
+
   return (
     <>
       <LecTabInsights data={data} year={year} term={term} onDrill={onDrill} />
@@ -270,115 +294,238 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
             );
           })}
         </div>
+        <RegionalComparisonTable data={data} lecNums={lecNums} term={term} />
       </Section>
 
-      <Section title="📅 Skills Lab Activity Heatmap" subtitle="LEC × Week delivery timeline (#schools)">
+      <Section title={heatmapHeader.title} subtitle={heatmapHeader.subtitle}>
         {weeks.length === 0 ? (
           <Placeholder label="No LEC delivery data yet for this term." />
         ) : (
-          <div className="table-wrap">
-            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '.85rem' }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: 'left', padding: '.5rem .75rem', background: '#f8f9fa', fontWeight: 700, color: C.navy }}>LEC</th>
-                  {weeks.map((w) => (
-                    <th key={w} style={{ minWidth: 56, textAlign: 'center', padding: '.4rem .25rem', fontSize: '.72rem', color: '#555', background: '#f8f9fa' }}>{w}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {lecNums.map((n) => {
-                  const lecData = matrix[`lec${n}`] || {};
-                  return (
-                    <tr key={n} style={{ borderBottom: '1px solid #e9ecef' }}>
-                      <th style={{ textAlign: 'left', padding: '.45rem .75rem', fontWeight: 700, color: C.navy, background: '#fafbff' }}>LEC {n}</th>
-                      {weeks.map((w) => {
-                        const count = lecData[w] || 0;
-                        const intensity = count ? Math.max(0.12, (count / globalMax) * 0.85 + 0.1) : 0;
-                        const bg = count ? `rgba(13,71,161,${intensity.toFixed(2)})` : '#f8f9fa';
-                        const fg = count / globalMax > 0.55 ? '#fff' : '#0d47a1';
-                        return (
-                          <td key={w} style={{ padding: 3 }}>
-                            <div style={{ background: bg, borderRadius: 5, minHeight: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                              <span style={{ fontWeight: 700, fontSize: '.85rem', color: fg }}>{count > 0 ? count : ''}</span>
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <>
+            <div className="table-wrap">
+              <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '.85rem' }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '.5rem .75rem', background: '#f8f9fa', fontWeight: 700, color: C.navy }}>LEC</th>
+                    {weeks.map((w) => (
+                      <th key={w} style={{ minWidth: 56, textAlign: 'center', padding: '.4rem .25rem', fontSize: '.72rem', color: '#555', background: '#f8f9fa' }}>{w}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {lecNums.map((n) => {
+                    const lecData = matrix[`lec${n}`] || {};
+                    return (
+                      <tr key={n} style={{ borderBottom: '1px solid #e9ecef' }}>
+                        <th style={{ textAlign: 'left', padding: '.45rem .75rem', fontWeight: 700, color: C.navy, background: '#fafbff' }}>LEC {n}</th>
+                        {weeks.map((w) => {
+                          const count = lecData[w] || 0;
+                          const intensity = count ? Math.max(0.12, (count / globalMax) * 0.85 + 0.1) : 0;
+                          const bg = count ? `rgba(13,71,161,${intensity.toFixed(2)})` : '#f8f9fa';
+                          const fg = count / globalMax > 0.55 ? '#fff' : '#0d47a1';
+                          return (
+                            <td key={w} style={{ padding: 3 }}>
+                              <div style={{ background: bg, borderRadius: 5, minHeight: 40, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <span style={{ fontWeight: 700, fontSize: '.85rem', color: fg }}>{count > 0 ? count : ''}</span>
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <HeatmapInsights matrix={matrix} lecNums={lecNums} totalSchools={totalSchools} term={term} clusters={clusters} onDrill={onDrill} />
+          </>
         )}
       </Section>
 
-      <LecKeyInsights onDrill={onDrill} clusters={clusters} insights={insights} />
+      <LecKeyInsights onDrill={onDrill} insights={insights} />
     </>
   );
 }
 
-// ── LEC tab · Key Insights & Flags (legacy renderNationalKeyInsights + clustering) ─
-function LecKeyInsights({ onDrill, clusters, insights }) {
+// ── Regional Comparison table (legacy renderNationalActivityCompletion) ──────
+function RegionalComparisonTable({ data, lecNums, term }) {
+  const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
+  if (regions.length === 0) return null;
+  const gmKeys = term === 'term1' ? ['schools_with_gm1']
+    : term === 'term2' ? ['schools_with_gm2', 'schools_with_gm3']
+      : ['schools_with_gm1', 'schools_with_gm2', 'schools_with_gm3'];
+
+  return (
+    <div style={{ marginTop: '1.25rem' }}>
+      <div style={{ fontWeight: 700, color: C.navy, marginBottom: '.5rem', fontSize: '.9rem' }}>📊 Regional Comparison</div>
+      <div className="table-wrap">
+        <table className="breakdown-table">
+          <thead>
+            <tr>
+              <th>Region</th>
+              <th className="center">LEC Delivery</th>
+              <th className="center">{getGMLabel()}</th>
+              {term === 'term2' ? (
+                <>
+                  <th className="center">PB Milestone M3</th>
+                  <th className="center">PB Milestone M4</th>
+                </>
+              ) : (
+                <th className="center">PB Milestone</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {regions.map((region) => {
+              const rd = data.filter((d) => d.region === region);
+              const rdUniq = term === 'all' ? [...new Map(rd.map((d) => [d.cu, d])).values()] : rd;
+              const n = sum(rdUniq, (d) => N(d.total_target_schools));
+              const lDel = sum(rd, (d) => lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0));
+              const lExp = n * lecNums.length;
+              const lPct = lExp > 0 ? Math.round((lDel / lExp) * 100) : 0;
+              const gm = sum(rdUniq, (d) => gmKeys.reduce((a, k) => a + N(d[k]), 0));
+              const gmExp = n * gmKeys.length;
+              const gmPct = gmExp > 0 ? Math.round((gm / gmExp) * 100) : 0;
+              const pbM3 = sum(rd, (d) => N(d.schools_completed_m3));
+              const pbM4 = sum(rd, (d) => N(d.schools_completed_m4));
+              const pbM1 = sum(rdUniq, (d) => N(d.schools_completed_m1) || N(d.schools_with_pb_milestone));
+              return (
+                <tr key={region}>
+                  <td style={{ fontWeight: 700, padding: '.5rem .75rem' }}>{region}</td>
+                  <td className="center" style={{ color: ragColor(lPct), fontWeight: 700 }}>{lDel}/{lExp} ({lPct}%)</td>
+                  <td className="center">{gm}/{gmExp} ({gmPct}%)</td>
+                  {term === 'term2' ? (
+                    <>
+                      <td className="center">{pbM3}/{n} ({n > 0 ? Math.round((pbM3 / n) * 100) : 0}%)</td>
+                      <td className="center">{pbM4}/{n} ({n > 0 ? Math.round((pbM4 / n) * 100) : 0}%)</td>
+                    </>
+                  ) : (
+                    <td className="center">{pbM1}/{n} M1 ({n > 0 ? Math.round((pbM1 / n) * 100) : 0}%)</td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Skills Lab heatmap — insight cards (legacy buildSectionInsight('sequencing', …)) ─
+function HeatmapInsights({ matrix, lecNums, totalSchools, term, clusters, onDrill }) {
+  const styles = {
+    warn: ['#fffbeb', C.yellow, '#92400e'],
+    risk: ['#fef2f2', C.red, '#991b1b'],
+    info: ['#eff6ff', C.blue, '#1e3a8a'],
+  };
+  const cards = [];
+
+  if (term === 'term1' || term === 'term2') {
+    const { lecs: lecsDue, week } = getLECsDueByToday(term);
+    if (lecsDue > 0) {
+      const dueLecs = lecNums.slice(0, lecsDue);
+      const lastDueLec = dueLecs[dueLecs.length - 1];
+      const aheadLecs = lecNums.slice(lecsDue);
+      const aheadCount = aheadLecs.reduce((s, n) => s + Object.values(matrix[`lec${n}`] || {}).reduce((a, v) => a + v, 0), 0);
+      if (aheadCount > 0) {
+        const pct = totalSchools > 0 ? Math.round((aheadCount / totalSchools) * 100) : 0;
+        cards.push({
+          icon: '🏃', level: 'info',
+          title: `${aheadCount} schools (${pct}%) are ahead of the programme calendar`,
+          body: `The schedule calls for up to LEC ${lastDueLec} by Week ${week}. ${aheadCount} schools have already delivered beyond that. Positive momentum — ensure quality isn't being sacrificed for speed.`,
+        });
+      }
+      const deliveredLastDue = Object.values(matrix[`lec${lastDueLec}`] || {}).reduce((s, v) => s + v, 0);
+      const behindCount = totalSchools - deliveredLastDue;
+      if (behindCount > 0) {
+        const behindPct = totalSchools > 0 ? Math.round((behindCount / totalSchools) * 100) : 0;
+        cards.push({
+          icon: behindPct > 40 ? '🔴' : '🟡', level: behindPct > 40 ? 'risk' : 'warn',
+          title: `${behindCount} schools (${behindPct}%) behind schedule — LEC ${lastDueLec} expected by Week ${week}`,
+          body: behindPct > 40
+            ? `By Week ${week}, all schools should have delivered LEC ${lastDueLec}. This is a significant gap — FOAs should urgently identify barriers and reschedule.`
+            : `By Week ${week}, all schools should have delivered LEC ${lastDueLec}. FOAs should follow up with affected schools before the next LEC is due.`,
+        });
+      }
+    }
+  }
+
+  const clusterCount = clusters.length;
+  if (clusterCount > 0) {
+    const clusterBurnout = clusters.filter((c) => c.maxLecs >= 4).length;
+    const pct = totalSchools > 0 ? Math.round((clusterCount / totalSchools) * 100) : 0;
+    cards.push({
+      icon: '⚡', level: 'warn',
+      title: `${clusterCount} schools (${pct}%) delivered 3+ LECs in a single week`,
+      body: `Delivering 3 or more LECs in the same week compresses scholar learning time and signals catch-up scheduling.${clusterBurnout > 0 ? ` ${clusterBurnout} school${clusterBurnout !== 1 ? 's' : ''} delivered 4+ LECs in one week — a high mentor workload risk.` : ''} Sustained clustering risks mentor fatigue and reduced session quality. FOAs should review pacing with affected mentors.`,
+      action: () => onDrill({ metric: 'lec_clustering', clusters }),
+    });
+  }
+
+  const w15 = lecNums.reduce((s, n) => s + N((matrix[`lec${n}`] || {})['Wk 15']), 0);
+  if (w15 > 0) {
+    cards.push({
+      icon: '📅', level: 'info',
+      title: `${w15} Week 15 deliveries recorded — outside the standard programme window`,
+      body: 'Week 15 falls outside the expected term window. These may be late starters, make-up sessions, or data entry errors. A data quality check is recommended.',
+    });
+  }
+
+  if (cards.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: '1rem' }}>
+      {cards.map((c, i) => {
+        const [bg, border, txt] = styles[c.level] || styles.info;
+        return (
+          <div key={i} style={{ background: bg, borderLeft: `4px solid ${border}`, borderRadius: '0 6px 6px 0', padding: '.75rem 1rem', marginTop: '.6rem', fontSize: '.82rem', lineHeight: 1.6 }}>
+            <div style={{ fontWeight: 700, color: txt, marginBottom: '.25rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span>{c.icon} {c.title}</span>
+              {c.action ? (
+                <span
+                  onClick={c.action}
+                  style={{ fontSize: '.7rem', color: '#0077b6', cursor: 'pointer', padding: '2px 8px', border: '1px solid #b3d4f0', borderRadius: 999, whiteSpace: 'nowrap', marginLeft: '.5rem' }}
+                >
+                  ⌕ View schools
+                </span>
+              ) : null}
+            </div>
+            <div style={{ color: '#374151' }}>{c.body}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── LEC tab · Key Insights & Flags (legacy renderNationalKeyInsights) ────────
+function LecKeyInsights({ onDrill, insights }) {
   const colors = { warning: '#fff3cd', alert: '#f8d7da', info: '#e7f3ff' };
   const borders = { warning: C.yellow, alert: C.red, info: C.blue };
   return (
-    <>
-      <Section title="🔑 Key Insights & Flags" subtitle={insights.length > 0 ? `${insights.length} issue${insights.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
-        {insights.length === 0 ? (
-          <div style={{ padding: '1.5rem', textAlign: 'center', color: C.green }}>✅ No critical issues detected across all CUs.</div>
-        ) : (
-          insights.map((ins, idx) => (
-            <div
-              key={idx}
-              onClick={() => onDrill({ metric: ins.metric })}
-              style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer' }}
-            >
-              <div style={{ fontWeight: 700, marginBottom: '.35rem' }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.4rem' }}>
-                {ins.cus.map((c, i) => (
-                  <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: '#333' }}>
-                    {c.cu}{c.note ? ` (${c.note})` : ''}
-                  </span>
-                ))}
-              </div>
+    <Section title="🔑 Key Insights & Flags" subtitle={insights.length > 0 ? `${insights.length} issue${insights.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
+      {insights.length === 0 ? (
+        <div style={{ padding: '1.5rem', textAlign: 'center', color: C.green }}>✅ No critical issues detected across all CUs.</div>
+      ) : (
+        insights.map((ins, idx) => (
+          <div
+            key={idx}
+            onClick={() => onDrill({ metric: ins.metric })}
+            style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer' }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: '.35rem' }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.4rem' }}>
+              {ins.cus.map((c, i) => (
+                <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: '#333' }}>
+                  {c.cu}{c.note ? ` (${c.note})` : ''}
+                </span>
+              ))}
             </div>
-          ))
-        )}
-      </Section>
-
-      <Section title="⚡ LEC Sequencing Flags" subtitle="Schools delivering 3+ LECs in a single week (compressed pacing)">
-        {clusters.length === 0 ? (
-          <div style={{ padding: '1.25rem', textAlign: 'center', color: C.green }}>✅ No LEC clustering detected this term.</div>
-        ) : (
-          <div className="table-wrap">
-            <table className="breakdown-table">
-              <thead>
-                <tr>
-                  <th>School</th>
-                  <th>CU</th>
-                  <th>Region</th>
-                  <th className="center">Max LECs / Week</th>
-                  <th>Worst Week</th>
-                </tr>
-              </thead>
-              <tbody>
-                {clusters.map((c, i) => (
-                  <tr key={`${c.schoolId}-${i}`}>
-                    <td className="item-name">{c.school}</td>
-                    <td style={{ color: '#555' }}>{c.cu}</td>
-                    <td style={{ color: '#555' }}>{c.region}</td>
-                    <td className="center" style={{ fontWeight: 700, color: c.maxLecs >= 4 ? '#c0392b' : '#e67e22' }}>{c.maxLecs}</td>
-                    <td style={{ color: '#555' }}>{c.week}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
-        )}
-      </Section>
-    </>
+        ))
+      )}
+    </Section>
   );
 }
 
