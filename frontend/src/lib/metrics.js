@@ -254,7 +254,9 @@ export function buildLecWeekMatrix(schoolData, year, term) {
     matrix[key] = {};
     rows.forEach((d) => {
       if (!N(d[`schools_with_lec${n}`])) return;
-      const wk = N(d[`lec${n}_max_week`]) || N(d[`lec${n}_week`]);
+      // lecN_max_week is a string like "Week 3", not a bare number — pull the digits out.
+      const raw = d[`lec${n}_max_week`] || d[`lec${n}_week`];
+      const wk = parseInt(String(raw || '').replace(/\D/g, ''), 10);
       if (!wk) return;
       const label = `Wk ${wk}`;
       matrix[key][label] = (matrix[key][label] || 0) + N(d[`schools_with_lec${n}`]);

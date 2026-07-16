@@ -24,6 +24,7 @@ const METRIC_LABELS = {
   skills_day: 'Skills Day',
   lec_duration: 'Avg Session Duration',
   total_schools: 'Total Schools',
+  lec_clustering: 'LEC Clustering',
 };
 
 const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day']);
@@ -196,6 +197,54 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
   const [stack, setStack] = useState([]);
   if (!drill) return null;
   const { metric, lecNum } = drill;
+
+  // LEC clustering is a flat schools list (legacy openClusterDrill), not a
+  // region → CU → mentor aggregate — handle it separately.
+  if (metric === 'lec_clustering') {
+    const clusters = drill.clusters || [];
+    return (
+      <>
+        <div className="drill-backdrop" onClick={onClose} />
+        <aside className="drill-panel" role="dialog" aria-label="LEC Clustering breakdown">
+          <div className="drill-head">
+            <button className="drill-close" onClick={onClose} aria-label="Close">×</button>
+            <div className="drill-title">LEC Clustering — Schools Delivering 3+ LECs in a Week</div>
+            <div className="drill-subtitle">{clusters.length} school{clusters.length !== 1 ? 's' : ''} flagged</div>
+          </div>
+          <div className="drill-body">
+            <p style={{ fontSize: '.82rem', color: '#555', marginBottom: '.75rem' }}>
+              Schools are sorted by highest LECs delivered in a single week. Review pacing with FOAs in highlighted CUs.
+            </p>
+            <table className="breakdown-table">
+              <thead>
+                <tr>
+                  <th>School</th>
+                  <th>CU</th>
+                  <th>Region</th>
+                  <th className="center">Max LECs / Week</th>
+                  <th>Week</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clusters.length === 0 ? (
+                  <tr><td colSpan={5} style={{ color: '#888', padding: '1rem' }}>No clustering flagged.</td></tr>
+                ) : clusters.map((c, i) => (
+                  <tr key={`${c.schoolId}-${i}`}>
+                    <td className="item-name">{c.school}</td>
+                    <td style={{ color: '#555' }}>{c.cu}</td>
+                    <td style={{ color: '#555' }}>{c.region}</td>
+                    <td className="center" style={{ fontWeight: 700, color: c.maxLecs >= 4 ? '#c0392b' : '#e67e22' }}>{c.maxLecs}</td>
+                    <td style={{ color: '#555' }}>{c.week}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </aside>
+      </>
+    );
+  }
+
   const label = metric === 'lec_single' ? `LEC ${lecNum || ''}` : METRIC_LABELS[metric] || metric;
   const isPct = PCT_METRICS.has(metric);
 
