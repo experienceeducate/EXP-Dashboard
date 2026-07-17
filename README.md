@@ -64,14 +64,32 @@ Generate secrets: `python -c "import secrets; print(secrets.token_hex(32))"`.
 without them). See `backend/.env.example`.
 
 ## Auth & access model
-Two sign-in paths, one JWT scheme (HS256, 8h, `sessionStorage`, `Authorization:
-Bearer`):
-- **Email + shared password** → `POST /api/auth/login`
-- **Google SSO** (`@experienceeducate.org`) → `/api/auth/google/login`
+One JWT scheme (HS256, 8h, `sessionStorage`, `Authorization: Bearer`). The UI
+offers **Google SSO** as the primary sign-in; the password path is retained as a
+hidden break-glass fallback (revealed by a link on the login screen):
+- **Google SSO** (`@experienceeducate.org`) → `/api/auth/google/login` → Google →
+  `/api/auth/google/callback` → redirects to `FRONTEND_URL/#token=<jwt>` (or
+  `/#error=<code>` on failure); the SPA reads the fragment and stores the token.
+- **Email + shared password** (fallback) → `POST /api/auth/login`. Also the only
+  path for the few non-`@experienceeducate.org` FOA accounts in `ACCESS_CONFIG`,
+  which SSO's domain check rejects.
 
 Both resolve the email to an **access scope** (`national` / `regional` / `cu`)
 via `ACCESS_CONFIG`, embedded in the JWT. **Row-level filtering is server-side**
 (`core/access.py` + `core/sql.py::access_clause`). Unknown emails get no access.
+
+### Google OAuth setup (one-time)
+SSO needs a Google OAuth 2.0 client. In the Google Cloud console for the project:
+1. **APIs & Services → OAuth consent screen** — Internal user type, app name
+   "EXP Dashboard", support email; no scopes beyond the default openid/email/profile.
+2. **APIs & Services → Credentials → Create credentials → OAuth client ID** —
+   type **Web application**. Add **Authorized redirect URIs**:
+   - `https://exp-dashboard-api.educateapps.work/api/auth/google/callback` (prod)
+   - `http://localhost:8000/api/auth/google/callback` (local dev)
+3. Copy the **Client ID / Client secret** into `GOOGLE_CLIENT_ID` /
+   `GOOGLE_CLIENT_SECRET` — in the `exp-dashboard-credentials` k8s Secret for prod,
+   and `backend/.env` for local dev. Ensure `FRONTEND_URL` matches the SPA origin
+   the callback should return to.
 
 ## Metric definitions
 The source model is a wide "one-big-table" with a `level` column (`cu` /

@@ -75,6 +75,45 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   return json;
 }
 
+// Full URL that kicks off the Google SSO flow. The backend redirects the browser
+// to Google and, on success, back to FRONTEND_URL/#token=<jwt>. We navigate the
+// whole window here (not fetch) so the browser follows the OAuth redirects.
+export function googleLoginUrl() {
+  return `${BASE}/api/auth/google/login`;
+}
+
+// Consume the auth fragment the OAuth callback leaves in the URL
+// (FRONTEND_URL/#token=<jwt> or /#error=<msg>). Stores the token, strips the hash
+// so it can't be re-consumed or leak into history, and returns what it found.
+// Call once at startup, before the first render decides auth state.
+export function consumeAuthRedirect() {
+  let hash = '';
+  try {
+    hash = window.location.hash || '';
+  } catch {
+    return {};
+  }
+  if (!hash || hash.length < 2) return {};
+  const params = new URLSearchParams(hash.slice(1)); // drop leading '#'
+  const token = params.get('token');
+  const error = params.get('error');
+  if (!token && !error) return {};
+
+  // Strip the fragment without adding a history entry.
+  try {
+    const clean = window.location.pathname + window.location.search;
+    window.history.replaceState(null, '', clean);
+  } catch {
+    /* ignore */
+  }
+
+  if (token) {
+    setToken(token);
+    return { token };
+  }
+  return { error };
+}
+
 // POST /api/auth/login → { status:"ok", token, user }
 export async function login(email, password) {
   const json = await request('/api/auth/login', {
