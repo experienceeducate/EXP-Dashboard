@@ -13,10 +13,23 @@ import CuView from './views/CuView.jsx';
 const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View' };
 const TERM_ORDER = ['term1', 'term2', 'term3'];
 
+const SSO_ERRORS = {
+  domain_not_allowed: 'That Google account is not an @experienceeducate.org address.',
+  no_access: 'Your account has no dashboard access configured. Contact an admin.',
+  oauth_failed: 'Google sign-in failed. Please try again.',
+};
+
 export default function App() {
+  // Consume the OAuth redirect fragment (#token / #error) before deciding auth
+  // state. Lazy useState initializers run once, in declaration order, so this
+  // stores the token (if any) before `authed` reads it below.
+  const [ssoError] = useState(() => {
+    const { error } = api.consumeAuthRedirect();
+    return error ? SSO_ERRORS[error] || 'Sign-in failed. Please try again.' : '';
+  });
   const [authed, setAuthed] = useState(() => !!api.getToken());
   const [user, setUser] = useState(null);
-  const [loginError, setLoginError] = useState('');
+  const [loginError, setLoginError] = useState(ssoError);
   const [loginBusy, setLoginBusy] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -90,6 +103,24 @@ export default function App() {
   useEffect(() => {
     if (authed) loadData();
   }, [authed, loadData]);
+
+  // After a Google SSO redirect we have a token but no in-memory user object
+  // (handleLogin never ran). Hydrate it from /api/auth/me.
+  useEffect(() => {
+    if (!authed || user) return;
+    let active = true;
+    api
+      .fetchMe()
+      .then((res) => {
+        if (active && res && res.user) setUser(res.user);
+      })
+      .catch(() => {
+        /* loadData still populates access; userEmail falls back to access.email */
+      });
+    return () => {
+      active = false;
+    };
+  }, [authed, user]);
 
   // Fetch CU school rows when a CU is selected in CU view.
   useEffect(() => {

@@ -117,20 +117,29 @@ async def google_login(request: Request):
     return await oauth.google.authorize_redirect(request, redirect_uri)
 
 
+def _sso_error(code: str) -> RedirectResponse:
+    """Send the browser back into the SPA with an error fragment it can render,
+    rather than returning a bare JSON error page mid-redirect."""
+    return RedirectResponse(url=f"{settings.FRONTEND_URL}/#error={code}")
+
+
 @router.get("/google/callback", name="google_callback")
 async def google_callback(request: Request):
     try:
         token = await oauth.google.authorize_access_token(request)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=401, detail=f"OAuth failed: {exc}") from exc
+    except Exception:  # noqa: BLE001 — bad state, expired code, user-denied consent, etc.
+        return _sso_error("oauth_failed")
 
     userinfo = token.get("userinfo") or {}
     email = (userinfo.get("email") or "").strip().lower()
     domain = email.split("@")[-1] if "@" in email else ""
     if domain != settings.OAUTH_ALLOWED_DOMAIN:
-        raise HTTPException(status_code=403, detail="Email domain not allowed")
+        return _sso_error("domain_not_allowed")
 
     access = resolve_access(email)
+    if not access.has_any_access:  # parity with the password path
+        return _sso_error("no_access")
+
     jwt_token = create_token(access)
     return RedirectResponse(url=f"{settings.FRONTEND_URL}/#token={jwt_token}")
 
