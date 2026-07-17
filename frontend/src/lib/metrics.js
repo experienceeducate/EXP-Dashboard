@@ -265,6 +265,30 @@ export function buildLecWeekMatrix(schoolData, year, term) {
   return matrix;
 }
 
+// ── Skills Lab heatmap dynamic title (shared by National + Regional views) ──
+export function computeHeatmapHeader(matrix, lecNums, totalSchools) {
+  let leadLec = null;
+  let leadPct = 0;
+  let trailLec = null;
+  let trailPct = 100;
+  let peakWeek = null;
+  let peakCount = 0;
+  lecNums.forEach((n) => {
+    const lecData = matrix[`lec${n}`] || {};
+    const tot = Object.values(lecData).reduce((s, v) => s + v, 0);
+    const pct = totalSchools > 0 ? Math.round((tot / totalSchools) * 100) : 0;
+    if (pct > leadPct) { leadPct = pct; leadLec = n; }
+    if (tot > 0 && pct < trailPct) { trailPct = pct; trailLec = n; }
+    Object.entries(lecData).forEach(([wk, cnt]) => { if (cnt > peakCount) { peakCount = cnt; peakWeek = wk; } });
+  });
+  const dropStr = leadLec && trailLec && leadLec !== trailLec ? ` — drops to ${trailPct}% at LEC ${trailLec}` : '';
+  const title = leadLec ? `📅 LEC ${leadLec} leads at ${leadPct}%${dropStr}` : '📅 Skills Lab Activity Heatmap';
+  const subtitle = peakWeek
+    ? `${peakCount} schools delivered in ${peakWeek} (busiest week) · click any cell for school-level detail`
+    : 'LEC × Week delivery timeline across all CUs';
+  return { title, subtitle };
+}
+
 // ── LEC clustering (bad sequencing) ──────────────────────────────────────────
 // Schools that delivered ≥3 LECs sharing the same lecN_max_week (compressed
 // pacing). Mirrors legacy renderCUAlerts clustering + openClusterDrill.

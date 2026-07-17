@@ -269,11 +269,12 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
   // Heatmap cell drill — schools that delivered a given LEC in a given week
   // (legacy drillHeatmapCell), grouped by region → CU.
   if (metric === 'lec_heatmap_cell') {
-    const { week } = drill;
+    const { week, region } = drill;
     const weekLabel = `Week ${week}`;
     const matched = (schoolData || []).filter((d) => {
       if (d.year != year) return false;
       if (term !== 'all' && d.term !== term) return false;
+      if (region && String(d.region || '').toLowerCase() !== String(region).toLowerCase()) return false;
       if (N(d[`schools_with_lec${lecNum}`]) !== 1) return false;
       return String(d[`lec${lecNum}_max_week`] || '').trim() === weekLabel;
     });
