@@ -7,8 +7,15 @@ Update this as the project evolves. It captures what isn't obvious from the code
   FastAPI + React/Vite two-container stack per the prod-readiness handover guide.
 - Data source switched from a Google Apps Script endpoint to BigQuery
   `educate-data-warehouse-test.gold_exp.exp_ai_dashboard_model`.
+- Second data source added (ADR-008): mentor observation/roster data from
+  `silver_exp.exp_2026_lec_observation_form` + `bronze_exp.mentor_2026`, served
+  by `app/routers/mentor_quality.py`. Not part of the gold model yet — CU-name
+  spellings and term format differ from `gold_exp`, handled via
+  `access_clause_fuzzy_cu`/`cu_clause_fuzzy` (`core/sql.py`). See ADR-008 for
+  the full list of quirks before touching that router.
 - Backend: implemented and unit-tested (auth, access scoping, client-header
-  guard, overview + CU routers). Frontend: React rewrite in progress.
+  guard, overview + CU + mentor-quality routers). Frontend: React rewrite in
+  progress.
 - Chat widget: intentionally not included (ADR-003).
 
 ## Frontend coverage (React rewrite parity vs. legacy)
