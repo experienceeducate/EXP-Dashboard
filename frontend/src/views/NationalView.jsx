@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import * as api from '../lib/api.js';
 import { getLECsForTerm, C, TERM_CONFIG } from '../lib/config.js';
 import {
   computeNationalKpis,
@@ -28,6 +29,7 @@ const TABS = [
   { id: 'lec', label: '📚 LEC Delivery' },
   { id: 'pb', label: '📋 Passbook Quality' },
   { id: 'quality', label: '🏅 Programme Quality' },
+  { id: 'mentor', label: '🎓 Mentor Quality' },
 ];
 
 // ── Executive Summary ────────────────────────────────────────────────────────
@@ -1637,6 +1639,683 @@ export function TimelinessLegend() {
   );
 }
 
+// ── Mentor Quality (second BigQuery source — see docs/DECISION.md ADR-008) ──
+const PERF_LABEL = { excellent: 'Exceeding Expectations', meets: 'Meeting Expectations', below: 'Below Expectations', no_observations: 'No Observations' };
+const PERF_COLOR = { excellent: C.green, meets: C.yellow, below: C.red, no_observations: '#adb5bd' };
+const FLAG_LABEL = {
+  no_observations: '❌ No observations for this CU',
+  low_observation_count: '⚠ Low observation count (<3)',
+  high_variability: '⚠ High performance variability',
+  needs_urgent_support: '❌ Needs urgent support',
+  not_all_mentors_observed: '⚠ Not all mentors observed',
+  adequate_data: '✓ Adequate data',
+};
+
+function weightedAvg(rows, valueKey, weightKey) {
+  let total = 0;
+  let den = 0;
+  rows.forEach((r) => {
+    const v = r[valueKey];
+    const w = N(r[weightKey]);
+    if (v != null && w > 0) {
+      total += Number(v) * w;
+      den += w;
+    }
+  });
+  return den > 0 ? total / den : null;
+}
+
+function performanceBucket(qi) {
+  if (qi == null) return 'no_observations';
+  return qi > 2.5 ? 'excellent' : qi >= 2.0 ? 'meets' : 'below';
+}
+
+const MQ_TERM_ORDER = ['term1', 'term2', 'term3'];
+const normCu = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+// Wrap header text instead of forcing horizontal scroll (tables have 8-12 columns).
+const THWRAP = { whiteSpace: 'normal', overflowWrap: 'break-word', maxWidth: 105 };
+
+function MentorQualityTab({ term, year, summaryData }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [cuRows, setCuRows] = useState([]);
+  const [summaryRows, setSummaryRows] = useState([]);
+  const [sessionRows, setSessionRows] = useState([]);
+  const [questionRows, setQuestionRows] = useState([]);
+  const [themeSummary, setThemeSummary] = useState([]);
+  const [comments, setComments] = useState([]);
+
+  // Drill-down: region -> CU list -> mentor ID list, and theme -> comment list.
+  // A stack (not a single value) so the mentor-ID modal can go "back" to the
+  // CU list it was opened from.
+  const [drillStack, setDrillStack] = useState([]);
+  const drill = drillStack[drillStack.length - 1] || null;
+  const pushDrill = (d) => setDrillStack((s) => [...s, d]);
+  const popDrill = () => setDrillStack((s) => s.slice(0, -1));
+  const closeDrill = () => setDrillStack([]);
+
+  const [mentorDrillRows, setMentorDrillRows] = useState([]);
+  const [mentorDrillLoading, setMentorDrillLoading] = useState(false);
+  useEffect(() => {
+    if (!drill || drill.kind !== 'cu') return undefined;
+    let active = true;
+    setMentorDrillLoading(true);
+    api
+      .fetchMentorQualityMentors(drill.cu, drill.term || term)
+      .then((res) => {
+        if (active) setMentorDrillRows(res.data || []);
+      })
+      .catch(() => {
+        if (active) setMentorDrillRows([]);
+      })
+      .finally(() => {
+        if (active) setMentorDrillLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [drill, term]);
+
+  const [mentorObsRows, setMentorObsRows] = useState([]);
+  const [mentorObsLoading, setMentorObsLoading] = useState(false);
+  useEffect(() => {
+    if (!drill || drill.kind !== 'mentor') return undefined;
+    let active = true;
+    setMentorObsLoading(true);
+    api
+      .fetchMentorQualityMentorObservations(drill.cu, drill.mentorId, drill.term || term)
+      .then((res) => {
+        if (active) setMentorObsRows(res.data || []);
+      })
+      .catch(() => {
+        if (active) setMentorObsRows([]);
+      })
+      .finally(() => {
+        if (active) setMentorObsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [drill, term]);
+
+  const [commentSearch, setCommentSearch] = useState('');
+  const [sentimentFilter, setSentimentFilter] = useState('all');
+  useEffect(() => {
+    setCommentSearch('');
+    setSentimentFilter('all');
+  }, [drill]);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    Promise.all([
+      api.fetchMentorQualitySummaryByCu(term),
+      api.fetchMentorQualitySummary(term),
+      api.fetchMentorQualitySessions(term),
+      api.fetchMentorQualityQuestions(term),
+      api.fetchMentorQualityComments(term),
+    ])
+      .then(([cu, s, se, q, c]) => {
+        if (!active) return;
+        setCuRows(cu.data || []);
+        setSummaryRows(s.data || []);
+        setSessionRows(se.data || []);
+        setQuestionRows(q.data || []);
+        setComments(c.data || []);
+        setThemeSummary(c.theme_summary || []);
+        setDrillStack([]);
+      })
+      .catch((e) => {
+        if (active) setError(e.message || 'Failed to load mentor quality data.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [term]);
+
+  if (loading) return <Placeholder label="Loading mentor quality data…" />;
+  if (error) return <Placeholder label={error} />;
+  if (cuRows.length === 0) return <Placeholder label="No mentor observation data for the selected term." />;
+
+  // Mentor coverage (assigned vs. observed) comes from the gold_exp CU model
+  // (summaryData — the single source of truth, already access-scoped/loaded),
+  // not the bronze mentor roster. Quality dimensions/rankings still come from
+  // the LEC observation source (cuRows/summaryRows) since scores + comments
+  // aren't in the gold model. CU names differ in format between the two
+  // sources (see docs/DECISION.md ADR-008), so lookups match on normCu().
+  const goldCuRowsForYear = summaryData.filter((d) => String(d.year) === String(year));
+  const goldByCuTerm = new Map();
+  goldCuRowsForYear.forEach((d) => goldByCuTerm.set(`${normCu(d.cu)}|${d.term}`, d));
+  const goldByCu = new Map();
+  if (term !== 'all') {
+    goldCuRowsForYear.filter((d) => d.term === term).forEach((d) => goldByCu.set(normCu(d.cu), d));
+  } else {
+    // "All Terms": use each CU's latest-available term snapshot rather than
+    // summing across terms, so coverage can't double-count a mentor observed
+    // in more than one term (see the mentors-observed "All Terms" fix above).
+    goldCuRowsForYear.forEach((d) => {
+      const key = normCu(d.cu);
+      const existing = goldByCu.get(key);
+      if (!existing || MQ_TERM_ORDER.indexOf(d.term) > MQ_TERM_ORDER.indexOf(existing.term)) {
+        goldByCu.set(key, d);
+      }
+    });
+  }
+  const goldRows = [...goldByCu.values()];
+
+  const totalAssigned = sum(goldRows, (r) => N(r.total_active_mentors));
+  const mentorsObserved = sum(goldRows, (r) => N(r.total_observed_mentors));
+  const pctObserved = totalAssigned > 0 ? Math.round((mentorsObserved / totalAssigned) * 1000) / 10 : 0;
+  const excellentCount = sum(cuRows, (r) => N(r.mentors_excellent));
+  const meetsCount = sum(cuRows, (r) => N(r.mentors_meets));
+  const belowCount = sum(cuRows, (r) => N(r.mentors_below));
+  const ratedTotal = excellentCount + meetsCount + belowCount;
+  const pct = (n) => (ratedTotal > 0 ? Math.round((n / ratedTotal) * 1000) / 10 : 0);
+  const overallQualityIndex = weightedAvg(cuRows, 'overall_quality_index', 'total_observations');
+  const cusNotSubmitted = cuRows.filter((r) => r.data_quality_flag === 'no_observations').length;
+
+  const regions = [...new Set(cuRows.map((r) => r.region))].sort();
+  const regionRows = regions.map((region) => {
+    const rows = cuRows.filter((r) => r.region === region);
+    const goldRegionRows = goldRows.filter((r) => String(r.region || '').toLowerCase() === region.toLowerCase());
+    const assigned = sum(goldRegionRows, (r) => N(r.total_active_mentors));
+    const observed = sum(goldRegionRows, (r) => N(r.total_observed_mentors));
+    const qi = weightedAvg(rows, 'overall_quality_index', 'total_observations');
+    return {
+      region,
+      assigned,
+      observed,
+      pctObserved: assigned > 0 ? Math.round((observed / assigned) * 1000) / 10 : 0,
+      concept: weightedAvg(rows, 'avg_concept_clarity', 'total_observations'),
+      visual: weightedAvg(rows, 'avg_visual_aids', 'total_observations'),
+      participation: weightedAvg(rows, 'avg_participation', 'total_observations'),
+      classroom: weightedAvg(rows, 'avg_classroom_climate', 'total_observations'),
+      entrepreneurship: weightedAvg(rows, 'avg_entrepreneurship_examples', 'total_observations'),
+      gender: weightedAvg(rows, 'avg_gender_inclusivity', 'total_observations'),
+      qi,
+      bucket: performanceBucket(qi),
+    };
+  });
+
+  // CU rankings use the per-term rows (summaryRows) — each CU can appear once
+  // per term under "All Terms", which is correct: a Term column disambiguates.
+  const ranked = summaryRows.filter((r) => r.overall_quality_index != null).sort((a, b) => a.overall_quality_index - b.overall_quality_index);
+  const withGoldObserved = (r) => {
+    const gold = goldByCuTerm.get(`${normCu(r.cu)}|${r.term}`);
+    return { ...r, goldMentorsObserved: gold ? N(gold.total_observed_mentors) : null };
+  };
+  const lowest = ranked.slice(0, 8).map(withGoldObserved);
+  const highest = [...ranked].reverse().slice(0, 8).map(withGoldObserved);
+
+  const sessionTermsPresent = new Set(sessionRows.map((r) => r.term)).size;
+  const allSessionsHealthy = sessionRows.length > 0 && sessionRows.every((r) => N(r.avg_session_quality) >= 2.5);
+  const weakestQuestion = questionRows.length > 0 ? [...questionRows].sort((a, b) => N(a.avg_rating) - N(b.avg_rating))[0] : null;
+
+  return (
+    <>
+      <div className="key-takeaways-strip" style={{ marginBottom: '1rem' }}>
+        <div className="kt-strip-label">🎓 Mentor Quality — Key Insights</div>
+        <div className="kt-strip-list">
+          <div className="kt-strip-item">
+            <div className={`kt-strip-bar ${pctObserved >= 70 ? '' : 'amber'}`} />
+            <div>
+              <strong>{pctObserved}% of mentors observed</strong> ({mentorsObserved} of {totalAssigned}) ·
+              overall quality index <strong>{overallQualityIndex != null ? overallQualityIndex.toFixed(2) : '—'}/3.0</strong>.
+            </div>
+          </div>
+          {cusNotSubmitted > 0 ? (
+            <div className="kt-strip-item">
+              <div className="kt-strip-bar red" />
+              <div><strong>{cusNotSubmitted} CU{cusNotSubmitted !== 1 ? 's have' : ' has'} no observations submitted</strong> for the selected term.</div>
+            </div>
+          ) : null}
+          {weakestQuestion ? (
+            <div className="kt-strip-item">
+              <div className={`kt-strip-bar ${N(weakestQuestion.avg_rating) >= 2.5 ? '' : 'amber'}`} />
+              <div>Weakest rated dimension: <strong>{weakestQuestion.question.replace(/_/g, ' ')}</strong> at {weakestQuestion.avg_rating}/3.0.</div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="kpi-hero-strip" style={{ marginBottom: '1.5rem' }}>
+        <KpiHeroCard label="Mentors Observed" valueClass={ragKpiClass(pctObserved, 70, 50)} value={pctObserved} unit="%" sub={`${mentorsObserved} of ${totalAssigned} mentors`} />
+        <KpiHeroCard label="Exceeding Expectations" valueClass="kpi-green" value={pct(excellentCount)} unit="%" sub={`${excellentCount} mentors (>2.5)`} />
+        <KpiHeroCard label="Meeting Expectations" valueClass="kpi-blue" value={pct(meetsCount)} unit="%" sub={`${meetsCount} mentors (2.0–2.5)`} />
+        <KpiHeroCard label="Below Expectations" valueClass="kpi-red" value={pct(belowCount)} unit="%" sub={`${belowCount} mentors (<2.0)`} />
+      </div>
+
+      <Section title="Region breakdown" subtitle="Weighted by number of observations · click a region to drill into its CUs">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr>
+                <th style={THWRAP}>Region</th>
+                <th style={THWRAP}>Assigned</th>
+                <th style={THWRAP}>Observed</th>
+                <th style={THWRAP}>Coverage</th>
+                <th style={THWRAP}>Concept Clarity</th>
+                <th style={THWRAP}>Visual Aids</th>
+                <th style={THWRAP}>Participation</th>
+                <th style={THWRAP}>Classroom Climate</th>
+                <th style={THWRAP}>Entrepreneurship</th>
+                <th style={THWRAP}>Gender Inclusivity</th>
+                <th style={THWRAP}>Overall Quality</th>
+                <th style={THWRAP}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {regionRows.map((r) => (
+                <tr key={r.region} className="clickable" onClick={() => pushDrill({ kind: 'region', region: r.region })}>
+                  <td style={{ fontWeight: 700 }}>{r.region}<DrillTag /></td>
+                  <td style={{ textAlign: 'center' }}>{r.assigned}</td>
+                  <td style={{ textAlign: 'center' }}>{r.observed}</td>
+                  <td style={{ padding: '.5rem .75rem' }}><ProgressCell pct={r.pctObserved} color={ragColor(r.pctObserved, 70, 50)} /></td>
+                  <td style={{ textAlign: 'center' }}>{r.concept != null ? r.concept.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}>{r.visual != null ? r.visual.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}>{r.participation != null ? r.participation.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}>{r.classroom != null ? r.classroom.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}>{r.entrepreneurship != null ? r.entrepreneurship.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}>{r.gender != null ? r.gender.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center', fontWeight: 700, color: PERF_COLOR[r.bucket] }}>{r.qi != null ? r.qi.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}>
+                    <span style={{ color: PERF_COLOR[r.bucket], fontWeight: 700 }}>{PERF_LABEL[r.bucket]}</span>
+                  </td>
+                </tr>
+              ))}
+              <tr style={{ background: '#f0f4ff', borderTop: '2px solid #dee2e6', fontWeight: 800 }}>
+                <td>Grand Total</td>
+                <td style={{ textAlign: 'center' }}>{totalAssigned}</td>
+                <td style={{ textAlign: 'center' }}>{mentorsObserved}</td>
+                <td style={{ padding: '.5rem .75rem' }}><ProgressCell pct={pctObserved} color={ragColor(pctObserved, 70, 50)} /></td>
+                <td colSpan={6} />
+                <td style={{ textAlign: 'center' }}>{overallQualityIndex != null ? overallQualityIndex.toFixed(2) : '—'}</td>
+                <td />
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      <Section title="CU rankings" subtitle="By overall quality index · click a CU to drill into its mentors">
+        <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 380px', minWidth: 320 }}>
+            <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem', color: C.red }}>Lowest scoring CUs</div>
+            <div className="table-wrap">
+              <table className="breakdown-table">
+                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Term</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}># Mentors Observed</th><th style={THWRAP}>Flag</th></tr></thead>
+                <tbody>
+                  {lowest.map((r, i) => (
+                    <tr key={`${r.region}-${r.cu}-${r.term}-${i}`} className="clickable" onClick={() => pushDrill({ kind: 'cu', region: r.region, cu: r.cu, term: r.term })}>
+                      <td style={{ fontWeight: 700 }}>{r.cu}<DrillTag /></td>
+                      <td>{r.region}</td>
+                      <td>{r.term}</td>
+                      <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(r.overall_quality_index * 33.3, 80, 60) }}>{r.overall_quality_index.toFixed(2)}</td>
+                      <td style={{ textAlign: 'center' }}>{r.goldMentorsObserved != null ? r.goldMentorsObserved : '—'}</td>
+                      <td style={{ fontSize: '.8rem' }}>{FLAG_LABEL[r.data_quality_flag] || r.data_quality_flag}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div style={{ flex: '1 1 380px', minWidth: 320 }}>
+            <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem', color: C.green }}>Highest scoring CUs</div>
+            <div className="table-wrap">
+              <table className="breakdown-table">
+                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Term</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}># Mentors Observed</th><th style={THWRAP}>Flag</th></tr></thead>
+                <tbody>
+                  {highest.map((r, i) => (
+                    <tr key={`${r.region}-${r.cu}-${r.term}-${i}`} className="clickable" onClick={() => pushDrill({ kind: 'cu', region: r.region, cu: r.cu, term: r.term })}>
+                      <td style={{ fontWeight: 700 }}>{r.cu}<DrillTag /></td>
+                      <td>{r.region}</td>
+                      <td>{r.term}</td>
+                      <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(r.overall_quality_index * 33.3, 80, 60) }}>{r.overall_quality_index.toFixed(2)}</td>
+                      <td style={{ textAlign: 'center' }}>{r.goldMentorsObserved != null ? r.goldMentorsObserved : '—'}</td>
+                      <td style={{ fontSize: '.8rem' }}>{FLAG_LABEL[r.data_quality_flag] || r.data_quality_flag}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="Session-level breakdown"
+        subtitle={allSessionsHealthy ? 'Overall, all sessions rated above 2.5/3.0 — no session-specific complexities stand out.' : 'Some sessions are rating below 2.5/3.0 — worth reviewing facilitation for those.'}
+      >
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr>
+                <th style={THWRAP}>Session</th>
+                {sessionTermsPresent > 1 ? <th style={THWRAP}>Term</th> : null}
+                <th style={THWRAP}>Mentors Observed</th>
+                <th style={THWRAP}>Observations</th>
+                <th style={THWRAP}>Pedagogical</th>
+                <th style={THWRAP}>Facilitation</th>
+                <th style={THWRAP}>Leadership</th>
+                <th style={THWRAP}>Overall Quality</th>
+                <th style={THWRAP}>Low Ratings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessionRows.map((r) => (
+                <tr key={`${r.term}-${r.session_number}`}>
+                  <td style={{ fontWeight: 700 }}>{r.session_number}</td>
+                  {sessionTermsPresent > 1 ? <td>{r.term}</td> : null}
+                  <td style={{ textAlign: 'center' }}>{r.mentors_observed}</td>
+                  <td style={{ textAlign: 'center' }}>{r.total_observations}</td>
+                  <td style={{ textAlign: 'center' }}>{r.avg_section1_pedagogical}</td>
+                  <td style={{ textAlign: 'center' }}>{r.avg_section2_facilitation}</td>
+                  <td style={{ textAlign: 'center' }}>{r.avg_section4_leadership}</td>
+                  <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(N(r.avg_session_quality) * 33.3, 80, 60) }}>{r.avg_session_quality}</td>
+                  <td style={{ textAlign: 'center' }}>{r.total_low_ratings}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      <Section title="Unpacking the qualitative feedback" subtitle={`Rules-based theme tagging across ${comments.length} observer comments · click a theme to browse comments`}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.85rem' }}>
+          {themeSummary.filter((t) => t.total > 0).map((t) => {
+            const strengthPct = Math.round((t.strength_count / t.total) * 100);
+            return (
+              <div
+                key={t.theme}
+                onClick={() => pushDrill({ kind: 'theme', themeKey: t.theme })}
+                style={{ flex: '1 1 210px', maxWidth: 260, padding: '1rem 1.1rem', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 10, cursor: 'pointer' }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '.85rem', color: C.navy, marginBottom: '.4rem' }}>{t.label}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '.4rem', marginBottom: '.5rem' }}>
+                  <span style={{ fontSize: '1.6rem', fontWeight: 800, color: C.navy }}>{t.total}</span>
+                  <span style={{ fontSize: '.7rem', color: '#888' }}>mentions</span>
+                </div>
+                <StackedBar segments={[{ label: 'Strength', pct: strengthPct, color: C.green }, { label: 'Growth area', pct: 100 - strengthPct, color: C.red }]} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '.4rem', fontSize: '.7rem' }}>
+                  <span style={{ color: C.green, fontWeight: 700 }}>{t.strength_count} strength</span>
+                  <span style={{ color: C.red, fontWeight: 700 }}>{t.growth_count} growth area</span>
+                </div>
+                <DrillTag label="Browse comments" />
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+
+      {drill ? (
+        <MentorQualityDrill
+          drill={drill}
+          onBack={drillStack.length > 1 ? popDrill : null}
+          onClose={closeDrill}
+          cuRows={cuRows}
+          goldByCu={goldByCu}
+          mentorDrillRows={mentorDrillRows}
+          mentorDrillLoading={mentorDrillLoading}
+          mentorObsRows={mentorObsRows}
+          mentorObsLoading={mentorObsLoading}
+          comments={comments}
+          themeSummary={themeSummary}
+          sentimentFilter={sentimentFilter}
+          setSentimentFilter={setSentimentFilter}
+          commentSearch={commentSearch}
+          setCommentSearch={setCommentSearch}
+          onDrillCu={(region, cu, cuTerm) => pushDrill({ kind: 'cu', region, cu, term: cuTerm })}
+          onDrillMentor={(region, cu, cuTerm, mentorId) => pushDrill({ kind: 'mentor', region, cu, term: cuTerm, mentorId })}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function MentorQualityDrill({
+  drill, onBack, onClose, cuRows, goldByCu, mentorDrillRows, mentorDrillLoading, mentorObsRows, mentorObsLoading,
+  comments, themeSummary, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch, onDrillCu, onDrillMentor,
+}) {
+  const title = drill.kind === 'region' ? drill.region
+    : drill.kind === 'cu' ? drill.cu
+      : drill.kind === 'mentor' ? `Mentor ${drill.mentorId}`
+        : themeSummary.find((t) => t.theme === drill.themeKey)?.label || 'Comments';
+  const subtitle = drill.kind === 'region' ? 'CUs in this region — click a CU for its mentors'
+    : drill.kind === 'cu' ? `Mentor-level detail${drill.term ? ` · ${drill.term}` : ''} — click a mentor for every observation`
+      : drill.kind === 'mentor' ? `${drill.cu} — who observed them, scores, and full comments`
+        : 'Observer comments mentioning this theme';
+
+  return (
+    <>
+      <div className="drill-backdrop" onClick={onClose} />
+      <aside className="drill-panel" role="dialog" aria-label={title}>
+        <div className="drill-head">
+          <button className="drill-close" onClick={onClose} aria-label="Close">×</button>
+          {onBack ? (
+            <button
+              onClick={onBack}
+              style={{ border: 'none', background: 'none', color: '#0077b6', fontWeight: 700, fontSize: '.8rem', cursor: 'pointer', padding: 0, marginBottom: '.4rem' }}
+            >
+              ← Back
+            </button>
+          ) : null}
+          <div className="drill-title">{title}</div>
+          <div className="drill-subtitle">{subtitle}</div>
+        </div>
+        <div className="drill-body">
+          {drill.kind === 'region' ? (
+            <RegionCuDrillList region={drill.region} cuRows={cuRows} goldByCu={goldByCu} onDrillCu={onDrillCu} />
+          ) : null}
+          {drill.kind === 'cu' ? (
+            <MentorDrillList
+              loading={mentorDrillLoading}
+              rows={mentorDrillRows}
+              onDrillMentor={(mentorId) => onDrillMentor(drill.region, drill.cu, drill.term, mentorId)}
+            />
+          ) : null}
+          {drill.kind === 'mentor' ? (
+            <MentorObservationDrillList loading={mentorObsLoading} rows={mentorObsRows} />
+          ) : null}
+          {drill.kind === 'theme' ? (
+            <ThemeCommentDrillList
+              themeKey={drill.themeKey}
+              comments={comments}
+              sentimentFilter={sentimentFilter}
+              setSentimentFilter={setSentimentFilter}
+              commentSearch={commentSearch}
+              setCommentSearch={setCommentSearch}
+            />
+          ) : null}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function RegionCuDrillList({ region, cuRows, goldByCu, onDrillCu }) {
+  const rows = cuRows
+    .filter((r) => r.region === region)
+    .map((r) => {
+      const gold = goldByCu.get(normCu(r.cu));
+      return {
+        ...r,
+        goldAssigned: gold ? N(gold.total_active_mentors) : null,
+        goldObserved: gold ? N(gold.total_observed_mentors) : null,
+        bucket: performanceBucket(r.overall_quality_index),
+      };
+    })
+    .sort((a, b) => (b.overall_quality_index || 0) - (a.overall_quality_index || 0));
+
+  if (rows.length === 0) return <Placeholder label="No CUs found for this region." />;
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th style={THWRAP}>CU</th>
+            <th style={THWRAP}>Assigned</th>
+            <th style={THWRAP}>Observed</th>
+            <th style={THWRAP}>Quality Index</th>
+            <th style={THWRAP}>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.cu} className="clickable" onClick={() => onDrillCu(r.region, r.cu, null)}>
+              <td style={{ fontWeight: 700 }}>{r.cu}<DrillTag /></td>
+              <td style={{ textAlign: 'center' }}>{r.goldAssigned != null ? r.goldAssigned : '—'}</td>
+              <td style={{ textAlign: 'center' }}>{r.goldObserved != null ? r.goldObserved : '—'}</td>
+              <td style={{ textAlign: 'center', fontWeight: 700, color: PERF_COLOR[r.bucket] }}>{r.overall_quality_index != null ? r.overall_quality_index.toFixed(2) : '—'}</td>
+              <td style={{ textAlign: 'center', color: PERF_COLOR[r.bucket], fontWeight: 700 }}>{PERF_LABEL[r.bucket]}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MentorDrillList({ loading, rows, onDrillMentor }) {
+  if (loading) return <Placeholder label="Loading mentors…" />;
+  if (rows.length === 0) return <Placeholder label="No observed mentors found for this CU/term." />;
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th style={THWRAP}>Mentor ID</th>
+            <th style={THWRAP}>Observations</th>
+            <th style={THWRAP}>Sessions</th>
+            <th style={THWRAP}>Concept Clarity</th>
+            <th style={THWRAP}>Visual Aids</th>
+            <th style={THWRAP}>Participation</th>
+            <th style={THWRAP}>Classroom Climate</th>
+            <th style={THWRAP}>Entrepreneurship</th>
+            <th style={THWRAP}>Gender Inclusivity</th>
+            <th style={THWRAP}>Quality Index</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const bucket = performanceBucket(r.mentor_quality_index);
+            return (
+              <tr key={r.mentor_id} className="clickable" onClick={() => onDrillMentor(r.mentor_id)}>
+                <td style={{ fontWeight: 700 }}>{r.mentor_id}<DrillTag label="All observations" /></td>
+                <td style={{ textAlign: 'center' }}>{r.total_observations}</td>
+                <td style={{ textAlign: 'center' }}>{r.sessions_observed}</td>
+                <td style={{ textAlign: 'center' }}>{r.avg_concept_clarity}</td>
+                <td style={{ textAlign: 'center' }}>{r.avg_visual_aids}</td>
+                <td style={{ textAlign: 'center' }}>{r.avg_participation}</td>
+                <td style={{ textAlign: 'center' }}>{r.avg_classroom_climate}</td>
+                <td style={{ textAlign: 'center' }}>{r.avg_entrepreneurship_examples}</td>
+                <td style={{ textAlign: 'center' }}>{r.avg_gender_inclusivity}</td>
+                <td style={{ textAlign: 'center', fontWeight: 700, color: PERF_COLOR[bucket] }}>{r.mentor_quality_index}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MentorObservationDrillList({ loading, rows }) {
+  if (loading) return <Placeholder label="Loading observations…" />;
+  if (rows.length === 0) return <Placeholder label="No observations found for this mentor." />;
+
+  const mentorName = rows[0]?.mentor_name;
+  const DIMS = [
+    ['Concept Clarity', 'concept_clarity_score'],
+    ['Visual Aids', 'visual_aids_score'],
+    ['Participation', 'participation_score'],
+    ['Classroom Climate', 'classroom_climate_score'],
+    ['Entrepreneurship', 'entrepreneurship_examples_score'],
+    ['Gender Inclusivity', 'gender_inclusivity_score'],
+  ];
+
+  return (
+    <>
+      {mentorName ? <div style={{ fontWeight: 700, marginBottom: '.75rem' }}>{mentorName}</div> : null}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
+        {rows.map((r, i) => {
+          const bucket = performanceBucket(r.observation_quality_index);
+          return (
+            <div key={i} style={{ padding: '.8rem .9rem', background: '#f8f9fa', borderRadius: 8, fontSize: '.85rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '.4rem', marginBottom: '.5rem' }}>
+                <div style={{ fontWeight: 700 }}>
+                  {r.term || '—'} · {r.session_number} · {r.observation_date}
+                </div>
+                <div style={{ fontWeight: 700, color: PERF_COLOR[bucket] }}>
+                  Quality Index {r.observation_quality_index}/3.0
+                </div>
+              </div>
+              <div style={{ fontSize: '.75rem', color: '#555', marginBottom: '.5rem' }}>
+                Observed by <strong>{r.observer_name || '—'}</strong>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginBottom: '.5rem' }}>
+                {DIMS.map(([label, key]) => (
+                  <span key={key} style={{ fontSize: '.7rem', color: '#555', background: '#fff', border: '1px solid #e9ecef', borderRadius: 999, padding: '.15rem .55rem' }}>
+                    {label}: <strong>{r[key]}</strong>
+                  </span>
+                ))}
+              </div>
+              <div style={{ color: '#333' }}>{r.comment || <span style={{ color: '#999' }}>No comment recorded.</span>}</div>
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+function ThemeCommentDrillList({ themeKey, comments, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch }) {
+  const q = commentSearch.trim().toLowerCase();
+  const filtered = comments.filter((c) => c.themes.some((t) => t.key === themeKey && (sentimentFilter === 'all' || t.sentiment === sentimentFilter)))
+    .filter((c) => !q || c.comment.toLowerCase().includes(q));
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: '.4rem', marginBottom: '.75rem' }}>
+        {[['all', 'All'], ['strength', 'Strength'], ['growth_area', 'Growth area']].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setSentimentFilter(key)}
+            style={{
+              border: '1px solid #dee2e6', borderRadius: 999, padding: '.3rem .8rem', fontSize: '.75rem', fontWeight: 700, cursor: 'pointer',
+              background: sentimentFilter === key ? C.navy : '#fff', color: sentimentFilter === key ? '#fff' : '#555',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <input
+        type="text"
+        placeholder="Search comments…"
+        value={commentSearch}
+        onChange={(e) => setCommentSearch(e.target.value)}
+        style={{ width: '100%', boxSizing: 'border-box', padding: '.5rem .75rem', borderRadius: 8, border: '1px solid #dee2e6', marginBottom: '.75rem', fontSize: '.85rem' }}
+      />
+      <div style={{ fontSize: '.75rem', color: '#888', marginBottom: '.5rem' }}>{filtered.length} comment{filtered.length !== 1 ? 's' : ''}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '.6rem' }}>
+        {filtered.slice(0, 100).map((c, i) => (
+          <div key={i} style={{ padding: '.6rem .8rem', background: '#f8f9fa', borderRadius: 8, fontSize: '.85rem' }}>
+            <div style={{ fontWeight: 700, marginBottom: '.2rem' }}>{c.region} · {c.cu} · {c.term || '—'} · {c.session_number} · Mentor {c.mentor_id}</div>
+            <div style={{ color: '#333' }}>{c.comment}</div>
+          </div>
+        ))}
+        {filtered.length === 0 ? <Placeholder label="No comments match this filter." /> : null}
+      </div>
+    </>
+  );
+}
+
 export default function NationalView({ summaryData, schoolData, year, term, onDrill }) {
   const [tab, setTab] = useState('exec');
   const data = useMemo(
@@ -1661,6 +2340,7 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
       {tab === 'lec' ? <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
       {tab === 'pb' ? <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
       {tab === 'quality' ? <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
+      {tab === 'mentor' ? <MentorQualityTab term={term} year={year} summaryData={summaryData} /> : null}
     </div>
   );
 }

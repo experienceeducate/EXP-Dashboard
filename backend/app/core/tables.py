@@ -18,3 +18,9 @@ DASHBOARD_MODEL = settings.table_ref
 # Row-level granularity marker.
 LEVEL_CU = "cu"
 LEVEL_SCHOOL = "school"
+
+# ── Mentor Quality (see docs/DECISION.md ADR-008) ───────────────────────────
+# A second data source, deliberately separate from DASHBOARD_MODEL: mentor
+# observation/roster data isn't (yet) folded into the gold_exp model.
+MENTOR_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_lec_observation_form`"
+MENTOR_ROSTER = f"`{settings.BQ_PROJECT_ID}.bronze_exp.mentor_2026`"

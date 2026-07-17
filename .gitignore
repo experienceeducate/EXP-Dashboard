@@ -35,3 +35,11 @@ frontend/.env.local
 Thumbs.db
 .idea/
 .vscode/
+
+# Personal notes
+SETUP_CHEATSHEET.md
+
+# Reference/scratch material dropped in repo root, not part of the app
+/index.html
+/lec_observation_data_sql.sql
+/2026_EXP_Product_Dashboard.pdf

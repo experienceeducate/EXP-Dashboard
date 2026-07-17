@@ -11,7 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app import auth
 from app.core.config import settings
-from app.routers import cu, health, overview
+from app.routers import cu, health, mentor_quality, overview
 
 # Paths that bypass the custom client-header guard. Browsers don't attach custom
 # headers to cross-site OAuth redirects, and tooling needs the docs/health.
@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(overview.router)
     app.include_router(cu.router)
+    app.include_router(mentor_quality.router)
     return app
 
 
