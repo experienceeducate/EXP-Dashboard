@@ -19,17 +19,19 @@ const SSO_ERRORS = {
   oauth_failed: 'Google sign-in failed. Please try again.',
 };
 
+// Consume the OAuth redirect fragment (#token / #error) exactly once at module
+// load — before React renders. Token storage and hash-stripping are side effects
+// and must NOT run inside a component render (render must stay pure; StrictMode
+// double-invokes initializers, and concurrent renders can be discarded).
+const INITIAL_SSO_ERROR = (() => {
+  const { error } = api.consumeAuthRedirect();
+  return error ? SSO_ERRORS[error] || 'Sign-in failed. Please try again.' : '';
+})();
+
 export default function App() {
-  // Consume the OAuth redirect fragment (#token / #error) before deciding auth
-  // state. Lazy useState initializers run once, in declaration order, so this
-  // stores the token (if any) before `authed` reads it below.
-  const [ssoError] = useState(() => {
-    const { error } = api.consumeAuthRedirect();
-    return error ? SSO_ERRORS[error] || 'Sign-in failed. Please try again.' : '';
-  });
   const [authed, setAuthed] = useState(() => !!api.getToken());
   const [user, setUser] = useState(null);
-  const [loginError, setLoginError] = useState(ssoError);
+  const [loginError, setLoginError] = useState(INITIAL_SSO_ERROR);
   const [loginBusy, setLoginBusy] = useState(false);
 
   const [loading, setLoading] = useState(false);
@@ -161,6 +163,7 @@ export default function App() {
     api.clearToken();
     setAuthed(false);
     setUser(null);
+    setLoginError('');
     setSummaryData([]);
     setSchoolData([]);
     setAccess(null);
@@ -186,7 +189,14 @@ export default function App() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (!authed) {
-    return <LoginScreen onLogin={handleLogin} error={loginError} busy={loginBusy} />;
+    return (
+      <LoginScreen
+        onLogin={handleLogin}
+        error={loginError}
+        busy={loginBusy}
+        onDismissError={() => setLoginError('')}
+      />
+    );
   }
 
   if (loading && summaryData.length === 0) {

@@ -16,6 +16,7 @@ key. Fine for an internal pilot.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from authlib.integrations.starlette_client import OAuth
@@ -27,6 +28,8 @@ from pydantic import BaseModel
 
 from app.core.access import UserAccess, resolve_access
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=True)
@@ -128,6 +131,9 @@ async def google_callback(request: Request):
     try:
         token = await oauth.google.authorize_access_token(request)
     except Exception:  # noqa: BLE001 — bad state, expired code, user-denied consent, etc.
+        # Swallowed from the client (redirect to the SPA), but log server-side so
+        # OAuth misconfig (redirect_uri mismatch, clock skew, …) is debuggable.
+        logger.exception("Google OAuth callback failed")
         return _sso_error("oauth_failed")
 
     userinfo = token.get("userinfo") or {}

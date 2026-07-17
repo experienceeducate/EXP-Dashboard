@@ -16,14 +16,22 @@ function GoogleMark() {
 
 // Primary sign-in is Google SSO. The email+password form is kept as a hidden
 // break-glass fallback (local dev, non-domain accounts) — revealed by a link.
-export default function LoginScreen({ onLogin, error, busy }) {
+export default function LoginScreen({ onLogin, error, busy, onDismissError }) {
   const [showFallback, setShowFallback] = useState(false);
+  const [redirecting, setRedirecting] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   const submit = (e) => {
     e.preventDefault();
     onLogin(email.trim().toLowerCase(), password);
+  };
+
+  // Clear a stale error (e.g. an SSO #error) when switching between the Google
+  // and password panels so it isn't shown against the wrong context.
+  const toggleFallback = (next) => {
+    if (onDismissError) onDismissError();
+    setShowFallback(next);
   };
 
   return (
@@ -41,13 +49,14 @@ export default function LoginScreen({ onLogin, error, busy }) {
             <button
               className="login-google"
               type="button"
-              disabled={busy}
+              disabled={busy || redirecting}
               onClick={() => {
+                setRedirecting(true);
                 window.location.href = googleLoginUrl();
               }}
             >
               <GoogleMark />
-              {busy ? 'Signing in…' : 'Sign in with Google'}
+              {redirecting ? 'Redirecting…' : 'Sign in with Google'}
             </button>
             <div className="login-info">
               Sign in with your <strong>@experienceeducate.org</strong> Google account. Your access
@@ -56,7 +65,7 @@ export default function LoginScreen({ onLogin, error, busy }) {
             <button
               className="login-fallback-link"
               type="button"
-              onClick={() => setShowFallback(true)}
+              onClick={() => toggleFallback(true)}
             >
               Sign in with a password instead
             </button>
@@ -87,7 +96,7 @@ export default function LoginScreen({ onLogin, error, busy }) {
             <button
               className="login-fallback-link"
               type="button"
-              onClick={() => setShowFallback(false)}
+              onClick={() => toggleFallback(false)}
             >
               Back to Google sign-in
             </button>
