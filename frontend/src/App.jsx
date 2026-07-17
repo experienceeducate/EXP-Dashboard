@@ -205,10 +205,34 @@ export default function App() {
                 </select>
                 {cu ? (
                   <>
-                    <input className="header-input" placeholder="School name…" value={schoolFilter} onChange={(e) => setSchoolFilter(e.target.value)} />
-                    <input className="header-input" placeholder="Mentor name…" value={mentorFilter} onChange={(e) => setMentorFilter(e.target.value)} />
+                    <div className="header-input-wrap">
+                      <input
+                        className="header-input"
+                        placeholder="School name…"
+                        inputMode="search"
+                        autoComplete="off"
+                        value={schoolFilter}
+                        onChange={(e) => setSchoolFilter(e.target.value)}
+                      />
+                      {schoolFilter ? (
+                        <button type="button" className="header-input-clear" aria-label="Clear school filter" onClick={() => setSchoolFilter('')}>✕</button>
+                      ) : null}
+                    </div>
+                    <div className="header-input-wrap">
+                      <input
+                        className="header-input"
+                        placeholder="Mentor name…"
+                        inputMode="search"
+                        autoComplete="off"
+                        value={mentorFilter}
+                        onChange={(e) => setMentorFilter(e.target.value)}
+                      />
+                      {mentorFilter ? (
+                        <button type="button" className="header-input-clear" aria-label="Clear mentor filter" onClick={() => setMentorFilter('')}>✕</button>
+                      ) : null}
+                    </div>
                     {(schoolFilter || mentorFilter) ? (
-                      <button className="header-clear-btn" onClick={() => { setSchoolFilter(''); setMentorFilter(''); }}>✕ Clear</button>
+                      <button className="header-clear-btn" onClick={() => { setSchoolFilter(''); setMentorFilter(''); }}>✕ Clear all</button>
                     ) : null}
                   </>
                 ) : null}

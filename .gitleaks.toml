@@ -15,4 +15,7 @@ regexes = [
   # Placeholder values used in docs/examples.
   '''change-me.*''',
   '''your-.*-here''',
+  # BigQuery column names, not secrets — the "...Key: 'gm1_total_scholars'" shape
+  # (object property named schlKey) trips the generic-api-key entropy heuristic.
+  '''gm[1-3]_total_scholars''',
 ]

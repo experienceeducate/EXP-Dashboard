@@ -385,6 +385,142 @@ export function computeNationalInsights(summaryData, data, year, term) {
   return insights;
 }
 
+const NATIONAL_REGIONS = ['Central', 'East', 'North', 'South', 'West'];
+
+// ── Executive Summary — Performance Insights (legacy renderNationalDynamicInsights) ─
+// Auto-generated narrative insights. Each item carries a `kind` discriminator
+// plus the raw values needed to render its specific body text.
+export function computeExecutiveInsights(summaryData, data, year, term) {
+  const lecNums = getLECsForTerm(year, term);
+  const lastLec = lecNums[lecNums.length - 1];
+  const t1Data = summaryData.filter((d) => d.year == year && d.term === 'term1');
+  const t2Data = summaryData.filter((d) => d.year == year && d.term === 'term2');
+  const curData = data;
+
+  const avgScholarsPerSession = (rows, lecs) => {
+    let s = 0;
+    let d = 0;
+    lecs.forEach((n) => {
+      const sc = sum(rows, (r) => N(r[`lec${n}_scholars`]));
+      const dl = sum(rows, (r) => N(r[`schools_with_lec${n}`]));
+      if (dl > 0) { s += sc; d += dl; }
+    });
+    return d > 0 ? s / d : 0;
+  };
+
+  const insights = [];
+
+  // 1. Projected retention explanation (T2 only).
+  if (term === 'term2' && t1Data.length > 0 && t2Data.length > 0) {
+    const t1Lecs = getLECsForTerm(year, 'term1');
+    const t2Lecs = getLECsForTerm(year, 'term2');
+    const t1Avg = avgScholarsPerSession(t1Data, t1Lecs);
+    const deliveredT2 = t2Lecs.filter((n) => t2Data.some((d) => N(d[`schools_with_lec${n}`]) > 0));
+    const recent2 = deliveredT2.slice(-2);
+    const t2Avg = avgScholarsPerSession(t2Data, recent2);
+    const t1Activated = sum(t1Data, (d) => N(d.lec2_scholars));
+    const schoolCount = sum(curData, (d) => N(d.total_target_schools));
+    const projLEC14 = t2Avg > 0 && schoolCount > 0 ? Math.round(t2Avg * schoolCount) : 0;
+    const projRetPct = t1Activated > 0 && projLEC14 > 0 ? Math.round((projLEC14 / t1Activated) * 100) : 0;
+
+    if (t1Avg > 0 && t2Avg > 0 && projRetPct > 0) {
+      insights.push({
+        kind: 'retention_projection', icon: '📈',
+        level: projRetPct >= 90 ? 'good' : projRetPct >= 75 ? 'warn' : 'risk',
+        lastLec, projRetPct, t1Avg, t2Avg, recent2, schoolCount, projLEC14, t1Activated,
+        abovePct: projRetPct >= 100,
+      });
+    }
+  }
+
+  // 2. LEC delivery pace drop-off.
+  if (lecNums.length >= 3) {
+    const totalTargetSchools = sum(curData, (d) => N(d.total_target_schools));
+    const deliveredByLec = lecNums.map((n) => ({
+      n,
+      pct: Math.round((sum(curData, (d) => N(d[`schools_with_lec${n}`])) / Math.max(totalTargetSchools, 1)) * 100),
+    })).filter((x) => x.pct > 0);
+
+    if (deliveredByLec.length >= 2) {
+      const first = deliveredByLec[0];
+      const last = deliveredByLec[deliveredByLec.length - 1];
+      const gap = first.pct - last.pct;
+      const stillPending = totalTargetSchools - sum(curData, (d) => N(d[`schools_with_lec${last.n}`]));
+
+      if (gap >= 20) {
+        insights.push({
+          kind: 'lec_pace_dropoff', icon: '📉',
+          level: gap >= 50 ? 'risk' : 'warn',
+          firstLec: first.n, firstPct: first.pct, lastLec: last.n, lastPct: last.pct, gap, stillPending,
+        });
+      }
+    }
+  }
+
+  // 3. Non-scholar attendance trend.
+  if (term !== 'all' && t1Data.length > 0) {
+    const t1Lecs = getLECsForTerm(year, 'term1');
+    let t1S = 0;
+    let t1NS = 0;
+    t1Lecs.forEach((n) => {
+      t1S += sum(t1Data, (d) => N(d[`lec${n}_scholars`]));
+      t1NS += sum(t1Data, (d) => N(d[`lec${n}_non_scholars`]));
+    });
+    let curS = 0;
+    let curNS = 0;
+    lecNums.forEach((n) => {
+      curS += sum(curData, (d) => N(d[`lec${n}_scholars`]));
+      curNS += sum(curData, (d) => N(d[`lec${n}_non_scholars`]));
+    });
+    const t1NSRatio = t1S > 0 ? (t1NS / t1S) * 100 : 0;
+    const curNSRatio = curS > 0 ? (curNS / curS) * 100 : 0;
+    if (t1NSRatio > 0 && curNSRatio > 0) {
+      const termLabel = term === 'term2' ? 'Term 2' : term === 'term3' ? 'Term 3' : 'this term';
+      insights.push({
+        kind: 'non_scholar_trend', icon: '👥', level: 'info',
+        curNSRatio, t1NSRatio, curNS, termLabel, diff: curNSRatio - t1NSRatio,
+      });
+    }
+  }
+
+  // 4. Observation coverage flag.
+  const obsRows = term === 'all' ? summaryData.filter((d) => d.year == year && d.term === 'term1') : curData;
+  const totalMen = sum(obsRows, (d) => Math.max(N(d.total_active_mentors), 0));
+  const obsMen = sum(obsRows, (d) => Math.min(N(d.total_observed_mentors), N(d.total_active_mentors)));
+  const obsPct = totalMen > 0 ? Math.round((obsMen / totalMen) * 100) : 0;
+  const unobsMen = totalMen - obsMen;
+  if (totalMen > 0 && obsPct < 100) {
+    const zeroObsCUs = obsRows.filter((d) => N(d.total_observed_mentors) === 0 && N(d.total_active_mentors) > 0);
+    insights.push({
+      kind: 'observation_flag', icon: '👁️',
+      level: obsPct >= 80 ? 'good' : obsPct >= 50 ? 'warn' : 'risk',
+      obsPct, obsMen, totalMen, unobsMen, zeroObsCUs: zeroObsCUs.map((d) => d.cu),
+    });
+  }
+
+  // 5. PB quality regional flag.
+  const pbSrc = t1Data.length > 0 ? t1Data : curData;
+  const pbQ = sum(pbSrc, (d) => N(d.m1_quality_rated) + N(d.m2_quality_rated));
+  const pbT = sum(pbSrc, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
+  const pbPct = pbT > 0 ? Math.round((pbQ / pbT) * 100) : 0;
+  const regPB = NATIONAL_REGIONS.map((reg) => {
+    const rRows = pbSrc.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
+    const rQ = sum(rRows, (d) => N(d.m1_quality_rated) + N(d.m2_quality_rated));
+    const rT = sum(rRows, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
+    return { reg, pct: rT > 0 ? Math.round((rQ / rT) * 100) : null };
+  }).filter((r) => r.pct !== null);
+  const belowAvg = regPB.filter((r) => r.pct < pbPct - 5).sort((a, b) => a.pct - b.pct);
+  if (pbPct > 0 && belowAvg.length > 0) {
+    insights.push({
+      kind: 'pb_quality_flag', icon: '📋',
+      level: belowAvg[0].pct < 70 ? 'risk' : 'warn',
+      pbPct, belowAvg,
+    });
+  }
+
+  return insights;
+}
+
 // ── Regional Issue Summary (legacy renderRegionalIssueSummary) ───────────────
 // data = CU rows for the region/term. Returns { issues, bottom5 }.
 export function computeRegionalIssues(data, summaryData, year, term) {
@@ -504,7 +640,25 @@ export function computeCuPriorityAlerts(data, year, term) {
     });
   }
 
-  // 3. Schools with no PB milestone reported (only when some have).
+  // 3. Mentors who haven't attended a peer circle.
+  const noPeerCircle = mentors.filter((m) => !(N(m.unique_peer_circle_meetings_held) > 0));
+  if (noPeerCircle.length > 0) {
+    alerts.push({
+      priority: noPeerCircle.length === mentors.length ? 'high' : 'medium',
+      category: 'Peer Circle',
+      title: `${noPeerCircle.length} Mentor${noPeerCircle.length > 1 ? 's' : ''} Have Not Attended a Peer Circle`,
+      description: 'Peer circle attendance is required for mentor development. Follow up with these mentors to schedule participation.',
+      metrics: [
+        { value: noPeerCircle.length, label: 'Mentors Missing' },
+        { value: `${mentors.length ? Math.round(noPeerCircle.length / mentors.length * 100) : 0}%`, label: 'Of Total Mentors' },
+        { value: mentors.length - noPeerCircle.length, label: 'Attended' },
+      ],
+      action: 'Schedule Peer Circles',
+      schools: noPeerCircle.map((m) => ({ name: `${m.mentor_name || '—'} (${m.school_name})`, mentor: m.mentor_name || '—' })),
+    });
+  }
+
+  // 4. Schools with no PB milestone reported (only when some have).
   const noPB = schools.filter((s) => !N(s.schools_completed_m1));
   if (noPB.length > 0 && noPB.length < schools.length) {
     alerts.push({
@@ -521,7 +675,7 @@ export function computeCuPriorityAlerts(data, year, term) {
     });
   }
 
-  // 4. Low recruitment (T1 only, < 35 scholars).
+  // 5. Low recruitment (T1 only, < 35 scholars).
   if (isT1) {
     const lowRec = schools.filter((s) => { const r = N(s.total_scholars_recruited); return r > 0 && r < 35; });
     if (lowRec.length > 0) {
@@ -540,7 +694,7 @@ export function computeCuPriorityAlerts(data, year, term) {
     }
   }
 
-  // 5. LEC clustering (>60% of LECs in one week, ≥3 LECs).
+  // 6. LEC clustering (>60% of LECs in one week, ≥3 LECs).
   const clustered = mentors.map((m) => {
     const wks = {};
     lecNums.forEach((n) => { const w = m[`lec${n}_max_week`]; if (w) wks[w] = (wks[w] || 0) + 1; });
@@ -589,4 +743,41 @@ export function computeNonScholar(schoolData, year, term) {
     else buckets['31+'] += 1;
   });
   return { total: rows.length, withNS, pctWith, buckets };
+}
+
+const NS_BUCKETS = ['0', '1-10', '11-20', '21-30', '31+'];
+
+// ── Non-Scholar distribution by region (legacy renderNationalNonScholarBreakdown) ─
+// Buckets each school by its AVERAGE non-scholars per delivered LEC (not the sum
+// across the term), matching the legacy calculation exactly.
+export function computeNonScholarBreakdown(schoolData, year, term) {
+  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
+  const rows = schoolData.filter((d) => String(d.year) == year && (term === 'all' ? true : d.term === term));
+
+  const bucketOf = (v) => (v === 0 ? '0' : v <= 10 ? '1-10' : v <= 20 ? '11-20' : v <= 30 ? '21-30' : '31+');
+  const avgFor = (s) => {
+    let totalNS = 0;
+    let totalDel = 0;
+    lecNums.forEach((n) => {
+      if (N(s[`schools_with_lec${n}`])) { totalNS += N(s[`lec${n}_non_scholars`]); totalDel += 1; }
+    });
+    return totalDel > 0 ? totalNS / totalDel : 0;
+  };
+
+  const schoolAvgs = rows.map((s) => ({ region: s.region, avgNS: avgFor(s) }));
+  const natCounts = Object.fromEntries(NS_BUCKETS.map((b) => [b, 0]));
+  schoolAvgs.forEach((s) => { natCounts[bucketOf(s.avgNS)] += 1; });
+  const natTotal = schoolAvgs.length;
+  const natMaxAvg = natTotal > 0 ? Math.max(...schoolAvgs.map((s) => s.avgNS)) : 0;
+
+  const regions = [...new Set(schoolAvgs.map((s) => s.region).filter(Boolean))].sort();
+  const regionData = regions.map((region) => {
+    const rSchools = schoolAvgs.filter((s) => s.region === region);
+    const counts = Object.fromEntries(NS_BUCKETS.map((b) => [b, 0]));
+    rSchools.forEach((s) => { counts[bucketOf(s.avgNS)] += 1; });
+    const maxAvg = rSchools.length > 0 ? Math.max(...rSchools.map((s) => s.avgNS)) : 0;
+    return { region, counts, total: rSchools.length, maxAvg };
+  });
+
+  return { buckets: NS_BUCKETS, natCounts, natTotal, natMaxAvg, regionData };
 }
