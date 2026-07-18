@@ -12,6 +12,8 @@ from typing import Any, Sequence
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
+from cachetools import TTLCache
+
 from app.core.cache import make_key, query_cache
 from app.core.config import settings
 
@@ -20,6 +22,13 @@ from app.core.config import settings
 _SCOPES = ["https://www.googleapis.com/auth/bigquery"]
 
 _client: bigquery.Client | None = None
+
+# Some silver_exp survey sources are mid-term forms whose exported schema
+# grows/shrinks as submissions land (a column with zero populated rows so far
+# can vanish from the table entirely — see docs/DECISION.md ADR-008
+# follow-up). A short-TTL cache lets column-existence checks pick up a schema
+# change without a full pod restart, without hitting the metadata API per request.
+_schema_cache: TTLCache = TTLCache(maxsize=32, ttl=600)
 
 
 def get_client() -> bigquery.Client:
@@ -63,6 +72,19 @@ def run_query(
     if use_cache:
         query_cache[key] = rows
     return rows
+
+
+def get_table_columns(table_ref: str) -> set[str]:
+    """Column names currently present on ``table_ref`` (backtick-quoted or bare).
+
+    See the ``_schema_cache`` note above for why this is needed and re-checked
+    periodically rather than assumed stable for the process lifetime.
+    """
+    bare_ref = table_ref.strip("`")
+    if bare_ref not in _schema_cache:
+        table = get_client().get_table(bare_ref)
+        _schema_cache[bare_ref] = {f.name for f in table.schema}
+    return _schema_cache[bare_ref]
 
 
 def _param_repr(p: Any) -> tuple:

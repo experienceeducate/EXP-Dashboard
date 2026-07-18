@@ -194,3 +194,41 @@ export async function fetchMentorQualityMentorObservations(cu, mentorId, term) {
   if (term && term !== 'all') params.set('term', term);
   return request(`/api/mentor-quality/mentor-observations?${params.toString()}`);
 }
+
+// GET /api/mentor-quality/highlights?term=term1 → { status, lec, skills_day, group_mentoring, combined_theme_summary }
+// National top-line rollup across all 3 Mentor Quality sources — the Highlights sub-tab.
+export async function fetchMentorQualityHighlights(term) {
+  return request(`/api/mentor-quality/highlights${mentorQualityQuery(term)}`);
+}
+
+// Skills Day and Group Mentoring (3rd/4th Mentor Quality sources) share the
+// same shape as the LEC endpoints above (summary-by-cu / mentors / mentor-
+// observations / comments) — built generically over the URL prefix.
+function mentorQualitySourceApi(prefix) {
+  return {
+    fetchSummaryByCu: (term) => request(`/api/mentor-quality/${prefix}/summary-by-cu${mentorQualityQuery(term)}`),
+    fetchMentors: (cu, term) => {
+      const params = new URLSearchParams({ cu });
+      if (term && term !== 'all') params.set('term', term);
+      return request(`/api/mentor-quality/${prefix}/mentors?${params.toString()}`);
+    },
+    fetchMentorObservations: (cu, mentorId, term) => {
+      const params = new URLSearchParams({ cu, mentor_id: mentorId });
+      if (term && term !== 'all') params.set('term', term);
+      return request(`/api/mentor-quality/${prefix}/mentor-observations?${params.toString()}`);
+    },
+    fetchComments: (term) => request(`/api/mentor-quality/${prefix}/comments${mentorQualityQuery(term)}`),
+  };
+}
+
+const skillsDayApi = mentorQualitySourceApi('skills-day');
+export const fetchSkillsDaySummaryByCu = skillsDayApi.fetchSummaryByCu;
+export const fetchSkillsDayMentors = skillsDayApi.fetchMentors;
+export const fetchSkillsDayMentorObservations = skillsDayApi.fetchMentorObservations;
+export const fetchSkillsDayComments = skillsDayApi.fetchComments;
+
+const groupMentoringApi = mentorQualitySourceApi('group-mentoring');
+export const fetchGroupMentoringSummaryByCu = groupMentoringApi.fetchSummaryByCu;
+export const fetchGroupMentoringMentors = groupMentoringApi.fetchMentors;
+export const fetchGroupMentoringMentorObservations = groupMentoringApi.fetchMentorObservations;
+export const fetchGroupMentoringComments = groupMentoringApi.fetchComments;

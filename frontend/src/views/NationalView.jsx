@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as api from '../lib/api.js';
+import { LMM_METRICS } from '../data/learningMeasurementMap.js';
+import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
+import { resolveLiveMetric } from '../lib/lmmLiveMetrics.js';
 import { getLECsForTerm, C, TERM_CONFIG } from '../lib/config.js';
 import {
   computeNationalKpis,
@@ -30,6 +33,7 @@ const TABS = [
   { id: 'pb', label: '📋 Passbook Quality' },
   { id: 'quality', label: '🏅 Programme Quality' },
   { id: 'mentor', label: '🎓 Mentor Quality' },
+  { id: 'lmm', label: '🗺️ Learning & Measurement Map' },
 ];
 
 // ── Executive Summary ────────────────────────────────────────────────────────
@@ -1640,17 +1644,8 @@ export function TimelinessLegend() {
 }
 
 // ── Mentor Quality (second BigQuery source — see docs/DECISION.md ADR-008) ──
-const PERF_LABEL = { excellent: 'Exceeding Expectations', meets: 'Meeting Expectations', below: 'Below Expectations', no_observations: 'No Observations' };
-const PERF_COLOR = { excellent: C.green, meets: C.yellow, below: C.red, no_observations: '#adb5bd' };
-const FLAG_LABEL = {
-  no_observations: '❌ No observations for this CU',
-  low_observation_count: '⚠ Low observation count (<3)',
-  high_variability: '⚠ High performance variability',
-  needs_urgent_support: '❌ Needs urgent support',
-  not_all_mentors_observed: '⚠ Not all mentors observed',
-  adequate_data: '✓ Adequate data',
-};
-
+const PERF_LABEL = { excellent: 'Exceeding Expectations', meets: 'Meeting Expectations', below: 'Below Expectations', no_observations: 'No Observations', unrated: 'Ratings Pending' };
+const PERF_COLOR = { excellent: C.green, meets: C.yellow, below: C.red, no_observations: '#adb5bd', unrated: '#c98a00' };
 function weightedAvg(rows, valueKey, weightKey) {
   let total = 0;
   let den = 0;
@@ -1665,8 +1660,13 @@ function weightedAvg(rows, valueKey, weightKey) {
   return den > 0 ? total / den : null;
 }
 
-function performanceBucket(qi) {
-  if (qi == null) return 'no_observations';
+function performanceBucket(qi, hasObservations) {
+  // `hasObservations` distinguishes "no observations submitted" from "observed,
+  // but the rated dimensions aren't populated yet" (e.g. Group Mentoring Term 2
+  // rows currently exist with zero populated rating fields — see docs/DECISION.md
+  // ADR-008 follow-up). Existing callers that don't pass it keep the old
+  // (observations-agnostic) behaviour.
+  if (qi == null) return hasObservations ? 'unrated' : 'no_observations';
   return qi > 2.5 ? 'excellent' : qi >= 2.0 ? 'meets' : 'below';
 }
 
@@ -1675,7 +1675,7 @@ const normCu = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 // Wrap header text instead of forcing horizontal scroll (tables have 8-12 columns).
 const THWRAP = { whiteSpace: 'normal', overflowWrap: 'break-word', maxWidth: 105 };
 
-function MentorQualityTab({ term, year, summaryData }) {
+function LecObservationSubTab({ term, year, summaryData }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cuRows, setCuRows] = useState([]);
@@ -1947,7 +1947,7 @@ function MentorQualityTab({ term, year, summaryData }) {
             <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem', color: C.red }}>Lowest scoring CUs</div>
             <div className="table-wrap">
               <table className="breakdown-table">
-                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Term</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}># Mentors Observed</th><th style={THWRAP}>Flag</th></tr></thead>
+                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Term</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}># Mentors Observed</th></tr></thead>
                 <tbody>
                   {lowest.map((r, i) => (
                     <tr key={`${r.region}-${r.cu}-${r.term}-${i}`} className="clickable" onClick={() => pushDrill({ kind: 'cu', region: r.region, cu: r.cu, term: r.term })}>
@@ -1956,7 +1956,6 @@ function MentorQualityTab({ term, year, summaryData }) {
                       <td>{r.term}</td>
                       <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(r.overall_quality_index * 33.3, 80, 60) }}>{r.overall_quality_index.toFixed(2)}</td>
                       <td style={{ textAlign: 'center' }}>{r.goldMentorsObserved != null ? r.goldMentorsObserved : '—'}</td>
-                      <td style={{ fontSize: '.8rem' }}>{FLAG_LABEL[r.data_quality_flag] || r.data_quality_flag}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1967,7 +1966,7 @@ function MentorQualityTab({ term, year, summaryData }) {
             <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem', color: C.green }}>Highest scoring CUs</div>
             <div className="table-wrap">
               <table className="breakdown-table">
-                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Term</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}># Mentors Observed</th><th style={THWRAP}>Flag</th></tr></thead>
+                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Term</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}># Mentors Observed</th></tr></thead>
                 <tbody>
                   {highest.map((r, i) => (
                     <tr key={`${r.region}-${r.cu}-${r.term}-${i}`} className="clickable" onClick={() => pushDrill({ kind: 'cu', region: r.region, cu: r.cu, term: r.term })}>
@@ -1976,7 +1975,6 @@ function MentorQualityTab({ term, year, summaryData }) {
                       <td>{r.term}</td>
                       <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(r.overall_quality_index * 33.3, 80, 60) }}>{r.overall_quality_index.toFixed(2)}</td>
                       <td style={{ textAlign: 'center' }}>{r.goldMentorsObserved != null ? r.goldMentorsObserved : '—'}</td>
-                      <td style={{ fontSize: '.8rem' }}>{FLAG_LABEL[r.data_quality_flag] || r.data_quality_flag}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2274,7 +2272,10 @@ function MentorObservationDrillList({ loading, rows }) {
   );
 }
 
-function ThemeCommentDrillList({ themeKey, comments, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch }) {
+function ThemeCommentDrillList({
+  themeKey, comments, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch,
+  renderMeta = (c) => `${c.region} · ${c.cu} · ${c.term || '—'} · ${c.session_number} · Mentor ${c.mentor_id}`,
+}) {
   const q = commentSearch.trim().toLowerCase();
   const filtered = comments.filter((c) => c.themes.some((t) => t.key === themeKey && (sentimentFilter === 'all' || t.sentiment === sentimentFilter)))
     .filter((c) => !q || c.comment.toLowerCase().includes(q));
@@ -2306,13 +2307,1117 @@ function ThemeCommentDrillList({ themeKey, comments, sentimentFilter, setSentime
       <div style={{ display: 'flex', flexDirection: 'column', gap: '.6rem' }}>
         {filtered.slice(0, 100).map((c, i) => (
           <div key={i} style={{ padding: '.6rem .8rem', background: '#f8f9fa', borderRadius: 8, fontSize: '.85rem' }}>
-            <div style={{ fontWeight: 700, marginBottom: '.2rem' }}>{c.region} · {c.cu} · {c.term || '—'} · {c.session_number} · Mentor {c.mentor_id}</div>
+            <div style={{ fontWeight: 700, marginBottom: '.2rem' }}>{renderMeta(c)}</div>
             <div style={{ color: '#333' }}>{c.comment}</div>
           </div>
         ))}
         {filtered.length === 0 ? <Placeholder label="No comments match this filter." /> : null}
       </div>
     </>
+  );
+}
+
+// ── Mentor Quality sub-tabs: Highlights / Group Mentoring / Skills Day ──────
+// (LEC Observation is LecObservationSubTab above — the original, longest-
+// established Mentor Quality source. See docs/DECISION.md ADR-008 follow-up.)
+
+const MQ_SUBTABS = [
+  { id: 'highlights', label: '✨ Highlights' },
+  { id: 'lec', label: '📋 LEC Observation' },
+  { id: 'group-mentoring', label: '👥 Group Mentoring' },
+  { id: 'skills-day', label: '🧴 Skills Day' },
+];
+
+function MentorQualityTab({ term, year, summaryData }) {
+  const [subTab, setSubTab] = useState('highlights');
+  return (
+    <div>
+      <div className="nat-tab-bar" style={{ marginBottom: '1.25rem' }}>
+        {MQ_SUBTABS.map((t) => (
+          <button key={t.id} type="button" className={`nat-tab-btn ${subTab === t.id ? 'active' : ''}`} onClick={() => setSubTab(t.id)}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {subTab === 'highlights' ? <MentorQualityHighlightsSubTab term={term} onJumpSubTab={setSubTab} /> : null}
+      {subTab === 'lec' ? <LecObservationSubTab term={term} year={year} summaryData={summaryData} /> : null}
+      {subTab === 'group-mentoring' ? (
+        <ObservationSourceSubTab
+          term={term}
+          title="Group Mentoring"
+          api={{
+            fetchSummaryByCu: api.fetchGroupMentoringSummaryByCu,
+            fetchMentors: api.fetchGroupMentoringMentors,
+            fetchMentorObservations: api.fetchGroupMentoringMentorObservations,
+            fetchComments: api.fetchGroupMentoringComments,
+          }}
+          dimensionColumns={[
+            { key: 'avg_overall_performance', label: 'Overall Performance' },
+            { key: 'avg_guidance_quality', label: 'Guidance Quality' },
+            { key: 'avg_action_plan', label: 'Action Plan' },
+            { key: 'avg_scholar_engagement', label: 'Scholar Engagement (T2)' },
+          ]}
+          extraKpis={[
+            {
+              label: 'Passbook Referenced (T2)',
+              value: (rows) => { const v = weightedAvg(rows.filter((r) => r.pct_passbook_referenced != null), 'pct_passbook_referenced', 'total_observations'); return v != null ? Math.round(v) : '—'; },
+              unit: '%',
+              sub: () => 'Term 2 sessions only',
+            },
+          ]}
+          renderMentorRow={(r) => (
+            <>
+              <td style={{ textAlign: 'center' }}>{r.avg_overall_performance ?? '—'}</td>
+              <td style={{ textAlign: 'center' }}>{r.avg_guidance_quality ?? '—'}</td>
+              <td style={{ textAlign: 'center' }}>{r.avg_action_plan ?? '—'}</td>
+            </>
+          )}
+          mentorColumns={['Overall Performance', 'Guidance Quality', 'Action Plan']}
+          renderObservation={(r) => (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginBottom: '.5rem' }}>
+                {[
+                  ['Overall Performance', r.overall_score],
+                  ['Guidance Quality', r.guidance_score],
+                  ['Action Plan', r.action_plan_score],
+                  r.engagement_score != null ? ['Scholar Engagement', r.engagement_score] : null,
+                ].filter(Boolean).map(([label, val]) => (
+                  <span key={label} style={{ fontSize: '.7rem', color: '#555', background: '#fff', border: '1px solid #e9ecef', borderRadius: 999, padding: '.15rem .55rem' }}>
+                    {label}: <strong>{val}</strong>
+                  </span>
+                ))}
+              </div>
+              <div style={{ fontSize: '.75rem', color: '#555', marginBottom: '.4rem' }}>
+                {r.session_type ? <>Session: <strong>{r.session_type}</strong> · </> : null}
+                {r.duration_mins != null ? <>{r.duration_mins} min · </> : null}
+                {r.total_scholars != null ? <>{r.total_scholars} scholars</> : null}
+                {r.passbook_referenced != null ? <> · Passbook referenced: <strong>{r.passbook_referenced === 'yes' ? 'Yes' : 'No'}</strong></> : null}
+              </div>
+            </>
+          )}
+          renderCommentMeta={(c) => `${c.region} · ${c.cu} · ${c.term || '—'} · ${c.session_type || '—'} · Mentor ${c.mentor_id}`}
+        />
+      ) : null}
+      {subTab === 'skills-day' ? (
+        <ObservationSourceSubTab
+          term={term}
+          title="Skills Day"
+          api={{
+            fetchSummaryByCu: api.fetchSkillsDaySummaryByCu,
+            fetchMentors: api.fetchSkillsDayMentors,
+            fetchMentorObservations: api.fetchSkillsDayMentorObservations,
+            fetchComments: api.fetchSkillsDayComments,
+          }}
+          dimensionColumns={[
+            { key: 'avg_objective_clarity', label: 'Objective Clarity' },
+            { key: 'avg_participation', label: 'Participation' },
+            { key: 'avg_tin_quality', label: 'Tin Quality' },
+            { key: 'avg_overall_performance', label: 'Overall Performance' },
+          ]}
+          extraKpis={[
+            {
+              label: 'Led by Mentor',
+              value: (rows) => { const v = weightedAvg(rows, 'pct_led_by_mentor', 'total_observations'); return v != null ? Math.round(v) : '—'; },
+              unit: '%',
+            },
+          ]}
+          renderMentorRow={(r) => (
+            <>
+              <td style={{ textAlign: 'center' }}>{r.avg_objective_clarity ?? '—'}</td>
+              <td style={{ textAlign: 'center' }}>{r.avg_participation ?? '—'}</td>
+              <td style={{ textAlign: 'center' }}>{r.avg_tin_quality ?? '—'}</td>
+              <td style={{ textAlign: 'center' }}>{r.avg_overall_performance ?? '—'}</td>
+            </>
+          )}
+          mentorColumns={['Objective Clarity', 'Participation', 'Tin Quality', 'Overall Performance']}
+          renderObservation={(r) => (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginBottom: '.5rem' }}>
+                {[
+                  ['Objective Clarity', r.objective_score],
+                  ['Participation', r.participation_score],
+                  ['Tin Quality', r.tin_quality_score],
+                  ['Overall Performance', r.overall_score],
+                ].map(([label, val]) => (
+                  <span key={label} style={{ fontSize: '.7rem', color: '#555', background: '#fff', border: '1px solid #e9ecef', borderRadius: 999, padding: '.15rem .55rem' }}>
+                    {label}: <strong>{val}</strong>
+                  </span>
+                ))}
+              </div>
+              <div style={{ fontSize: '.75rem', color: '#555', marginBottom: '.4rem' }}>
+                Led by mentor: <strong>{r.led_by_mentor || '—'}</strong>
+                {r.duration_mins != null ? <> · {r.duration_mins} min</> : null}
+                {r.total_scholars != null ? <> · {r.total_scholars} scholars</> : null}
+              </div>
+            </>
+          )}
+          renderCommentMeta={(c) => `${c.region} · ${c.cu} · ${c.term || '—'} · ${c.field} · Mentor ${c.mentor_id}`}
+          spotlightThemes={{
+            title: '🚀 Entrepreneurship & scale-up signals',
+            themes: [
+              { key: 'entrepreneurial_intent', icon: '💰', bg: '#f0fff4', border: '#bfe6cc' },
+              { key: 'scale_up_demand', icon: '📈', bg: '#fff9e6', border: '#f0dfa0' },
+              { key: 'resource_constraints', icon: '⚠️', bg: '#fff0f0', border: '#f0c0c0' },
+            ],
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [hl, setHl] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    api
+      .fetchMentorQualityHighlights(term)
+      .then((res) => { if (active) setHl(res); })
+      .catch((e) => { if (active) setError(e.message || 'Failed to load highlights.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [term]);
+
+  if (loading) return <Placeholder label="Loading highlights…" />;
+  if (error) return <Placeholder label={error} />;
+  if (!hl) return <Placeholder label="No mentor quality data for the selected term." />;
+
+  const { lec, skills_day: sd, group_mentoring: gm, combined_theme_summary: themes } = hl;
+  const pctObserved = lec.total_mentors_assigned > 0 ? Math.round((lec.mentors_observed / lec.total_mentors_assigned) * 1000) / 10 : 0;
+
+  const SOURCE_CARDS = [
+    {
+      key: 'lec', icon: '📋', title: 'LEC Observation', jump: 'lec',
+      qi: lec.quality_index, obs: lec.total_observations,
+      extra: `${pctObserved}% mentor coverage (${lec.mentors_observed}/${lec.total_mentors_assigned})`,
+    },
+    {
+      key: 'group-mentoring', icon: '👥', title: 'Group Mentoring', jump: 'group-mentoring',
+      qi: gm.quality_index, obs: gm.total_observations,
+      extra: gm.pct_passbook_referenced != null ? `${Math.round(gm.pct_passbook_referenced)}% referenced Passbook (T2)` : `${gm.mentors_observed} mentors observed`,
+    },
+    {
+      key: 'skills-day', icon: '🧴', title: 'Skills Day', jump: 'skills-day',
+      qi: sd.quality_index, obs: sd.total_observations,
+      extra: sd.pct_led_by_mentor != null ? `${Math.round(sd.pct_led_by_mentor)}% sessions led by mentor` : `${sd.mentors_observed} mentors observed`,
+    },
+  ];
+
+  // Best/worst quality index across the 3 sources, for a comparative insight.
+  const qiRanked = SOURCE_CARDS.filter((s) => s.qi != null).sort((a, b) => b.qi - a.qi);
+  const bestSource = qiRanked[0];
+  const worstSource = qiRanked[qiRanked.length - 1];
+  const qiSpreadMeaningful = bestSource && worstSource && bestSource.key !== worstSource.key && (bestSource.qi - worstSource.qi) >= 0.1;
+
+  // The single most-mentioned growth-area theme across all 3 sources — the
+  // clearest "where should coaching focus next" signal in this data.
+  const topGrowthTheme = [...themes].filter((t) => t.growth_count > 0).sort((a, b) => b.growth_count - a.growth_count)[0];
+
+  const SPOTLIGHT_META = {
+    entrepreneurial_intent: { icon: '💰', bg: '#f0fff4', border: '#bfe6cc' },
+    scale_up_demand: { icon: '📈', bg: '#fff9e6', border: '#f0dfa0' },
+    resource_constraints: { icon: '⚠️', bg: '#fff0f0', border: '#f0c0c0' },
+  };
+  const entrepreneurshipThemes = ['entrepreneurial_intent', 'scale_up_demand', 'resource_constraints']
+    .map((key) => themes.find((t) => t.theme === key))
+    .filter((t) => t && t.total > 0);
+
+  return (
+    <>
+      <div className="key-takeaways-strip" style={{ marginBottom: '1.5rem' }}>
+        <div className="kt-strip-label">🎓 Mentor Quality — Across All 3 Sources</div>
+        <div className="kt-strip-list">
+          <div className="kt-strip-item">
+            <div className="kt-strip-bar" />
+            <div>
+              <strong>{lec.total_observations + gm.total_observations + sd.total_observations} total observations</strong> this
+              {' '}{term && term !== 'all' ? term.replace(/^term(\d)$/, 'Term $1') : 'programme year'} across LEC, Group Mentoring, and Skills Day.
+            </div>
+          </div>
+          <div className="kt-strip-item">
+            <div className={`kt-strip-bar ${pctObserved >= 70 ? '' : pctObserved >= 40 ? 'amber' : 'red'}`} />
+            <div>
+              <strong>{pctObserved}% mentor coverage</strong> ({lec.mentors_observed} of {lec.total_mentors_assigned} active mentors observed at least once via LEC).
+            </div>
+          </div>
+          {qiSpreadMeaningful ? (
+            <div className="kt-strip-item">
+              <div className="kt-strip-bar" />
+              <div>
+                <strong>{bestSource.title}</strong> leads on quality ({bestSource.qi.toFixed(2)}/3.0), while{' '}
+                <strong>{worstSource.title}</strong> trails at {worstSource.qi.toFixed(2)}/3.0.
+              </div>
+            </div>
+          ) : null}
+          {topGrowthTheme ? (
+            <div className="kt-strip-item">
+              <div className="kt-strip-bar amber" />
+              <div>
+                <strong>{topGrowthTheme.label}</strong> is the most common coaching opportunity — {topGrowthTheme.growth_count} growth-area
+                {' '}mention{topGrowthTheme.growth_count !== 1 ? 's' : ''} across observer comments.
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginBottom: '2rem' }}>
+        {SOURCE_CARDS.map((s) => (
+          <div
+            key={s.key}
+            className="clickable"
+            onClick={() => onJumpSubTab(s.jump)}
+            style={{ flex: '1 1 260px', minWidth: 240, padding: '1.1rem 1.25rem', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 10, cursor: 'pointer' }}
+          >
+            <div style={{ fontWeight: 700, fontSize: '.9rem', color: C.navy, marginBottom: '.5rem' }}>{s.icon} {s.title}</div>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '.4rem', marginBottom: '.3rem' }}>
+              <span style={{ fontSize: '1.8rem', fontWeight: 800, color: ragColor(s.qi != null ? s.qi * 33.3 : 0, 80, 60) }}>{s.qi != null ? s.qi.toFixed(2) : '—'}</span>
+              <span style={{ fontSize: '.75rem', color: '#888' }}>/3.0 quality index</span>
+            </div>
+            <div style={{ fontSize: '.78rem', color: '#555', marginBottom: '.3rem' }}>{s.obs} observations</div>
+            <div style={{ fontSize: '.78rem', color: '#555' }}>{s.extra}</div>
+            <DrillTag label={`View ${s.title}`} />
+          </div>
+        ))}
+      </div>
+
+      {entrepreneurshipThemes.length > 0 ? (
+        <Section title="🚀 Entrepreneurship & scale-up signals" subtitle="Real quotes from observer comments (mostly Skills Day) — for telling the story behind the numbers">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {entrepreneurshipThemes.map((t) => {
+              const meta = SPOTLIGHT_META[t.theme] || {};
+              return (
+                <div key={t.theme} style={{ padding: '1rem 1.25rem', background: meta.bg || '#f0f7ff', border: `1px solid ${meta.border || '#cfe2ff'}`, borderRadius: 10 }}>
+                  <div
+                    className="clickable"
+                    onClick={() => onJumpSubTab('skills-day')}
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.6rem', cursor: 'pointer' }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: '.95rem', color: C.navy }}>{meta.icon} {t.label}</div>
+                    <div style={{ fontSize: '.75rem', color: '#0077b6', fontWeight: 700 }}>{t.total} mention{t.total !== 1 ? 's' : ''} · view Skills Day ⌕</div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+                    {t.samples.map((s, i) => (
+                      <div key={i} style={{ fontSize: '.85rem', color: '#333', fontStyle: 'italic', paddingLeft: '.75rem', borderLeft: `3px solid ${s.sentiment === 'strength' ? C.green : C.red}` }}>
+                        “{s.quote}”
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+      ) : null}
+
+      {topGrowthTheme ? (
+        <Section title="🎯 Biggest coaching opportunity" subtitle="The most-mentioned growth-area theme across all 3 sources, in mentors' own observed sessions">
+          <div style={{ padding: '1rem 1.25rem', background: '#fff9f0', border: '1px solid #f0dfa0', borderRadius: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.6rem' }}>
+              <div style={{ fontWeight: 700, fontSize: '.95rem', color: C.navy }}>🎯 {topGrowthTheme.label}</div>
+              <div style={{ fontSize: '.75rem', color: '#888' }}>{topGrowthTheme.growth_count} growth-area · {topGrowthTheme.strength_count} strength mentions</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+              {topGrowthTheme.samples.filter((s) => s.sentiment === 'growth_area').slice(0, 3).map((s, i) => (
+                <div key={i} style={{ fontSize: '.85rem', color: '#333', fontStyle: 'italic', paddingLeft: '.75rem', borderLeft: `3px solid ${C.red}` }}>
+                  “{s.quote}”
+                </div>
+              ))}
+            </div>
+          </div>
+        </Section>
+      ) : null}
+
+      <Section title="Top qualitative themes" subtitle={`Rules-based theme tagging merged across all 3 sources' free-text comments`}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.85rem' }}>
+          {themes.filter((t) => t.total > 0).slice(0, 8).map((t) => {
+            const strengthPct = Math.round((t.strength_count / t.total) * 100);
+            return (
+              <div key={t.theme} style={{ flex: '1 1 210px', maxWidth: 260, padding: '1rem 1.1rem', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: '.85rem', color: C.navy, marginBottom: '.4rem' }}>{t.label}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '.4rem', marginBottom: '.5rem' }}>
+                  <span style={{ fontSize: '1.6rem', fontWeight: 800, color: C.navy }}>{t.total}</span>
+                  <span style={{ fontSize: '.7rem', color: '#888' }}>mentions</span>
+                </div>
+                <StackedBar segments={[{ label: 'Strength', pct: strengthPct, color: C.green }, { label: 'Growth area', pct: 100 - strengthPct, color: C.red }]} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '.4rem', fontSize: '.7rem' }}>
+                  <span style={{ color: C.green, fontWeight: 700 }}>{t.strength_count} strength</span>
+                  <span style={{ color: C.red, fontWeight: 700 }}>{t.growth_count} growth area</span>
+                </div>
+              </div>
+            );
+          })}
+          {themes.filter((t) => t.total > 0).length === 0 ? <Placeholder label="No qualitative themes detected yet." /> : null}
+        </div>
+      </Section>
+    </>
+  );
+}
+
+// ── Generic Observation Source sub-tab (Group Mentoring / Skills Day share this shape) ──
+
+function ObservationSourceSubTab({ term, title, api: sourceApi, dimensionColumns, extraKpis, renderMentorRow, mentorColumns, renderObservation, renderCommentMeta, spotlightThemes }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [cuRows, setCuRows] = useState([]);
+  const [themeSummary, setThemeSummary] = useState([]);
+  const [comments, setComments] = useState([]);
+
+  const [drillStack, setDrillStack] = useState([]);
+  const drill = drillStack[drillStack.length - 1] || null;
+  const pushDrill = (d) => setDrillStack((s) => [...s, d]);
+  const popDrill = () => setDrillStack((s) => s.slice(0, -1));
+  const closeDrill = () => setDrillStack([]);
+
+  const [mentorDrillRows, setMentorDrillRows] = useState([]);
+  const [mentorDrillLoading, setMentorDrillLoading] = useState(false);
+  useEffect(() => {
+    if (!drill || drill.kind !== 'cu') return undefined;
+    let active = true;
+    setMentorDrillLoading(true);
+    sourceApi
+      .fetchMentors(drill.cu, term)
+      .then((res) => { if (active) setMentorDrillRows(res.data || []); })
+      .catch(() => { if (active) setMentorDrillRows([]); })
+      .finally(() => { if (active) setMentorDrillLoading(false); });
+    return () => { active = false; };
+  }, [drill, term]);
+
+  const [mentorObsRows, setMentorObsRows] = useState([]);
+  const [mentorObsLoading, setMentorObsLoading] = useState(false);
+  useEffect(() => {
+    if (!drill || drill.kind !== 'mentor') return undefined;
+    let active = true;
+    setMentorObsLoading(true);
+    sourceApi
+      .fetchMentorObservations(drill.cu, drill.mentorId, term)
+      .then((res) => { if (active) setMentorObsRows(res.data || []); })
+      .catch(() => { if (active) setMentorObsRows([]); })
+      .finally(() => { if (active) setMentorObsLoading(false); });
+    return () => { active = false; };
+  }, [drill, term]);
+
+  const [commentSearch, setCommentSearch] = useState('');
+  const [sentimentFilter, setSentimentFilter] = useState('all');
+  useEffect(() => { setCommentSearch(''); setSentimentFilter('all'); }, [drill]);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    Promise.all([sourceApi.fetchSummaryByCu(term), sourceApi.fetchComments(term)])
+      .then(([cu, c]) => {
+        if (!active) return;
+        setCuRows(cu.data || []);
+        setComments(c.data || []);
+        setThemeSummary(c.theme_summary || []);
+        setDrillStack([]);
+      })
+      .catch((e) => { if (active) setError(e.message || `Failed to load ${title} data.`); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [term]);
+
+  if (loading) return <Placeholder label={`Loading ${title} data…`} />;
+  if (error) return <Placeholder label={error} />;
+  if (cuRows.length === 0) return <Placeholder label={`No ${title} data for the selected term.`} />;
+
+  const totalAssigned = sum(cuRows, (r) => N(r.total_mentors_assigned));
+  const mentorsObserved = sum(cuRows, (r) => N(r.mentors_observed));
+  const pctObserved = totalAssigned > 0 ? Math.round((mentorsObserved / totalAssigned) * 1000) / 10 : 0;
+  const totalObservations = sum(cuRows, (r) => N(r.total_observations));
+  const qualityIndex = weightedAvg(cuRows, 'quality_index', 'total_observations');
+  const cusNotSubmitted = cuRows.filter((r) => r.data_quality_flag === 'no_observations').length;
+
+  const regions = [...new Set(cuRows.map((r) => r.region))].sort();
+  const regionRows = regions.map((region) => {
+    const rows = cuRows.filter((r) => r.region === region);
+    const assigned = sum(rows, (r) => N(r.total_mentors_assigned));
+    const observed = sum(rows, (r) => N(r.mentors_observed));
+    const qi = weightedAvg(rows, 'quality_index', 'total_observations');
+    return {
+      region, assigned, observed,
+      pctObserved: assigned > 0 ? Math.round((observed / assigned) * 1000) / 10 : 0,
+      dims: dimensionColumns.map((d) => weightedAvg(rows, d.key, 'total_observations')),
+      qi, bucket: performanceBucket(qi, observed > 0),
+    };
+  });
+
+  const ranked = cuRows.filter((r) => r.quality_index != null).sort((a, b) => a.quality_index - b.quality_index);
+  const lowest = ranked.slice(0, 8);
+  const highest = [...ranked].reverse().slice(0, 8);
+
+  return (
+    <>
+      <div className="kpi-hero-strip" style={{ marginBottom: '1.5rem' }}>
+        <KpiHeroCard label="Mentors Observed" valueClass={ragKpiClass(pctObserved, 70, 50)} value={pctObserved} unit="%" sub={`${mentorsObserved} of ${totalAssigned} mentors`} />
+        <KpiHeroCard label="Overall Quality Index" valueClass={ragKpiClass(qualityIndex != null ? qualityIndex * 33.3 : 0, 80, 60)} value={qualityIndex != null ? qualityIndex.toFixed(2) : '—'} unit="/3.0" sub={`${totalObservations} observations`} />
+        {extraKpis.map((k) => (
+          <KpiHeroCard key={k.label} label={k.label} valueClass="kpi-blue" value={k.value(cuRows)} unit={k.unit || ''} sub={k.sub ? k.sub(cuRows) : undefined} />
+        ))}
+        {cusNotSubmitted > 0 ? <KpiHeroCard label="CUs With No Observations" valueClass="kpi-red" value={cusNotSubmitted} unit="" sub="for the selected term" /> : null}
+      </div>
+
+      <Section title="Region breakdown" subtitle="Weighted by number of observations · click a region to drill into its CUs">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr>
+                <th style={THWRAP}>Region</th>
+                <th style={THWRAP}>Assigned</th>
+                <th style={THWRAP}>Observed</th>
+                <th style={THWRAP}>Coverage</th>
+                {dimensionColumns.map((d) => <th key={d.key} style={THWRAP}>{d.label}</th>)}
+                <th style={THWRAP}>Overall Quality</th>
+                <th style={THWRAP}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {regionRows.map((r) => (
+                <tr key={r.region} className="clickable" onClick={() => pushDrill({ kind: 'region', region: r.region })}>
+                  <td style={{ fontWeight: 700 }}>{r.region}<DrillTag /></td>
+                  <td style={{ textAlign: 'center' }}>{r.assigned}</td>
+                  <td style={{ textAlign: 'center' }}>{r.observed}</td>
+                  <td style={{ padding: '.5rem .75rem' }}><ProgressCell pct={r.pctObserved} color={ragColor(r.pctObserved, 70, 50)} /></td>
+                  {r.dims.map((v, i) => <td key={dimensionColumns[i].key} style={{ textAlign: 'center' }}>{v != null ? v.toFixed(2) : '—'}</td>)}
+                  <td style={{ textAlign: 'center', fontWeight: 700, color: PERF_COLOR[r.bucket] }}>{r.qi != null ? r.qi.toFixed(2) : '—'}</td>
+                  <td style={{ textAlign: 'center' }}><span style={{ color: PERF_COLOR[r.bucket], fontWeight: 700 }}>{PERF_LABEL[r.bucket]}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      <Section title="CU rankings" subtitle="By overall quality index · click a CU to drill into its mentors">
+        <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+          {[['Lowest scoring CUs', lowest, C.red], ['Highest scoring CUs', highest, C.green]].map(([label, rows, color]) => (
+            <div key={label} style={{ flex: '1 1 380px', minWidth: 320 }}>
+              <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem', color }}>{label}</div>
+              <div className="table-wrap">
+                <table className="breakdown-table">
+                  <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Region</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}>Observations</th></tr></thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={`${r.region}-${r.cu}-${i}`} className="clickable" onClick={() => pushDrill({ kind: 'cu', region: r.region, cu: r.cu })}>
+                        <td style={{ fontWeight: 700 }}>{r.cu}<DrillTag /></td>
+                        <td>{r.region}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(r.quality_index * 33.3, 80, 60) }}>{r.quality_index.toFixed(2)}</td>
+                        <td style={{ textAlign: 'center' }}>{r.total_observations}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {spotlightThemes && spotlightThemes.themes.length ? (
+        <Section title={spotlightThemes.title || '🚀 Signals worth acting on'} subtitle="Real quotes from observer comments, not aggregated scores — for telling the story behind the numbers">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {spotlightThemes.themes.map((spot) => {
+              const t = themeSummary.find((x) => x.theme === spot.key);
+              if (!t || t.total === 0) return null;
+              return (
+                <div key={spot.key} style={{ padding: '1rem 1.25rem', background: spot.bg || '#f0f7ff', border: `1px solid ${spot.border || '#cfe2ff'}`, borderRadius: 10 }}>
+                  <div
+                    className="clickable"
+                    onClick={() => pushDrill({ kind: 'theme', themeKey: spot.key })}
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.6rem', cursor: 'pointer' }}
+                  >
+                    <div style={{ fontWeight: 700, fontSize: '.95rem', color: C.navy }}>{spot.icon} {t.label}</div>
+                    <div style={{ fontSize: '.75rem', color: '#0077b6', fontWeight: 700 }}>{t.total} mention{t.total !== 1 ? 's' : ''} · browse all ⌕</div>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+                    {t.samples.map((s, i) => (
+                      <div key={i} style={{ fontSize: '.85rem', color: '#333', fontStyle: 'italic', paddingLeft: '.75rem', borderLeft: `3px solid ${s.sentiment === 'strength' ? C.green : C.red}` }}>
+                        “{s.quote}”
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+      ) : null}
+
+      <Section title="Unpacking the qualitative feedback" subtitle={`Rules-based theme tagging across ${comments.length} observer comments · click a theme to browse comments`}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.85rem' }}>
+          {themeSummary.filter((t) => t.total > 0).map((t) => {
+            const strengthPct = Math.round((t.strength_count / t.total) * 100);
+            return (
+              <div
+                key={t.theme}
+                onClick={() => pushDrill({ kind: 'theme', themeKey: t.theme })}
+                style={{ flex: '1 1 210px', maxWidth: 260, padding: '1rem 1.1rem', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 10, cursor: 'pointer' }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '.85rem', color: C.navy, marginBottom: '.4rem' }}>{t.label}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '.4rem', marginBottom: '.5rem' }}>
+                  <span style={{ fontSize: '1.6rem', fontWeight: 800, color: C.navy }}>{t.total}</span>
+                  <span style={{ fontSize: '.7rem', color: '#888' }}>mentions</span>
+                </div>
+                <StackedBar segments={[{ label: 'Strength', pct: strengthPct, color: C.green }, { label: 'Growth area', pct: 100 - strengthPct, color: C.red }]} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '.4rem', fontSize: '.7rem' }}>
+                  <span style={{ color: C.green, fontWeight: 700 }}>{t.strength_count} strength</span>
+                  <span style={{ color: C.red, fontWeight: 700 }}>{t.growth_count} growth area</span>
+                </div>
+                <DrillTag label="Browse comments" />
+              </div>
+            );
+          })}
+          {themeSummary.filter((t) => t.total > 0).length === 0 ? <Placeholder label="No qualitative themes detected yet." /> : null}
+        </div>
+      </Section>
+
+      {drill ? (
+        <ObservationSourceDrill
+          drill={drill}
+          onBack={drillStack.length > 1 ? popDrill : null}
+          onClose={closeDrill}
+          cuRows={cuRows}
+          mentorDrillRows={mentorDrillRows}
+          mentorDrillLoading={mentorDrillLoading}
+          mentorObsRows={mentorObsRows}
+          mentorObsLoading={mentorObsLoading}
+          comments={comments}
+          themeSummary={themeSummary}
+          sentimentFilter={sentimentFilter}
+          setSentimentFilter={setSentimentFilter}
+          commentSearch={commentSearch}
+          setCommentSearch={setCommentSearch}
+          onDrillCu={(region, cu) => pushDrill({ kind: 'cu', region, cu })}
+          onDrillMentor={(region, cu, mentorId) => pushDrill({ kind: 'mentor', region, cu, mentorId })}
+          mentorColumns={mentorColumns}
+          renderMentorRow={renderMentorRow}
+          renderObservation={renderObservation}
+          renderCommentMeta={renderCommentMeta}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function ObservationSourceDrill({
+  drill, onBack, onClose, cuRows, mentorDrillRows, mentorDrillLoading, mentorObsRows, mentorObsLoading,
+  comments, themeSummary, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch, onDrillCu, onDrillMentor,
+  mentorColumns, renderMentorRow, renderObservation, renderCommentMeta,
+}) {
+  const title = drill.kind === 'region' ? drill.region
+    : drill.kind === 'cu' ? drill.cu
+      : drill.kind === 'mentor' ? `Mentor ${drill.mentorId}`
+        : themeSummary.find((t) => t.theme === drill.themeKey)?.label || 'Comments';
+  const subtitle = drill.kind === 'region' ? 'CUs in this region — click a CU for its mentors'
+    : drill.kind === 'cu' ? 'Mentor-level detail — click a mentor for every observation'
+      : drill.kind === 'mentor' ? `${drill.cu} — who observed them, scores, and full comments`
+        : 'Observer comments mentioning this theme';
+
+  return (
+    <>
+      <div className="drill-backdrop" onClick={onClose} />
+      <aside className="drill-panel" role="dialog" aria-label={title}>
+        <div className="drill-head">
+          <button className="drill-close" onClick={onClose} aria-label="Close">×</button>
+          {onBack ? (
+            <button
+              onClick={onBack}
+              style={{ border: 'none', background: 'none', color: '#0077b6', fontWeight: 700, fontSize: '.8rem', cursor: 'pointer', padding: 0, marginBottom: '.4rem' }}
+            >
+              ← Back
+            </button>
+          ) : null}
+          <div className="drill-title">{title}</div>
+          <div className="drill-subtitle">{subtitle}</div>
+        </div>
+        <div className="drill-body">
+          {drill.kind === 'region' ? (
+            <div className="table-wrap">
+              <table className="breakdown-table">
+                <thead><tr><th style={THWRAP}>CU</th><th style={THWRAP}>Assigned</th><th style={THWRAP}>Observed</th><th style={THWRAP}>Quality Index</th><th style={THWRAP}>Status</th></tr></thead>
+                <tbody>
+                  {cuRows.filter((r) => r.region === drill.region).sort((a, b) => (b.quality_index || 0) - (a.quality_index || 0)).map((r) => {
+                    const bucket = performanceBucket(r.quality_index, N(r.mentors_observed) > 0);
+                    return (
+                      <tr key={r.cu} className="clickable" onClick={() => onDrillCu(r.region, r.cu)}>
+                        <td style={{ fontWeight: 700 }}>{r.cu}<DrillTag /></td>
+                        <td style={{ textAlign: 'center' }}>{r.total_mentors_assigned}</td>
+                        <td style={{ textAlign: 'center' }}>{r.mentors_observed}</td>
+                        <td style={{ textAlign: 'center', fontWeight: 700, color: PERF_COLOR[bucket] }}>{r.quality_index != null ? r.quality_index.toFixed(2) : '—'}</td>
+                        <td style={{ textAlign: 'center', color: PERF_COLOR[bucket], fontWeight: 700 }}>{PERF_LABEL[bucket]}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+          {drill.kind === 'cu' ? (
+            mentorDrillLoading ? <Placeholder label="Loading mentors…" /> : mentorDrillRows.length === 0 ? <Placeholder label="No observed mentors found for this CU." /> : (
+              <div className="table-wrap">
+                <table className="breakdown-table">
+                  <thead>
+                    <tr>
+                      <th style={THWRAP}>Mentor ID</th>
+                      <th style={THWRAP}>Observations</th>
+                      {mentorColumns.map((c) => <th key={c} style={THWRAP}>{c}</th>)}
+                      <th style={THWRAP}>Quality Index</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mentorDrillRows.map((r) => {
+                      const bucket = performanceBucket(r.quality_index, N(r.total_observations) > 0);
+                      return (
+                        <tr key={r.mentor_id} className="clickable" onClick={() => onDrillMentor(drill.region, drill.cu, r.mentor_id)}>
+                          <td style={{ fontWeight: 700 }}>{r.mentor_id}<DrillTag label="All observations" /></td>
+                          <td style={{ textAlign: 'center' }}>{r.total_observations}</td>
+                          {renderMentorRow(r)}
+                          <td style={{ textAlign: 'center', fontWeight: 700, color: PERF_COLOR[bucket] }}>{r.quality_index != null ? r.quality_index : '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )
+          ) : null}
+          {drill.kind === 'mentor' ? (
+            mentorObsLoading ? <Placeholder label="Loading observations…" /> : mentorObsRows.length === 0 ? <Placeholder label="No observations found for this mentor." /> : (
+              <>
+                {mentorObsRows[0]?.mentor_name ? <div style={{ fontWeight: 700, marginBottom: '.75rem' }}>{mentorObsRows[0].mentor_name}</div> : null}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '.75rem' }}>
+                  {mentorObsRows.map((r, i) => {
+                    const bucket = performanceBucket(r.observation_quality_index, true);
+                    return (
+                      <div key={i} style={{ padding: '.8rem .9rem', background: '#f8f9fa', borderRadius: 8, fontSize: '.85rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '.4rem', marginBottom: '.5rem' }}>
+                          <div style={{ fontWeight: 700 }}>{r.term || '—'} · {r.observation_date}</div>
+                          <div style={{ fontWeight: 700, color: PERF_COLOR[bucket] }}>Quality Index {r.observation_quality_index != null ? r.observation_quality_index : '—'}/3.0</div>
+                        </div>
+                        <div style={{ fontSize: '.75rem', color: '#555', marginBottom: '.5rem' }}>Observed by <strong>{r.observer_name || '—'}</strong></div>
+                        {renderObservation(r)}
+                        <div style={{ color: '#333' }}>{r.comment || <span style={{ color: '#999' }}>No comment recorded.</span>}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )
+          ) : null}
+          {drill.kind === 'theme' ? (
+            <ThemeCommentDrillList
+              themeKey={drill.themeKey}
+              comments={comments}
+              sentimentFilter={sentimentFilter}
+              setSentimentFilter={setSentimentFilter}
+              commentSearch={commentSearch}
+              setCommentSearch={setCommentSearch}
+              renderMeta={renderCommentMeta}
+            />
+          ) : null}
+        </div>
+      </aside>
+    </>
+  );
+}
+
+// ── Learning & Measurement Map (static content — see docs/LEARNING_AND_MEASUREMENT_MAP.md) ──
+const LMM_PILLARS = ['Investment Memo', 'Learning Agenda', 'Product Health Metrics', 'Theory of Change'];
+const LMM_STATUS = {
+  on_track: { label: 'On Track', color: C.green, icon: '✅' },
+  monitor: { label: 'Monitor', color: '#c98a00', icon: '⚠️' },
+  pending: { label: 'Pending', color: '#0077b6', icon: '⏳' },
+  critical: { label: 'Critical', color: C.red, icon: '🔴' },
+  unknown: { label: 'Unknown', color: '#888', icon: '•' },
+};
+const LMM_LIVE = {
+  live: { label: 'Live in dashboard', color: C.green, icon: '🟢' },
+  partial: { label: 'Partial / proxy data', color: '#c98a00', icon: '🟡' },
+  none: { label: 'Not yet available', color: '#888', icon: '⚪' },
+};
+const LMM_PRIORITY_COLOR = { P1: C.red, P2: '#c98a00', P3: '#888' };
+
+function LmmStatusPill({ status }) {
+  const s = LMM_STATUS[status] || LMM_STATUS.unknown;
+  return (
+    <span style={{ fontSize: '.7rem', fontWeight: 700, color: s.color, whiteSpace: 'nowrap' }}>
+      {s.icon} {s.label}
+    </span>
+  );
+}
+
+function LmmLiveBadge({ liveStatus }) {
+  const l = LMM_LIVE[liveStatus] || LMM_LIVE.none;
+  return (
+    <span style={{ fontSize: '.68rem', fontWeight: 700, color: l.color, whiteSpace: 'nowrap' }}>
+      {l.icon} {l.label}
+    </span>
+  );
+}
+
+const LMM_LIVE_SORT = { live: 0, partial: 1, none: 2 };
+
+// The source sheet's own OKR labels don't line up with the approved Investment
+// Memo (see docs/DECISION.md ADR-009 follow-up / okrDescriptions.js notes):
+// "Delivery OKRs" isn't a real tree (it's Program Implementation & Field Ops
+// Objective 1), and two "Implementation OKRs - Objective 1" rows actually both
+// operationalize the same real Objective 2: KR2. Canonicalize the group key so
+// those two merge into one section, and give the mislabeled "Delivery" one an
+// honest display name.
+const LMM_GROUP_CANONICAL = {
+  'Delivery OKRs - Objective 1: KR1': 'Implementation OKRs — Objective 1: KR1 (Frontline Hallmark Index)',
+  'Implementation OKRs - Objective 1: KR1': 'Implementation OKRs — Objective 2: KR2 (Team Culture Survey)',
+  'Implementation OKRs - Objective 1: KR2': 'Implementation OKRs — Objective 2: KR2 (Team Culture Survey)',
+  'Implementation OKRs': 'Implementation OKRs — General (Frontline Quality)',
+};
+
+// Investment Memo groups: Product OKRs first (in Objective/KR order), then all
+// Implementation OKRs groups — per user instruction ("Delivery" and
+// "Implementation" are the same OKR tree, not two separate ones).
+const LMM_IM_GROUP_ORDER = [
+  'Product OKRs - Objective 1: KR1',
+  'Product OKRs - Objective 1: KR2',
+  'Product OKRs - Objective 2: KR1',
+  'Product OKRs - Objective 2: KR2',
+  'Product OKRs - Objective 2: KR3',
+  'Implementation OKRs — Objective 1: KR1 (Frontline Hallmark Index)',
+  'Implementation OKRs — Objective 2: KR2 (Team Culture Survey)',
+  'Implementation OKRs — General (Frontline Quality)',
+];
+
+function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year }) {
+  const [pillar, setPillar] = useState('Investment Memo');
+  const [activeMetric, setActiveMetric] = useState(null);
+  const [liveOnly, setLiveOnly] = useState(false);
+
+  const allPillarMetrics = LMM_METRICS.filter((m) => m.pillar === pillar);
+  const liveCount = allPillarMetrics.filter((m) => m.liveStatus === 'live').length;
+  const partialCount = allPillarMetrics.filter((m) => m.liveStatus === 'partial').length;
+  const noneCount = allPillarMetrics.filter((m) => m.liveStatus === 'none').length;
+
+  const pillarMetrics = liveOnly ? allPillarMetrics.filter((m) => m.liveStatus !== 'none') : allPillarMetrics;
+  // Groups keep the spreadsheet's own OKR order by default (Objective 1 before
+  // Objective 2, etc.) — only the metrics *within* each group are reordered,
+  // live/partial first, so real data isn't buried under a long run of "not yet
+  // available". Investment Memo additionally canonicalizes/reorders groups —
+  // see LMM_GROUP_CANONICAL/LMM_IM_GROUP_ORDER above.
+  const groups = [];
+  const seenGroups = new Map();
+  pillarMetrics.forEach((m) => {
+    const rawKey = m.okrGroup || '—';
+    const key = pillar === 'Investment Memo' ? (LMM_GROUP_CANONICAL[rawKey] || rawKey) : rawKey;
+    if (!seenGroups.has(key)) {
+      seenGroups.set(key, { key, rawKey, metrics: [] });
+      groups.push(seenGroups.get(key));
+    }
+    seenGroups.get(key).metrics.push(m);
+  });
+  groups.forEach((g) => g.metrics.sort((a, b) => LMM_LIVE_SORT[a.liveStatus] - LMM_LIVE_SORT[b.liveStatus]));
+  if (pillar === 'Investment Memo') {
+    groups.sort((a, b) => {
+      const ia = LMM_IM_GROUP_ORDER.indexOf(a.key);
+      const ib = LMM_IM_GROUP_ORDER.indexOf(b.key);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    });
+  }
+
+  return (
+    <>
+      <div className="key-takeaways-strip" style={{ marginBottom: '1rem' }}>
+        <div className="kt-strip-label">🗺️ Learning & Measurement Map — OKR / Learning Agenda tracker</div>
+        <div className="kt-strip-list">
+          <div className="kt-strip-item">
+            <div className="kt-strip-bar" />
+            <div>
+              Tracking progress against our 2026 OKRs and Learning Agenda.<br />
+              <strong>Data Status:</strong> We are actively mapping remaining data sources to BigQuery. Some temporary data gaps currently exist as we complete this integration.
+            </div>
+          </div>
+          <div className="kt-strip-item">
+            <div className={`kt-strip-bar ${noneCount > liveCount + partialCount ? 'amber' : ''}`} />
+            <div>
+              In <strong>{pillar}</strong>: <strong>{liveCount} live</strong>, <strong>{partialCount} partial/proxy</strong>, <strong>{noneCount} not yet available</strong> ({allPillarMetrics.length} metrics total).
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="nat-tab-bar" style={{ marginBottom: '1rem' }}>
+        {LMM_PILLARS.map((p) => (
+          <button key={p} type="button" className={`nat-tab-btn ${pillar === p ? 'active' : ''}`} onClick={() => setPillar(p)}>
+            {p} <span style={{ opacity: 0.6, fontSize: '.75rem' }}>({LMM_METRICS.filter((m) => m.pillar === p).length})</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1.25rem' }}>
+        {[[false, `All ${allPillarMetrics.length}`], [true, `Live/partial only (${liveCount + partialCount})`]].map(([val, label]) => (
+          <button
+            key={String(val)}
+            onClick={() => setLiveOnly(val)}
+            style={{
+              border: '1px solid #dee2e6', borderRadius: 999, padding: '.35rem .9rem', fontSize: '.78rem', fontWeight: 700, cursor: 'pointer',
+              background: liveOnly === val ? C.navy : '#fff', color: liveOnly === val ? '#fff' : '#555',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {groups.map((g) => {
+        const okr = OKR_DESCRIPTIONS[g.rawKey];
+        return (
+        <Section key={g.key} title={g.key} subtitle={`${g.metrics.length} metric${g.metrics.length !== 1 ? 's' : ''}`}>
+          {okr ? (
+            <div style={{ background: '#f0f4ff', border: '1px solid #dbe4ff', borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.8rem', color: '#333' }}>
+              <div style={{ marginBottom: okr.keyResult ? '.4rem' : 0 }}>{okr.objective}</div>
+              {okr.keyResult ? <div style={{ fontWeight: 700 }}>{okr.keyResult}</div> : null}
+              {okr.note ? <div style={{ marginTop: '.4rem', fontSize: '.72rem', color: '#888', fontStyle: 'italic' }}>{okr.note}</div> : null}
+            </div>
+          ) : (
+            <LmmGroupContext metrics={g.metrics} />
+          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+            {g.metrics.map((m) => {
+              const rowLive = m.liveStatus === 'live' ? resolveLiveMetric(m.id, summaryData, year, schoolData) : null;
+              return (
+              <div
+                key={m.id}
+                className="clickable"
+                onClick={() => setActiveMetric(m)}
+                style={{ padding: '.7rem .9rem', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 8, cursor: 'pointer' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '.5rem' }}>
+                  <div style={{ fontWeight: 700, fontSize: '.9rem' }}>{m.name}</div>
+                  <LmmStatusPill status={m.status} />
+                </div>
+                {rowLive ? (
+                  <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginTop: '.4rem', fontSize: '.78rem' }}>
+                    <div><span style={{ color: '#888' }}>T1: </span><strong style={{ color: C.navy }}>{rowLive.national.term1}</strong></div>
+                    <div><span style={{ color: '#888' }}>T2: </span><strong style={{ color: C.navy }}>{rowLive.national.term2}</strong></div>
+                  </div>
+                ) : null}
+                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '.5rem', marginTop: '.3rem' }}>
+                  <div style={{ fontSize: '.72rem', color: '#666' }}>
+                    <span style={{ color: LMM_PRIORITY_COLOR[m.priority] || '#666', fontWeight: 700 }}>{m.priority}</span> · {m.category}
+                  </div>
+                  <LmmLiveBadge liveStatus={m.liveStatus} />
+                </div>
+                <div style={{ fontSize: '.68rem', color: '#0077b6', fontWeight: 700, marginTop: '.35rem' }}>
+                  ⌕ Click for {rowLive ? 'region/CU drill-down' : 'details'}
+                </div>
+              </div>
+              );
+            })}
+          </div>
+        </Section>
+        );
+      })}
+
+      {activeMetric ? (
+        <LmmMetricDrill key={activeMetric.id} metric={activeMetric} onClose={() => setActiveMetric(null)} onJumpTab={onJumpTab} summaryData={summaryData} schoolData={schoolData} year={year} />
+      ) : null}
+    </>
+  );
+}
+
+// Fallback context box for groups with no Investment Memo OKR text — the
+// Learning Agenda / Product Health Metrics / Theory of Change pillars have no
+// equivalent source document, so this surfaces the sheet's own "Learning
+// Question" per metric as the framing instead of a bare list of metric names.
+function LmmGroupContext({ metrics }) {
+  const withQuestions = metrics.filter((m) => m.learningQuestion);
+  if (withQuestions.length === 0) return null;
+
+  const body = (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+      {withQuestions.map((m) => (
+        <div key={m.id}>
+          {withQuestions.length > 1 ? <strong>{m.name}: </strong> : null}
+          {m.learningQuestion}
+        </div>
+      ))}
+    </div>
+  );
+  const boxStyle = { background: '#f0f4ff', border: '1px solid #dbe4ff', borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.8rem', color: '#333' };
+
+  if (withQuestions.length <= 3) {
+    return (
+      <div style={boxStyle}>
+        <div style={{ fontWeight: 700, marginBottom: '.4rem' }}>
+          {withQuestions.length > 1 ? 'What these metrics are testing' : 'What this metric is testing'}
+        </div>
+        {body}
+      </div>
+    );
+  }
+  return (
+    <details style={{ ...boxStyle, padding: 0 }}>
+      <summary style={{ cursor: 'pointer', fontWeight: 700, padding: '.75rem .9rem' }}>
+        What these {withQuestions.length} metrics are testing
+      </summary>
+      <div style={{ padding: '0 .9rem .9rem' }}>{body}</div>
+    </details>
+  );
+}
+
+function LmmDetailRow({ label, value }) {
+  if (!value) return null;
+  return (
+    <div style={{ marginBottom: '.9rem' }}>
+      <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.2rem' }}>{label}</div>
+      <div style={{ fontSize: '.85rem', color: '#222', whiteSpace: 'pre-line' }}>{value}</div>
+    </div>
+  );
+}
+
+function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, year }) {
+  const m = metric;
+  const jumpLabel = m.jumpTab ? (TABS.find((t) => t.id === m.jumpTab)?.label || m.jumpTab) : null;
+  const okr = OKR_DESCRIPTIONS[m.okrGroup];
+  const liveData = m.liveStatus === 'live' ? resolveLiveMetric(m.id, summaryData, year, schoolData) : null;
+
+  return (
+    <>
+      <div className="drill-backdrop" onClick={onClose} />
+      <aside className="drill-panel" role="dialog" aria-label={m.name}>
+        <div className="drill-head">
+          <button className="drill-close" onClick={onClose} aria-label="Close">×</button>
+          <div className="drill-title">{m.name}</div>
+          <div className="drill-subtitle">{m.pillar} · {m.okrGroup}</div>
+          <div style={{ display: 'flex', gap: '.75rem', marginTop: '.5rem', flexWrap: 'wrap' }}>
+            <LmmStatusPill status={m.status} />
+            <span style={{ fontSize: '.7rem', fontWeight: 700, color: LMM_PRIORITY_COLOR[m.priority] || '#666' }}>{m.priority}</span>
+            <span style={{ fontSize: '.7rem', color: '#666' }}>{m.category}</span>
+          </div>
+        </div>
+        <div className="drill-body">
+          {okr ? (
+            <div style={{ background: '#f0f4ff', border: '1px solid #dbe4ff', borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.78rem', color: '#333' }}>
+              <div style={{ marginBottom: okr.keyResult ? '.4rem' : 0 }}>{okr.objective}</div>
+              {okr.keyResult ? <div style={{ fontWeight: 700 }}>{okr.keyResult}</div> : null}
+              {okr.note ? <div style={{ marginTop: '.4rem', fontSize: '.7rem', color: '#888', fontStyle: 'italic' }}>{okr.note}</div> : null}
+            </div>
+          ) : null}
+          <div
+            style={{
+              padding: '.75rem .9rem', borderRadius: 8, marginBottom: '1.25rem',
+              background: m.liveStatus === 'live' ? '#e8f5e9' : m.liveStatus === 'partial' ? '#fff8e1' : '#f1f1f1',
+            }}
+          >
+            <LmmLiveBadge liveStatus={m.liveStatus} />
+            {m.liveNote ? <div style={{ fontSize: '.8rem', color: '#333', marginTop: '.35rem' }}>{m.liveNote}</div> : null}
+            {jumpLabel ? (
+              <button
+                onClick={() => { onJumpTab(m.jumpTab); onClose(); }}
+                style={{ marginTop: '.5rem', border: '1px solid #0077b6', background: '#fff', color: '#0077b6', fontWeight: 700, fontSize: '.75rem', borderRadius: 999, padding: '.3rem .8rem', cursor: 'pointer' }}
+              >
+                View live data in {jumpLabel} →
+              </button>
+            ) : null}
+          </div>
+
+          {liveData ? <LmmLiveComparison liveData={liveData} /> : null}
+
+          <details open={!liveData} style={{ marginBottom: '.9rem' }}>
+            <summary style={{ cursor: 'pointer', fontSize: '.75rem', fontWeight: 700, color: '#0077b6', marginBottom: '.5rem' }}>
+              Full reference (learning question, targets, data source, decision trigger…)
+            </summary>
+            <div style={{ marginTop: '.75rem' }}>
+          <LmmDetailRow label="Learning Question" value={m.learningQuestion} />
+          <LmmDetailRow label="Metric Definition" value={m.definition} />
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '.9rem' }}>
+            <div style={{ flex: '1 1 150px' }}><LmmDetailRow label="Baseline" value={m.baseline} /></div>
+            <div style={{ flex: '1 1 150px' }}><LmmDetailRow label="Mid-point Target" value={m.midpointTarget} /></div>
+            <div style={{ flex: '1 1 150px' }}><LmmDetailRow label="End-point Target" value={m.endpointTarget} /></div>
+          </div>
+          <LmmDetailRow label="Source of Truth for Target" value={m.sourceOfTruth} />
+          <LmmDetailRow label="Data Source" value={m.dataSource} />
+          <LmmDetailRow label="Collection Frequency" value={m.collectionFrequency} />
+          <LmmDetailRow label="Owner" value={m.owner} />
+          <LmmDetailRow label="Decision Trigger (Action if Red)" value={m.decisionTrigger} />
+          <LmmDetailRow label="Pivot Cycle" value={m.pivotCycle} />
+          <LmmDetailRow label="Notes / Comments" value={m.notes} />
+          {!liveData ? (
+            <>
+              <LmmDetailRow label="Term 1 Achieved" value={m.term1Achieved} />
+              <LmmDetailRow label="Mid Year Review (Jun 02 2026)" value={m.midYearReview} />
+            </>
+          ) : null}
+            </div>
+          </details>
+          <LmmDetailRow label="Links" value={m.links} />
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function LmmLiveComparison({ liveData }) {
+  const [region, setRegion] = useState(null);
+  const rows = region ? liveData.byCu(region) : liveData.byRegion;
+
+  return (
+    <div style={{ marginBottom: '.9rem' }}>
+      <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
+        {liveData.metricLabel} — Term 1 vs. Term 2 (live)
+      </div>
+      <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', marginBottom: '.9rem' }}>
+        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
+          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Term 1 — National</div>
+          <div style={{ fontWeight: 700, color: C.navy }}>{liveData.national.term1}</div>
+        </div>
+        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
+          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Term 2 — National</div>
+          <div style={{ fontWeight: 700, color: C.navy }}>{liveData.national.term2}</div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.4rem' }}>
+        <div style={{ fontSize: '.75rem', fontWeight: 700, color: '#555' }}>
+          {region ? `CUs in ${region}` : 'By region — click to drill into CUs'}
+        </div>
+        {region ? (
+          <button
+            onClick={() => setRegion(null)}
+            style={{ border: 'none', background: 'none', color: '#0077b6', fontWeight: 700, fontSize: '.75rem', cursor: 'pointer', padding: 0 }}
+          >
+            ← All regions
+          </button>
+        ) : null}
+      </div>
+      <div className="table-wrap">
+        <table className="breakdown-table">
+          <thead>
+            <tr>
+              <th style={THWRAP}>{region ? 'CU' : 'Region'}</th>
+              <th style={THWRAP}>Term 1</th>
+              <th style={THWRAP}>Term 2</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr
+                key={r.name}
+                className={region ? undefined : 'clickable'}
+                onClick={region ? undefined : () => setRegion(r.name)}
+              >
+                <td style={{ fontWeight: 700 }}>{r.name}{!region ? <DrillTag /> : null}</td>
+                <td>{r.term1}</td>
+                <td>{r.term2}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -2341,6 +3446,7 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
       {tab === 'pb' ? <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
       {tab === 'quality' ? <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
       {tab === 'mentor' ? <MentorQualityTab term={term} year={year} summaryData={summaryData} /> : null}
+      {tab === 'lmm' ? <LearningMeasurementMapTab onJumpTab={setTab} summaryData={summaryData} schoolData={schoolData} year={year} /> : null}
     </div>
   );
 }

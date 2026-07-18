@@ -24,3 +24,9 @@ LEVEL_SCHOOL = "school"
 # observation/roster data isn't (yet) folded into the gold_exp model.
 MENTOR_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_lec_observation_form`"
 MENTOR_ROSTER = f"`{settings.BQ_PROJECT_ID}.bronze_exp.mentor_2026`"
+
+# Third and fourth Mentor Quality sources — same roster, different observation
+# forms (Skills Day, Group Mentoring). Neither carries a `cu` column directly;
+# CU is resolved via a mentor_id join to MENTOR_ROSTER (see ADR-008 follow-up).
+SKILLS_DAY_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_skills_day_observation_form`"
+GROUP_MENTORING_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_group_mentoring__observation__form`"
