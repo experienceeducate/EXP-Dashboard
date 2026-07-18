@@ -179,11 +179,20 @@ body { margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; backgro
 
 .placeholder { padding:1.25rem; background:#f0f4ff; border-radius:8px; color:#555; font-size:.9rem; }
 
+@media screen {
+  /* Multi-tab export view (App.jsx export-tabs picker) is built for print
+     only — hide it on screen so the tab-picker → print() transition doesn't
+     flash the concatenated view before the print dialog opens. */
+  .print-tab-section { display:none; }
+}
+
 @media print {
   .header, .view-tabs, .nat-tab-bar, .btn, .drill-panel, .drill-backdrop, .debug-pill, .no-print { display:none !important; }
   .nat-tab-panel { display:block !important; }
   .section { box-shadow:none !important; border:1px solid #ccc; break-inside:avoid; }
   .kpi-hero-card { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .print-tab-heading { font-size:1.3rem; color:#0e313e; margin:0 0 1rem; padding-bottom:.5rem; border-bottom:2px solid #0e313e; }
+  .print-tab-section:first-child { break-before:auto !important; page-break-before:auto !important; }
   body { background:#fff; }
 }
 `;

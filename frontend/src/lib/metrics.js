@@ -49,11 +49,29 @@ export function mergeRowsAcrossTerms(rows, keyFn) {
 }
 
 // ── Retention projection (shared by score cards, funnel, term metrics) ────────
-// Given a set of rows + LEC numbers, resolve last-LEC scholars, projecting when 0.
+// Given a set of rows + LEC numbers, resolve last-LEC scholars, projecting when
+// delivery of the last LEC isn't complete yet.
+//
+// BUG FIX (verified against live BigQuery data): this used to trust the raw
+// `actual` sum whenever it was merely nonzero (`actual > 0`), which is true
+// almost as soon as a single school reports — e.g. with only 373/825 schools
+// (45%) having delivered LEC14, `actual` was the scholar count from just
+// those 373 schools, yet it was divided by an activation/recruitment
+// denominator summed across all 825 — silently understating retention (54%)
+// versus the properly school-coverage-scaled projection (~119%, matching the
+// separate "Projected retention" insight already shown elsewhere on the same
+// Executive Summary page — the two numbers disagreeing was the reported bug).
+// Now `actual` is only trusted once delivery is essentially complete
+// (>= 90% of target schools); below that, always project via the per-school
+// average rate over the last 2 delivered LECs, scaled to the full school
+// count — consistent with computeExecutiveInsights' retention_projection.
 export function resolveLastLecScholars(rows, lecNums) {
   const lastLec = lecNums[lecNums.length - 1];
   const actual = sum(rows, (d) => N(d[`lec${lastLec}_scholars`]));
-  if (actual > 0) return { lastLec, lastLecScholars: actual, isProjected: false };
+  const deliveredSchools = sum(rows, (d) => N(d[`schools_with_lec${lastLec}`]));
+  const totalSchools = sum(rows, (d) => N(d.total_target_schools));
+  const lastLecCoverage = totalSchools > 0 ? deliveredSchools / totalSchools : 0;
+  if (actual > 0 && lastLecCoverage >= 0.9) return { lastLec, lastLecScholars: actual, isProjected: false };
 
   const deliveredLecs = lecNums.filter((n) => rows.some((d) => N(d[`schools_with_lec${n}`]) > 0));
   const recentLecs = deliveredLecs.slice(-2);
@@ -272,12 +290,21 @@ export function getReportTimelinessSummary(rows) {
 }
 
 // ── Observation coverage by region (legacy renderNationalObservationCoverage) ─
+// Clamp a CU row's observed-mentor count to its active-mentor count before
+// summing. A handful of CUs have total_observed_mentors > total_active_mentors
+// (e.g. mayuge, kamwenge — likely a mentor observed before a mid-term
+// reassignment dropped them from the active roster) — verified directly
+// against BigQuery, not a one-off. Leaving it unclamped let this tab's
+// national coverage % disagree with Executive Summary's (which already
+// clamped) for the exact same term selection.
+const clampedObserved = (d) => Math.min(N(d.total_observed_mentors), N(d.total_active_mentors));
+
 export function computeObsCoverageByRegion(data) {
   const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
   const rows = regions.map((region) => {
     const rd = data.filter((d) => d.region === region);
     const mentors = sum(rd, (d) => N(d.total_active_mentors));
-    const observed = sum(rd, (d) => N(d.total_observed_mentors));
+    const observed = sum(rd, clampedObserved);
     const obsCount = sum(rd, (d) => N(d.total_mentor_observations));
     const scores = rd.map((d) => Number(d.avg_cu_observation_score)).filter((v) => v > 0);
     const avgScore = scores.length > 0 ? (scores.reduce((s, v) => s + v, 0) / scores.length).toFixed(2) : '—';

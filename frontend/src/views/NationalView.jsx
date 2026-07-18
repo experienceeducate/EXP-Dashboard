@@ -27,7 +27,9 @@ import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, ScoreCard, 
 const REGIONS = ['Central', 'East', 'North', 'South', 'West'];
 
 const N = (v) => Number(v) || 0;
-const TABS = [
+// Exported so App.jsx's export-tabs picker can build its checkbox list from
+// the same source of truth instead of duplicating labels/order.
+export const NATIONAL_TABS = [
   { id: 'exec', label: '📊 Executive Summary' },
   { id: 'lec', label: '📚 LEC Delivery' },
   { id: 'pb', label: '📋 Passbook Quality' },
@@ -35,6 +37,7 @@ const TABS = [
   { id: 'mentor', label: '🎓 Mentor Quality' },
   { id: 'lmm', label: '🗺️ Learning & Measurement Map' },
 ];
+const TABS = NATIONAL_TABS;
 
 // ── Executive Summary ────────────────────────────────────────────────────────
 function ExecTab({ summaryData, data, year, term, onDrill }) {
@@ -1807,8 +1810,14 @@ function LecObservationSubTab({ term, year, summaryData }) {
   }
   const goldRows = [...goldByCu.values()];
 
+  // Clamp observed to active per CU row before summing — a handful of CUs
+  // (e.g. mayuge, kamwenge) have total_observed_mentors > total_active_mentors
+  // (mentor observed before a mid-term reassignment dropped them from the
+  // active roster), verified against BigQuery. Unclamped, this disagreed with
+  // Executive Summary's mentor-coverage KPI (which already clamped) for the
+  // exact same term selection.
   const totalAssigned = sum(goldRows, (r) => N(r.total_active_mentors));
-  const mentorsObserved = sum(goldRows, (r) => N(r.total_observed_mentors));
+  const mentorsObserved = sum(goldRows, (r) => Math.min(N(r.total_observed_mentors), N(r.total_active_mentors)));
   const pctObserved = totalAssigned > 0 ? Math.round((mentorsObserved / totalAssigned) * 1000) / 10 : 0;
   const excellentCount = sum(cuRows, (r) => N(r.mentors_excellent));
   const meetsCount = sum(cuRows, (r) => N(r.mentors_meets));
@@ -1823,7 +1832,7 @@ function LecObservationSubTab({ term, year, summaryData }) {
     const rows = cuRows.filter((r) => r.region === region);
     const goldRegionRows = goldRows.filter((r) => String(r.region || '').toLowerCase() === region.toLowerCase());
     const assigned = sum(goldRegionRows, (r) => N(r.total_active_mentors));
-    const observed = sum(goldRegionRows, (r) => N(r.total_observed_mentors));
+    const observed = sum(goldRegionRows, (r) => Math.min(N(r.total_observed_mentors), N(r.total_active_mentors)));
     const qi = weightedAvg(rows, 'overall_quality_index', 'total_observations');
     return {
       region,
@@ -1846,7 +1855,7 @@ function LecObservationSubTab({ term, year, summaryData }) {
   const ranked = summaryRows.filter((r) => r.overall_quality_index != null).sort((a, b) => a.overall_quality_index - b.overall_quality_index);
   const withGoldObserved = (r) => {
     const gold = goldByCuTerm.get(`${normCu(r.cu)}|${r.term}`);
-    return { ...r, goldMentorsObserved: gold ? N(gold.total_observed_mentors) : null };
+    return { ...r, goldMentorsObserved: gold ? Math.min(N(gold.total_observed_mentors), N(gold.total_active_mentors)) : null };
   };
   const lowest = ranked.slice(0, 8).map(withGoldObserved);
   const highest = [...ranked].reverse().slice(0, 8).map(withGoldObserved);
@@ -2142,7 +2151,7 @@ function RegionCuDrillList({ region, cuRows, goldByCu, onDrillCu }) {
       return {
         ...r,
         goldAssigned: gold ? N(gold.total_active_mentors) : null,
-        goldObserved: gold ? N(gold.total_observed_mentors) : null,
+        goldObserved: gold ? Math.min(N(gold.total_observed_mentors), N(gold.total_active_mentors)) : null,
         bucket: performanceBucket(r.overall_quality_index),
       };
     })
@@ -3421,15 +3430,60 @@ function LmmLiveComparison({ liveData }) {
   );
 }
 
-export default function NationalView({ summaryData, schoolData, year, term, onDrill }) {
+export default function NationalView({ summaryData, schoolData, year, term, onDrill, printTabs, onPrintDone }) {
   const [tab, setTab] = useState('exec');
   const data = useMemo(
     () => summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term)),
     [summaryData, year, term],
   );
 
+  // Export-tabs picker (App.jsx header) sets `printTabs` to the chosen tab
+  // ids and we render all of them (not just the currently-active one, which
+  // is all a plain window.print() would otherwise capture, since only one
+  // tab is ever mounted at a time). `afterprint` clears it back to null so
+  // the normal single-tab view returns once the print dialog closes.
+  useEffect(() => {
+    if (!printTabs || printTabs.length === 0) return undefined;
+    const raf = requestAnimationFrame(() => window.print());
+    const handleAfterPrint = () => onPrintDone && onPrintDone();
+    window.addEventListener('afterprint', handleAfterPrint);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('afterprint', handleAfterPrint);
+    };
+  }, [printTabs, onPrintDone]);
+
   if (data.length === 0) {
     return <Placeholder label="No data for the selected year / term." />;
+  }
+
+  const renderTabContent = (tabId) => {
+    switch (tabId) {
+      case 'exec': return <ExecTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />;
+      case 'lec': return <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
+      case 'pb': return <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />;
+      case 'quality': return <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
+      case 'mentor': return <MentorQualityTab term={term} year={year} summaryData={summaryData} />;
+      case 'lmm': return <LearningMeasurementMapTab onJumpTab={setTab} summaryData={summaryData} schoolData={schoolData} year={year} />;
+      default: return null;
+    }
+  };
+
+  if (printTabs && printTabs.length > 0) {
+    return (
+      <div>
+        {printTabs.map((tabId, idx) => {
+          const t = TABS.find((x) => x.id === tabId);
+          if (!t) return null;
+          return (
+            <div key={tabId} className="print-tab-section" style={{ breakBefore: idx > 0 ? 'page' : 'auto', pageBreakBefore: idx > 0 ? 'always' : 'auto' }}>
+              <h2 className="print-tab-heading">{t.label}</h2>
+              {renderTabContent(tabId)}
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   return (
@@ -3441,12 +3495,7 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
           </button>
         ))}
       </div>
-      {tab === 'exec' ? <ExecTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
-      {tab === 'lec' ? <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
-      {tab === 'pb' ? <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
-      {tab === 'quality' ? <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} /> : null}
-      {tab === 'mentor' ? <MentorQualityTab term={term} year={year} summaryData={summaryData} /> : null}
-      {tab === 'lmm' ? <LearningMeasurementMapTab onJumpTab={setTab} summaryData={summaryData} schoolData={schoolData} year={year} /> : null}
+      {renderTabContent(tab)}
     </div>
   );
 }
