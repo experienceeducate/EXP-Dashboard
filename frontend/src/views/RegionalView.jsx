@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
 import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, mergeRowsAcrossTerms, sum } from '../lib/metrics.js';
-import { formatPercentage, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
+import { formatPercentage, formatPercentage1, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap } from '../components/ui.jsx';
 import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend, HeatmapInsights } from './NationalView.jsx';
@@ -23,7 +23,7 @@ function ScoreCards({ summaryData, data, year, term }) {
 
   const lecsDelivered = lecNums.reduce((s, n) => s + sum(data, (d) => N(d[`schools_with_lec${n}`])), 0);
   const lecsExpected = totalSchools * lecNums.length;
-  const lecDeliveryPct = lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0;
+  const lecDeliveryPct = formatPercentage1(lecsDelivered, lecsExpected);
   const avgScholars = avgScholarsPerLec(data, lecNums);
 
   const cuSet = new Set(data.map((r) => String(r.cu || '').toLowerCase()));
@@ -86,7 +86,7 @@ function CUBreakdown({ summaryData, data, year, term, onSelectCU }) {
             const recPct = formatPercentage(recFinal, recTarget);
             const lecsDel = lecNums.reduce((s, ln) => s + N(cu[`schools_with_lec${ln}`]), 0);
             const lecsExp = n * lecNums.length;
-            const lecsPct = formatPercentage(lecsDel, lecsExp);
+            const lecsPct = formatPercentage1(lecsDel, lecsExp);
             const hasGM = N(cu.schools_with_gm);
             // Unconditional max/sum across all 4 milestones: a term1 row already
             // reads 0 for m3/m4 (and vice versa for term2), so this is correct
@@ -381,14 +381,14 @@ function ActivityCompletion({ data, year, term }) {
     const schoolsWith = sum(data, (d) => N(d[`schools_with_lec${n}`]));
     const scholars = sum(data, (d) => N(d[`lec${n}_scholars`]));
     const nonScholars = sum(data, (d) => N(d[`lec${n}_non_scholars`]));
-    const pct = totalSchools > 0 ? Math.round((schoolsWith / totalSchools) * 100) : 0;
+    const pct = formatPercentage1(schoolsWith, totalSchools);
     return { label: `LEC ${n}`, schoolsWith, scholars, nonScholars, pct, avg: schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—' };
   });
   const lecDeliveries = lecRows.reduce((s, r) => s + r.schoolsWith, 0);
   const lecScholars = lecRows.reduce((s, r) => s + r.scholars, 0);
   const lecNon = lecRows.reduce((s, r) => s + r.nonScholars, 0);
   const lecsExp = totalSchools * lecNums.length;
-  const lecPct = lecsExp > 0 ? Math.round((lecDeliveries / lecsExp) * 100) : 0;
+  const lecPct = formatPercentage1(lecDeliveries, lecsExp);
 
   const gmSessions = term === 'term2'
     ? [{ label: 'GM 2', field: 'schools_with_gm2', schl: 'gm2_total_scholars' }, { label: 'GM 3', field: 'schools_with_gm3', schl: 'gm3_total_scholars' }]
@@ -398,7 +398,7 @@ function ActivityCompletion({ data, year, term }) {
   const cdScholars = term === 'term2' ? sum(data, (d) => N(d.sd_total_scholars)) : sum(data, (d) => N(d.cd_scholar_attendance));
   const cdNon = term === 'term2' ? 0 : sum(data, (d) => N(d.cd_non_scholar_attendance));
   const pbSchools = sum(data, (d) => N(d.schools_completed_m1));
-  const pbPct = totalSchools > 0 ? Math.round((pbSchools / totalSchools) * 100) : 0;
+  const pbPct = formatPercentage1(pbSchools, totalSchools);
 
   const Row = ({ label, schoolsWith, pct, scholars, nonScholars, avg, denom, denomLabel, bold }) => (
     <tr style={bold ? { fontWeight: 700, background: '#f8f9fa', borderTop: '2px solid #dee2e6' } : undefined}>
@@ -430,10 +430,10 @@ function ActivityCompletion({ data, year, term }) {
           {gmSessions.map((gs) => {
             const cnt = sum(data, (d) => N(d[gs.field]));
             const sch = sum(data, (d) => N(d[gs.schl]));
-            const pct = totalSchools > 0 ? Math.round((cnt / totalSchools) * 100) : 0;
+            const pct = formatPercentage1(cnt, totalSchools);
             return <Row key={gs.label} label={gs.label} schoolsWith={cnt} pct={pct} scholars={sch} nonScholars={0} avg={cnt > 0 ? (sch / cnt).toFixed(1) : '—'} />;
           })}
-          {withCD > 0 ? <Row label={getNonLECActivityLabel(term)} schoolsWith={withCD} pct={totalSchools > 0 ? Math.round((withCD / totalSchools) * 100) : 0} scholars={cdScholars} nonScholars={cdNon} avg={withCD > 0 ? (cdScholars / withCD).toFixed(1) : '—'} /> : null}
+          {withCD > 0 ? <Row label={getNonLECActivityLabel(term)} schoolsWith={withCD} pct={formatPercentage1(withCD, totalSchools)} scholars={cdScholars} nonScholars={cdNon} avg={withCD > 0 ? (cdScholars / withCD).toFixed(1) : '—'} /> : null}
           <Row label="PB Milestone (Passbook)" schoolsWith={pbSchools} pct={pbPct} scholars={0} nonScholars={0} avg="—" />
         </tbody>
       </table>
@@ -467,7 +467,7 @@ function ClubMilestonesByCU({ data, term }) {
                 <td className="center">{n}</td>
                 {active.map((m) => {
                   const cnt = N(cu[m.key]);
-                  const pct = n > 0 ? Math.round((cnt / n) * 100) : 0;
+                  const pct = formatPercentage1(cnt, n);
                   return <td key={m.key} className="center" style={{ fontWeight: 600, color: cnt > 0 ? ragColor(pct) : '#ccc' }}>{cnt > 0 ? `${cnt}/${n} (${pct}%)` : '—'}</td>;
                 })}
               </tr>
@@ -493,7 +493,7 @@ function SkillsDayByCU({ data }) {
           {rows.map((cu) => {
             const n = N(cu.total_target_schools);
             const withSD = N(cu.schools_with_skills_day);
-            const pct = n > 0 ? Math.round((withSD / n) * 100) : 0;
+            const pct = formatPercentage1(withSD, n);
             const sch = N(cu.sd_total_scholars);
             const male = N(cu.sd_male_scholars);
             const female = N(cu.sd_female_scholars);

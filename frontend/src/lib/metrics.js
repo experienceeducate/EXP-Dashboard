@@ -3,7 +3,7 @@
 // All functions are pure — they take data + year/term rather than reading the DOM.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getLECsForTerm } from './config.js';
-import { calculatePBQualityScore } from './format.js';
+import { calculatePBQualityScore, formatPercentage1 } from './format.js';
 
 const N = (v) => Number(v) || 0;
 export const sum = (rows, fn) => rows.reduce((s, d) => s + fn(d), 0);
@@ -49,11 +49,29 @@ export function mergeRowsAcrossTerms(rows, keyFn) {
 }
 
 // ── Retention projection (shared by score cards, funnel, term metrics) ────────
-// Given a set of rows + LEC numbers, resolve last-LEC scholars, projecting when 0.
+// Given a set of rows + LEC numbers, resolve last-LEC scholars, projecting when
+// delivery of the last LEC isn't complete yet.
+//
+// BUG FIX (verified against live BigQuery data): this used to trust the raw
+// `actual` sum whenever it was merely nonzero (`actual > 0`), which is true
+// almost as soon as a single school reports — e.g. with only 373/825 schools
+// (45%) having delivered LEC14, `actual` was the scholar count from just
+// those 373 schools, yet it was divided by an activation/recruitment
+// denominator summed across all 825 — silently understating retention (54%)
+// versus the properly school-coverage-scaled projection (~119%, matching the
+// separate "Projected retention" insight already shown elsewhere on the same
+// Executive Summary page — the two numbers disagreeing was the reported bug).
+// Now `actual` is only trusted once delivery is essentially complete
+// (>= 90% of target schools); below that, always project via the per-school
+// average rate over the last 2 delivered LECs, scaled to the full school
+// count — consistent with computeExecutiveInsights' retention_projection.
 export function resolveLastLecScholars(rows, lecNums) {
   const lastLec = lecNums[lecNums.length - 1];
   const actual = sum(rows, (d) => N(d[`lec${lastLec}_scholars`]));
-  if (actual > 0) return { lastLec, lastLecScholars: actual, isProjected: false };
+  const deliveredSchools = sum(rows, (d) => N(d[`schools_with_lec${lastLec}`]));
+  const totalSchools = sum(rows, (d) => N(d.total_target_schools));
+  const lastLecCoverage = totalSchools > 0 ? deliveredSchools / totalSchools : 0;
+  if (actual > 0 && lastLecCoverage >= 0.9) return { lastLec, lastLecScholars: actual, isProjected: false };
 
   const deliveredLecs = lecNums.filter((n) => rows.some((d) => N(d[`schools_with_lec${n}`]) > 0));
   const recentLecs = deliveredLecs.slice(-2);
@@ -120,17 +138,25 @@ export function getTermMetrics(summaryData, year, term, cuFilter) {
   const activated = sum(t1Src, (d) => N(d.lec2_scholars));
   const retBase = activated > 0 ? activated : recruited;
 
-  // PB quality: always T1 milestone data (M1+M2).
-  const pbSrcRows = t1Rows.length > 0 ? t1Rows : termRows;
-  const pb2 = sum(pbSrcRows, (d) => N(d.m1_quality_rated) + N(d.m2_quality_rated));
-  const totalPB = sum(pbSrcRows, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
+  // PB quality — term-aware milestone pair (M1+M2 for term1, M3+M4 for
+  // term2+), always read from `termRows` (already scoped to the requested
+  // term/year/cuFilter). Unlike recruitment/activation above — genuinely
+  // T1-only fields, hence the t1Src fallback — Term 2 rows carry their own
+  // M3/M4 quality data, so PB quality must never borrow from Term 1.
+  // BUG FIX: this previously always summed M1+M2 regardless of `term`, so
+  // the Term-on-Term Comparison card's "PB Quality" showed the identical
+  // number for both Term 1 and Term 2 (verified: both read 90%, T2's own
+  // M3+M4 quality was never actually used).
+  const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+  const pb2 = sum(termRows, (d) => pbFields.reduce((s, m) => s + N(d[`${m}_quality_rated`]), 0));
+  const totalPB = sum(termRows, (d) => pbFields.reduce((s, m) => s + N(d[`${m}_total_rated`]), 0));
 
   return {
     lecNums,
     lecsDelivered,
     lecsExpected,
     totalSchools,
-    lecPct: lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0,
+    lecPct: formatPercentage1(lecsDelivered, lecsExpected),
     avgScholars: avgScholarsPerLec(termRows, lecNums),
     recruited,
     activated,
@@ -156,7 +182,7 @@ export function computeNationalKpis(summaryData, data, year, term) {
 
   const lecsDelivered = sum(data, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
   const lecsExpected = totalSchools * lecNums.length;
-  const lecDeliveryPct = lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0;
+  const lecDeliveryPct = formatPercentage1(lecsDelivered, lecsExpected);
 
   const avgScholars = avgScholarsPerLec(data, lecNums);
 
@@ -264,12 +290,21 @@ export function getReportTimelinessSummary(rows) {
 }
 
 // ── Observation coverage by region (legacy renderNationalObservationCoverage) ─
+// Clamp a CU row's observed-mentor count to its active-mentor count before
+// summing. A handful of CUs have total_observed_mentors > total_active_mentors
+// (e.g. mayuge, kamwenge — likely a mentor observed before a mid-term
+// reassignment dropped them from the active roster) — verified directly
+// against BigQuery, not a one-off. Leaving it unclamped let this tab's
+// national coverage % disagree with Executive Summary's (which already
+// clamped) for the exact same term selection.
+const clampedObserved = (d) => Math.min(N(d.total_observed_mentors), N(d.total_active_mentors));
+
 export function computeObsCoverageByRegion(data) {
   const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
   const rows = regions.map((region) => {
     const rd = data.filter((d) => d.region === region);
     const mentors = sum(rd, (d) => N(d.total_active_mentors));
-    const observed = sum(rd, (d) => N(d.total_observed_mentors));
+    const observed = sum(rd, clampedObserved);
     const obsCount = sum(rd, (d) => N(d.total_mentor_observations));
     const scores = rd.map((d) => Number(d.avg_cu_observation_score)).filter((v) => v > 0);
     const avgScore = scores.length > 0 ? (scores.reduce((s, v) => s + v, 0) / scores.length).toFixed(2) : '—';
@@ -939,7 +974,7 @@ export function computeNonScholar(schoolData, year, term) {
   const rows = schoolData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
   const lecNums = getLECsForTerm(year, term === 'all' ? 'term1' : term);
   const withNS = rows.filter((d) => lecNums.some((n) => N(d[`lec${n}_non_scholars`]) > 0)).length;
-  const pctWith = rows.length > 0 ? Math.round((withNS / rows.length) * 100) : 0;
+  const pctWith = formatPercentage1(withNS, rows.length);
   const buckets = { '0': 0, '1-10': 0, '11-20': 0, '21-30': 0, '31+': 0 };
   rows.forEach((d) => {
     const total = lecNums.reduce((s, n) => s + N(d[`lec${n}_non_scholars`]), 0);

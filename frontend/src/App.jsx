@@ -6,7 +6,7 @@ import { getTermLabelShort } from './lib/format.js';
 import LoginScreen from './components/LoginScreen.jsx';
 import LoadingOverlay from './components/LoadingOverlay.jsx';
 import DrillPanel from './components/DrillPanel.jsx';
-import NationalView from './views/NationalView.jsx';
+import NationalView, { NATIONAL_TABS } from './views/NationalView.jsx';
 import RegionalView from './views/RegionalView.jsx';
 import CuView from './views/CuView.jsx';
 
@@ -27,6 +27,72 @@ const INITIAL_SSO_ERROR = (() => {
   const { error } = api.consumeAuthRedirect();
   return error ? SSO_ERRORS[error] || 'Sign-in failed. Please try again.' : '';
 })();
+
+function ExportTabsModal({ tabs, selected, onToggle, onSelectAll, onDeselectAll, onCancel, onConfirm }) {
+  return (
+    <>
+      <div className="drill-backdrop" onClick={onCancel} />
+      <div
+        role="dialog"
+        aria-label="Export National View"
+        style={{
+          position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+          background: '#fff', borderRadius: 12, padding: '1.5rem', width: 420, maxWidth: '90vw',
+          zIndex: 1000, boxShadow: '0 10px 40px rgba(0,0,0,.25)',
+        }}
+      >
+        <h3 style={{ marginTop: 0, marginBottom: '.35rem' }}>⬇ Export National View</h3>
+        <p style={{ fontSize: '.85rem', color: '#666', marginTop: 0 }}>
+          Choose which tabs to include. All tabs are selected by default.
+        </p>
+        <div style={{ display: 'flex', gap: '.5rem', marginBottom: '.75rem' }}>
+          <button
+            type="button"
+            onClick={onSelectAll}
+            style={{ border: '1px solid #ccc', background: '#fff', borderRadius: 6, padding: '.3rem .7rem', fontSize: '.8rem', cursor: 'pointer' }}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            onClick={onDeselectAll}
+            style={{ border: '1px solid #ccc', background: '#fff', borderRadius: 6, padding: '.3rem .7rem', fontSize: '.8rem', cursor: 'pointer' }}
+          >
+            Deselect all
+          </button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem', marginBottom: '1.25rem', maxHeight: '40vh', overflowY: 'auto' }}>
+          {tabs.map((t) => (
+            <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: '.6rem', cursor: 'pointer', fontSize: '.9rem' }}>
+              <input type="checkbox" checked={selected.includes(t.id)} onChange={() => onToggle(t.id)} />
+              {t.label}
+            </label>
+          ))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '.5rem' }}>
+          <button
+            type="button"
+            onClick={onCancel}
+            style={{ border: '1px solid #ccc', background: '#fff', borderRadius: 6, padding: '.45rem .9rem', cursor: 'pointer' }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={selected.length === 0}
+            style={{
+              border: 'none', borderRadius: 6, padding: '.45rem .9rem', fontWeight: 700, color: '#fff',
+              background: selected.length === 0 ? '#aaa' : '#0e313e', cursor: selected.length === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Export {selected.length} tab{selected.length !== 1 ? 's' : ''}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
 
 export default function App() {
   const [authed, setAuthed] = useState(() => !!api.getToken());
@@ -170,7 +236,27 @@ export default function App() {
   };
 
   const handleRefresh = () => loadData();
-  const handleExport = () => window.print();
+
+  // Export: National View has inner tabs, only one of which is ever mounted
+  // at a time, so a plain window.print() would only capture whichever tab
+  // happens to be active. On National View, open a picker (default: every
+  // tab selected) and hand the chosen ids to NationalView to render — and
+  // print — all of them. Other views have no inner tabs, so print as-is.
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportSelected, setExportSelected] = useState(() => NATIONAL_TABS.map((t) => t.id));
+  const [printTabs, setPrintTabs] = useState(null);
+  const handleExport = () => {
+    if (view === 'national') {
+      setExportSelected(NATIONAL_TABS.map((t) => t.id));
+      setExportModalOpen(true);
+    } else {
+      window.print();
+    }
+  };
+  const confirmExport = () => {
+    setExportModalOpen(false);
+    setPrintTabs(exportSelected);
+  };
 
   // ── Derived options ──────────────────────────────────────────────────────
   const years = useMemo(
@@ -307,7 +393,15 @@ export default function App() {
       <main className="content">
         {dataError ? <div className="login-error" style={{ maxWidth: 600 }}>{dataError}</div> : null}
         {view === 'national' ? (
-          <NationalView summaryData={summaryData} schoolData={schoolData} year={year} term={term} onDrill={setDrill} />
+          <NationalView
+            summaryData={summaryData}
+            schoolData={schoolData}
+            year={year}
+            term={term}
+            onDrill={setDrill}
+            printTabs={printTabs}
+            onPrintDone={() => setPrintTabs(null)}
+          />
         ) : null}
         {view === 'regional' ? (
           <RegionalView
@@ -337,6 +431,18 @@ export default function App() {
 
       {drill ? (
         <DrillPanel drill={drill} summaryData={summaryData} schoolData={schoolData} year={year} term={term} onClose={() => setDrill(null)} />
+      ) : null}
+
+      {exportModalOpen ? (
+        <ExportTabsModal
+          tabs={NATIONAL_TABS}
+          selected={exportSelected}
+          onToggle={(id) => setExportSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))}
+          onSelectAll={() => setExportSelected(NATIONAL_TABS.map((t) => t.id))}
+          onDeselectAll={() => setExportSelected([])}
+          onCancel={() => setExportModalOpen(false)}
+          onConfirm={confirmExport}
+        />
       ) : null}
 
       <div className="debug-pill">

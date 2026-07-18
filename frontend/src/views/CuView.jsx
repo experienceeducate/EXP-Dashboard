@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
 import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
-import { formatPercentage, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
+import { formatPercentage, formatPercentage1, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
 import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend } from './NationalView.jsx';
@@ -62,7 +62,7 @@ function AllCUsOverview({ data: rawData, year, term, schoolData, onSelectCU }) {
       return s + lecNums.filter((ln) => N(sc[`schools_with_lec${ln}`])).length;
     }, 0);
     const lecsExp = n * lecNums.length;
-    const lecsPct = formatPercentage(lecsDel, lecsExp);
+    const lecsPct = formatPercentage1(lecsDel, lecsExp);
     const hasGM = schools.filter((sid) => N(findSchool(sid).schools_with_gm)).length;
     const hasPB = schools.filter((sid) => pbFields.some((m) => N(findSchool(sid)[`schools_completed_${m}`]))).length;
     const mentors = [...new Set(cuData.map((d) => d.mentor_id))];
@@ -94,7 +94,7 @@ function AllCUsOverview({ data: rawData, year, term, schoolData, onSelectCU }) {
   });
 
   const totalRecPct = formatPercentage(totals.rec, totals.recTgt);
-  const totalLecPct = formatPercentage(totals.lecsDel, totals.lecsExp);
+  const totalLecPct = formatPercentage1(totals.lecsDel, totals.lecsExp);
   const totalObsPct = formatPercentage(totals.obs, totals.mentors);
 
   return (
@@ -177,7 +177,7 @@ function CuScoreCards({ schoolData, data, year, term, cu }) {
 
   const lecsDelivered = lecNums.reduce((s, ln) => s + schools.filter((sc) => N(sc[`schools_with_lec${ln}`])).length, 0);
   const lecsExpected = n * lecNums.length;
-  const lecDeliveryPct = lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0;
+  const lecDeliveryPct = formatPercentage1(lecsDelivered, lecsExpected);
 
   let totalS = 0;
   let totalDel = 0;
@@ -246,7 +246,7 @@ function CuActivityCompletion({ data, year, term }) {
     const nDel = delivered.length;
     const scholars = delivered.reduce((s, r) => s + N(r[`lec${ln}_scholars`]), 0);
     const nonScholars = delivered.reduce((s, r) => s + N(r[`lec${ln}_non_scholars`]), 0);
-    const pct = Math.round((nDel / n) * 100);
+    const pct = formatPercentage1(nDel, n);
     return { label: `LEC ${ln}`, nDel, pct, scholars, nonScholars, avgS: nDel > 0 ? (scholars / nDel).toFixed(1) : '—', avgNS: nDel > 0 ? (nonScholars / nDel).toFixed(1) : '—' };
   });
 
@@ -264,7 +264,7 @@ function CuActivityCompletion({ data, year, term }) {
       ];
   const actRows = actDef.map((act) => {
     const cnt = schools.filter((s) => N(s[act.field])).length;
-    const pct = Math.round((cnt / n) * 100);
+    const pct = formatPercentage1(cnt, n);
     const scholars = sum(schools, (r) => N(r[act.schl]));
     return { label: act.label, nDel: cnt, pct, scholars, avgS: cnt > 0 ? (scholars / cnt).toFixed(1) : '—' };
   });
@@ -272,7 +272,7 @@ function CuActivityCompletion({ data, year, term }) {
   const cdField = term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
   const cdLabel = getNonLECActivityLabel(term);
   const cdCnt = schools.filter((s) => N(s[cdField])).length;
-  const cdPct = Math.round((cdCnt / n) * 100);
+  const cdPct = formatPercentage1(cdCnt, n);
   const cdScholars = term === 'term2'
     ? sum(schools, (r) => N(r.sd_scholar_attendance || r.sd_total_scholars))
     : sum(schools, (r) => N(r.cd_scholar_attendance));
@@ -282,7 +282,7 @@ function CuActivityCompletion({ data, year, term }) {
     : [{ label: 'Club Meeting 1', field: 'schools_with_club_meeting_1' }, { label: 'Club Meeting 2', field: 'schools_with_club_meeting_2' }];
   const cmRows = cmDefs.map((cm) => {
     const cnt = schools.filter((s) => N(s[cm.field]) > 0).length;
-    return { label: cm.label, cnt, pct: Math.round((cnt / n) * 100) };
+    return { label: cm.label, cnt, pct: formatPercentage1(cnt, n) };
   });
 
   // Peer Circles — mentor-level, dedup by mentor_id (max value across a mentor's school rows).
@@ -389,7 +389,7 @@ function CuMentorPerformance({ schoolData, data, year, term, cu }) {
     const ss = mentor.schools;
     const lecsDelivered = lecNums.reduce((s, ln) => s + ss.filter((sc) => N(sc[`schools_with_lec${ln}`])).length, 0);
     const lecsExpected = lecNums.length * ss.length;
-    const delPct = lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0;
+    const delPct = formatPercentage1(lecsDelivered, lecsExpected);
     const mentorT1 = t1Rows.filter((d) => String(d.mentor_id || d.mentor_name || '') === String(ss[0].mentor_id || mentor.mentor_name || ''));
     const recruited = (mentorT1.length > 0 ? mentorT1 : ss).reduce((s, r) => s + N(r.total_scholars_recruited), 0);
     const activated = (mentorT1.length > 0 ? mentorT1 : ss).reduce((s, r) => s + N(r.lec2_scholars), 0);
@@ -880,7 +880,7 @@ function MilestoneReporting({ data, term }) {
           {schools.map((s) => {
             const reported = mDefs.filter((m) => N(s[m.comp])).length;
             const missing = mDefs.length - reported;
-            const rate = formatPercentage(reported, mDefs.length);
+            const rate = formatPercentage1(reported, mDefs.length);
             totalReported += reported;
             return (
               <tr key={s.school_id}>
@@ -896,7 +896,7 @@ function MilestoneReporting({ data, term }) {
             <td colSpan={2}>CU TOTAL</td>
             {mDefs.map((m) => (<td key={m.comp} />))}
             <td className="center">{totalExpected - totalReported}</td>
-            <td style={{ minWidth: 130 }}><ProgressCell pct={formatPercentage(totalReported, totalExpected)} minWidth={130} /></td>
+            <td style={{ minWidth: 130 }}><ProgressCell pct={formatPercentage1(totalReported, totalExpected)} minWidth={130} /></td>
           </tr>
         </tbody>
       </table>
@@ -932,7 +932,7 @@ function ClubMilestonesBySchool({ data, term }) {
         <tbody>
           {active.map((m) => {
             const cnt = schools.filter((s) => N(s[m.key]) > 0).length;
-            const pct = tot > 0 ? Math.round((cnt / tot) * 100) : 0;
+            const pct = formatPercentage1(cnt, tot);
             const rc = cnt > 0 ? ragColor(pct) : '#ccc';
             return (
               <tr key={m.key} style={{ borderBottom: '1px solid #f0f0f0' }}>
