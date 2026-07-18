@@ -120,10 +120,18 @@ export function getTermMetrics(summaryData, year, term, cuFilter) {
   const activated = sum(t1Src, (d) => N(d.lec2_scholars));
   const retBase = activated > 0 ? activated : recruited;
 
-  // PB quality: always T1 milestone data (M1+M2).
-  const pbSrcRows = t1Rows.length > 0 ? t1Rows : termRows;
-  const pb2 = sum(pbSrcRows, (d) => N(d.m1_quality_rated) + N(d.m2_quality_rated));
-  const totalPB = sum(pbSrcRows, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
+  // PB quality — term-aware milestone pair (M1+M2 for term1, M3+M4 for
+  // term2+), always read from `termRows` (already scoped to the requested
+  // term/year/cuFilter). Unlike recruitment/activation above — genuinely
+  // T1-only fields, hence the t1Src fallback — Term 2 rows carry their own
+  // M3/M4 quality data, so PB quality must never borrow from Term 1.
+  // BUG FIX: this previously always summed M1+M2 regardless of `term`, so
+  // the Term-on-Term Comparison card's "PB Quality" showed the identical
+  // number for both Term 1 and Term 2 (verified: both read 90%, T2's own
+  // M3+M4 quality was never actually used).
+  const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+  const pb2 = sum(termRows, (d) => pbFields.reduce((s, m) => s + N(d[`${m}_quality_rated`]), 0));
+  const totalPB = sum(termRows, (d) => pbFields.reduce((s, m) => s + N(d[`${m}_total_rated`]), 0));
 
   return {
     lecNums,
