@@ -1,20 +1,24 @@
-import { useMemo } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
-import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, sum } from '../lib/metrics.js';
+import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, mergeRowsAcrossTerms, sum } from '../lib/metrics.js';
 import { formatPercentage, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap } from '../components/ui.jsx';
+import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend, HeatmapInsights } from './NationalView.jsx';
 
 const N = (v) => Number(v) || 0;
 const rag = (pct) => (pct >= 80 ? C.green : pct >= 60 ? C.yellow : C.red);
 
 function ScoreCards({ summaryData, data, year, term }) {
-  const lecNums = getLECsForTerm(year, term);
+  // `data` is already merged to one row per CU under "All Terms" (see the
+  // mergeRowsAcrossTerms call in the default export) — summing straight over
+  // it is safe here; it would double-count every CU if it still had one row
+  // per term.
+  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
   const totalSchools = sum(data, (d) => N(d.total_target_schools));
-  const obsSrc = term === 'all' ? data.filter((d) => d.term === 'term1') : data;
-  const totalMentors = sum(obsSrc, (d) => Math.max(N(d.total_active_mentors), 0));
-  const observedMentors = sum(obsSrc, (d) => Math.min(N(d.total_observed_mentors), N(d.total_active_mentors)));
-  const totalObsCount = sum(obsSrc, (d) => N(d.total_mentor_observations));
+  const totalMentors = sum(data, (d) => Math.max(N(d.total_active_mentors), 0));
+  const observedMentors = sum(data, (d) => Math.min(N(d.total_observed_mentors), N(d.total_active_mentors)));
+  const totalObsCount = sum(data, (d) => N(d.total_mentor_observations));
   const observationRate = totalMentors > 0 ? formatPercentage(observedMentors, totalMentors) : 0;
 
   const lecsDelivered = lecNums.reduce((s, n) => s + sum(data, (d) => N(d[`schools_with_lec${n}`])), 0);
@@ -55,7 +59,7 @@ function ScoreCards({ summaryData, data, year, term }) {
 }
 
 function CUBreakdown({ summaryData, data, year, term, onSelectCU }) {
-  const lecNums = getLECsForTerm(year, term);
+  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
   return (
     <div className="table-wrap">
       <table className="breakdown-table">
@@ -84,10 +88,13 @@ function CUBreakdown({ summaryData, data, year, term, onSelectCU }) {
             const lecsExp = n * lecNums.length;
             const lecsPct = formatPercentage(lecsDel, lecsExp);
             const hasGM = N(cu.schools_with_gm);
-            const hasPB = term === 'term2'
-              ? Math.max(N(cu.schools_completed_m3), N(cu.schools_completed_m4))
-              : Math.max(N(cu.schools_completed_m1), N(cu.schools_completed_m2));
-            const ms = term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2'];
+            // Unconditional max/sum across all 4 milestones: a term1 row already
+            // reads 0 for m3/m4 (and vice versa for term2), so this is correct
+            // for every term selection without branching — see
+            // mergeRowsAcrossTerms for why that's true only once "All Terms"
+            // rows are merged per CU (done by the caller).
+            const hasPB = Math.max(N(cu.schools_completed_m1), N(cu.schools_completed_m2), N(cu.schools_completed_m3), N(cu.schools_completed_m4));
+            const ms = ['m1', 'm2', 'm3', 'm4'];
             const r = [0, 1, 2, 3].map((idx) => ms.reduce((s, m) => s + N(cu[`${m}_total_rating_${idx}`]), 0));
             const qual = calculatePBQualityScore(r[0], r[1], r[2], r[3]);
             const qualCol = qual >= 70 ? C.green : qual >= 50 ? C.yellow : C.red;
@@ -165,6 +172,21 @@ function ObservationByCU({ data }) {
 function ReportTimeliness({ data }) {
   const s = getReportTimelinessSummary(data);
   if (s.total === 0) return <Placeholder label="No report data yet." />;
+
+  // Report timeliness counts are genuinely additive across terms (not
+  // term-exclusive-nulled), so — unlike every other CU-level field in this
+  // view — this groups the raw per-term rows by CU and sums, instead of
+  // relying on the caller's term-merged `data`. Under "All Terms" `data`
+  // still has one row per (CU, term); grouping first is what makes this a
+  // true CU total instead of two same-CU rows with duplicate React keys.
+  const byCu = new Map();
+  data.forEach((d) => {
+    const key = String(d.cu || '').trim().toLowerCase();
+    if (!byCu.has(key)) byCu.set(key, []);
+    byCu.get(key).push(d);
+  });
+  const cuRows = [...byCu.values()].map((rows) => ({ cu: rows[0].cu, rows }));
+
   return (
     <>
       <TimelinessLegend />
@@ -178,12 +200,12 @@ function ReportTimeliness({ data }) {
             </tr>
           </thead>
           <tbody>
-            {data.map((d) => {
-              const cs = getReportTimelinessSummary([d]);
+            {cuRows.map(({ cu, rows }) => {
+              const cs = getReportTimelinessSummary(rows);
               if (cs.total === 0) return null;
               return (
-                <tr key={d.cu} style={{ borderBottom: '1px solid #e9ecef' }}>
-                  <td style={{ padding: '.5rem .75rem', fontWeight: 600 }}>{d.cu || '—'}</td>
+                <tr key={cu} style={{ borderBottom: '1px solid #e9ecef' }}>
+                  <td style={{ padding: '.5rem .75rem', fontWeight: 600 }}>{cu || '—'}</td>
                   <td style={{ textAlign: 'center' }}>{cs.total}</td>
                   <td style={{ textAlign: 'center', color: '#198754', fontWeight: 700 }}>{cs.early} ({cs.earlyPct}%)</td>
                   <td style={{ textAlign: 'center', color: '#20c997', fontWeight: 700 }}>{cs.onTime} ({cs.onTimePct}%)</td>
@@ -202,33 +224,131 @@ function ReportTimeliness({ data }) {
 }
 
 // ── Issue Summary (legacy renderRegionalIssueSummary) ────────────────────────
-function IssueSummary({ data, summaryData, year, term, onSelectCU }) {
-  const { issues, bottom5 } = useMemo(() => computeRegionalIssues(data, summaryData, year, term), [data, summaryData, year, term]);
+// Follow-up state per issue lives in the same localStorage tracker CU View's
+// Priority Alerts already use (lib/issueTracker.js) — keyed by (cu, type,
+// value), not just (cu, type), so a followed-up issue stays hidden only for
+// that exact instance. If the underlying count/detail changes later (e.g. a
+// CU's clustering count goes from 4 schools to 6), that's a new key and it
+// reappears — "unless it is a new one," per the request.
+const FOLLOWUP_REASONS = [
+  'Mentor on leave / unavailable',
+  'School closed or inaccessible',
+  'Data entry pending (activity happened, not yet reported)',
+  'Resource / logistics constraint',
+  'Already addressed with FOA/mentor',
+  'Other',
+];
+
+function FollowUpForm({ issue, onCancel, onConfirm }) {
+  const [reason, setReason] = useState(FOLLOWUP_REASONS[0]);
+  const [notes, setNotes] = useState('');
+  return (
+    <tr>
+      <td colSpan={5} style={{ background: '#f8f9fa', padding: '.75rem 1rem' }}>
+        <div style={{ fontSize: '.8rem', color: '#555', marginBottom: '.5rem' }}>
+          Why does <strong>{issue.cu}</strong>'s <strong>{issue.type}</strong> issue exist? This helps the programme
+          team understand recurring patterns — not just that it happened.
+        </div>
+        <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <select value={reason} onChange={(e) => setReason(e.target.value)} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #ccc' }}>
+            {FOLLOWUP_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Additional detail (optional)…"
+            style={{ flex: 1, minWidth: 180, padding: '.35rem .6rem', borderRadius: 6, border: '1px solid #ccc' }}
+          />
+          <button type="button" onClick={() => onConfirm(reason, notes)} style={{ padding: '.4rem .9rem', borderRadius: 6, border: 'none', background: C.navy, color: '#fff', fontWeight: 700, cursor: 'pointer' }}>
+            Confirm
+          </button>
+          <button type="button" onClick={onCancel} style={{ padding: '.4rem .9rem', borderRadius: 6, border: '1px solid #ccc', background: '#fff', cursor: 'pointer' }}>
+            Cancel
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU }) {
+  const { issues: allIssues, bottom5, achievements } = useMemo(() => computeRegionalIssues(data, summaryData, year, term, schoolData), [data, summaryData, year, term, schoolData]);
+  const [tick, setTick] = useState(0);
+  const [openIssueKey, setOpenIssueKey] = useState(null);
+  const issuesWithKeys = allIssues.map((i) => ({ ...i, issueKey: getIssueKey(i.cu, i.type, i.value) }));
+  const followedUp = issuesWithKeys.filter((i) => getIssueStatus(i.issueKey).status === 'resolved');
+  const issues = issuesWithKeys.filter((i) => getIssueStatus(i.issueKey).status !== 'resolved');
+  const confirmFollowUp = (issueKey, reason, notes) => {
+    updateIssueStatus(issueKey, 'resolved', notes.trim() ? `${reason} — ${notes.trim()}` : reason, 'Dashboard User');
+    setOpenIssueKey(null);
+    setTick((t) => t + 1);
+  };
   const sevBg = { high: '#f8d7da', medium: '#fff3cd' };
   const sevBorder = { high: C.red, medium: C.yellow };
   return (
     <>
-      <Section title={`🚨 Regional Issues${issues.length ? ` (${issues.length})` : ''}`} subtitle="CUs requiring immediate attention">
+      <Section
+        title={`🚨 Regional Issues${issues.length ? ` (${issues.length})` : ''}`}
+        subtitle={`CUs requiring immediate attention — LEC pace, LEC clustering, mentor observations, recruitment, PB milestones/quality, Skills Day, club meetings${followedUp.length ? ` · ${followedUp.length} followed up (hidden)` : ''}`}
+      >
         {issues.length === 0 ? (
           <div style={{ padding: '1.25rem', textAlign: 'center', color: C.green }}>✅ No flagged issues in this region.</div>
         ) : (
           <div className="table-wrap">
             <table className="breakdown-table">
-              <thead><tr><th>CU</th><th>FOA</th><th>Issue</th><th>Detail</th></tr></thead>
+              <thead><tr><th>CU</th><th>FOA</th><th>Issue</th><th>Detail</th><th /></tr></thead>
               <tbody>
                 {issues.map((i, idx) => (
-                  <tr key={`${i.cu}-${i.type}-${idx}`} className="clickable" onClick={() => onSelectCU(i.cu)}>
-                    <td className="item-name">{i.cu}</td>
-                    <td>{i.foa}</td>
-                    <td><span style={{ background: sevBg[i.severity], padding: '.2rem .5rem', borderRadius: 4, borderLeft: `3px solid ${sevBorder[i.severity]}`, fontWeight: 600 }}>{i.type}</span></td>
-                    <td>{i.value}</td>
-                  </tr>
+                  <Fragment key={`${i.cu}-${i.type}-${idx}`}>
+                    <tr>
+                      <td className="item-name clickable" onClick={() => onSelectCU(i.cu)}>{i.cu}</td>
+                      <td>{i.foa}</td>
+                      <td><span style={{ background: sevBg[i.severity], padding: '.2rem .5rem', borderRadius: 4, borderLeft: `3px solid ${sevBorder[i.severity]}`, fontWeight: 600 }}>{i.type}</span></td>
+                      <td>{i.value}</td>
+                      <td>
+                        <button
+                          type="button"
+                          onClick={() => setOpenIssueKey(openIssueKey === i.issueKey ? null : i.issueKey)}
+                          title="Mark this issue as followed up — it won't reappear unless it recurs with a different detail"
+                          style={{ border: '1px solid #ccc', background: '#fff', borderRadius: 6, padding: '.25rem .6rem', fontSize: '.75rem', fontWeight: 600, cursor: 'pointer', color: '#555', whiteSpace: 'nowrap' }}
+                        >
+                          ✓ Followed up
+                        </button>
+                      </td>
+                    </tr>
+                    {openIssueKey === i.issueKey ? (
+                      <FollowUpForm
+                        issue={i}
+                        onCancel={() => setOpenIssueKey(null)}
+                        onConfirm={(reason, notes) => confirmFollowUp(i.issueKey, reason, notes)}
+                      />
+                    ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
           </div>
         )}
       </Section>
+      {achievements.length > 0 ? (
+        <Section title={`🌟 Notable Improvements (${achievements.length})`} subtitle="CUs whose Term 2 performance jumped notably above their Term 1 baseline">
+          <div className="table-wrap">
+            <table className="breakdown-table">
+              <thead><tr><th>CU</th><th>FOA</th><th>Improvement</th><th>Detail</th></tr></thead>
+              <tbody>
+                {achievements.map((a, idx) => (
+                  <tr key={`${a.cu}-${a.type}-${idx}`} className="clickable" onClick={() => onSelectCU(a.cu)}>
+                    <td className="item-name">{a.cu}</td>
+                    <td>{a.foa}</td>
+                    <td><span style={{ background: '#d4edda', padding: '.2rem .5rem', borderRadius: 4, borderLeft: `3px solid ${C.green}`, fontWeight: 600 }}>{a.type}</span></td>
+                    <td style={{ fontWeight: 700, color: C.green }}>{a.value}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Section>
+      ) : null}
       <Section title="📊 Bottom 5 CUs — LEC Delivery" subtitle="Lowest LEC delivery rate in this region">
         <div className="table-wrap">
           <table className="breakdown-table">
@@ -254,7 +374,7 @@ function IssueSummary({ data, summaryData, year, term, onSelectCU }) {
 
 // ── Activity Completion & Participation (legacy renderRegionalActivityCompletion) ─
 function ActivityCompletion({ data, year, term }) {
-  const lecNums = getLECsForTerm(year, term);
+  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
   const totalSchools = sum(data, (d) => N(d.total_target_schools));
 
   const lecRows = lecNums.map((n) => {
@@ -395,11 +515,26 @@ function SkillsDayByCU({ data }) {
 }
 
 export default function RegionalView({ summaryData, schoolData, year, term, region, onSelectCU, onDrill }) {
-  const data = useMemo(() => {
+  // One row per (CU, term) present for the region/year — under "All Terms"
+  // this has 2 rows per CU (term1 + term2), each nulling out the fields that
+  // don't apply to it. Kept around only for Report Timeliness, which is
+  // genuinely additive across terms (not term-exclusive-nulled) and sums the
+  // raw rows itself.
+  const rawData = useMemo(() => {
     let rows = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
     if (region) rows = rows.filter((d) => String(d.region || '').toLowerCase() === String(region).toLowerCase());
     return rows;
   }, [summaryData, year, term, region]);
+
+  // One row per CU, term-merged under "All Terms" — every other section reads
+  // this. Merging (not just filtering) matters here: a CU's term2 row alone
+  // has total_scholars_recruited=null, m1/m2=0, schools_with_lec1-5=0 (etc.) —
+  // keeping only one of the two term rows silently drops real data from
+  // whichever term didn't win. See mergeRowsAcrossTerms.
+  const data = useMemo(
+    () => (term === 'all' ? mergeRowsAcrossTerms(rawData, (r) => String(r.cu || '').toLowerCase()) : rawData),
+    [rawData, term],
+  );
 
   // Region-scoped school rows for the Skills Lab heatmap.
   const regionSchoolData = useMemo(
@@ -420,7 +555,7 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
   return (
     <div>
       <ScoreCards summaryData={summaryData} data={data} year={year} term={term} />
-      <IssueSummary data={data} summaryData={summaryData} year={year} term={term} onSelectCU={onSelectCU} />
+      <IssueSummary data={data} summaryData={summaryData} year={year} term={term} schoolData={regionSchoolData} onSelectCU={onSelectCU} />
       <Section title="✅ Activity Completion & Participation" subtitle="Delivery and participation across the region">
         <ActivityCompletion data={data} year={year} term={term} />
       </Section>
@@ -448,7 +583,11 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
         </Section>
       ) : null}
       <Section title="📅 Activity Report Timeliness" subtitle="Report submission schedule by CU">
-        <ReportTimeliness data={data} />
+        {/* Report timeliness counts are genuinely additive across terms (not
+            term-exclusive-nulled like the other CU fields) — deliberately
+            fed the raw per-term rows, not the merged `data`, so "All Terms"
+            sums real activity from both terms instead of MAX-picking one. */}
+        <ReportTimeliness data={rawData} />
       </Section>
     </div>
   );
