@@ -3,9 +3,50 @@
 // All functions are pure — they take data + year/term rather than reading the DOM.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getLECsForTerm } from './config.js';
+import { calculatePBQualityScore } from './format.js';
 
 const N = (v) => Number(v) || 0;
 export const sum = (rows, fn) => rows.reduce((s, d) => s + fn(d), 0);
+
+// ── Merge same-entity rows across terms (for "All Terms" views) ─────────────
+// Each term's row NULLS OUT the fields that don't apply to it — e.g. a term2
+// CU/school row has total_scholars_recruited=null, m1/m2=0, schools_with_lec1-5=0
+// (verified directly against BigQuery, not assumed). Naively keeping only one
+// row per entity (e.g. `Map.set` on first-seen) silently drops whichever term
+// didn't come first — every field that only applies to the OTHER term reads
+// as blank/zero, even though real data exists on the row that got discarded.
+// This coalesces per field, keeping the larger of the two (numeric) values —
+// 0/null always loses to a populated value — so the merged row reflects
+// activity from every term. Only safe for "either-or" fields (a term-specific
+// count that's 0 elsewhere, or a roster-style static value that's the same
+// either way); genuinely additive across-term fields (e.g. report timeliness
+// counts) should NOT be merged this way — sum them from the raw per-term rows
+// instead.
+export function mergeRowsAcrossTerms(rows, keyFn) {
+  const merged = new Map();
+  rows.forEach((row) => {
+    const key = keyFn(row);
+    if (!merged.has(key)) {
+      merged.set(key, { ...row });
+      return;
+    }
+    const existing = merged.get(key);
+    Object.keys(row).forEach((field) => {
+      const newVal = row[field];
+      const curVal = existing[field];
+      const newNum = newVal == null || newVal === '' ? null : Number(newVal);
+      const curNum = curVal == null || curVal === '' ? null : Number(curVal);
+      const newIsNum = newNum != null && !Number.isNaN(newNum);
+      const curIsNum = curNum != null && !Number.isNaN(curNum);
+      if (newIsNum && (!curIsNum || newNum > curNum)) {
+        existing[field] = newVal;
+      } else if (!newIsNum && curVal == null && newVal != null) {
+        existing[field] = newVal;
+      }
+    });
+  });
+  return [...merged.values()];
+}
 
 // ── Retention projection (shared by score cards, funnel, term metrics) ────────
 // Given a set of rows + LEC numbers, resolve last-LEC scholars, projecting when 0.
@@ -546,11 +587,25 @@ export function computeExecutiveInsights(summaryData, data, year, term) {
 }
 
 // ── Regional Issue Summary (legacy renderRegionalIssueSummary) ───────────────
-// data = CU rows for the region/term. Returns { issues, bottom5 }.
-export function computeRegionalIssues(data, summaryData, year, term) {
-  const lecNums = getLECsForTerm(year, term);
-  const isT1 = term === 'term1';
+// data = CU rows for the region/term (see mergeRowsAcrossTerms — callers pass
+// term-merged rows under "All Terms" so a CU isn't evaluated twice, once per
+// term-shaped row). schoolData = region-scoped school rows, used only for the
+// LEC Clustering check (computeLecClusters needs per-school week data, which
+// doesn't exist on the CU-level rows in `data`). Returns { issues, bottom5, achievements }.
+export function computeRegionalIssues(data, summaryData, year, term, schoolData = []) {
+  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
   const issues = [];
+
+  // LEC Clustering — CUs with multiple schools delivering 3+ LECs in a single
+  // week (mentor-workload / scholar-burnout risk, same 3+ threshold used by
+  // the CU View heatmap's ⚡ marker). Flag CUs with 2+ such schools — a single
+  // clustering incident isn't yet a CU-wide pattern worth a regional flag.
+  const clusters = computeLecClusters(schoolData, year, term);
+  const clusterCountByCu = new Map();
+  clusters.forEach((c) => {
+    const key = String(c.cu || '').trim().toLowerCase();
+    clusterCountByCu.set(key, (clusterCountByCu.get(key) || 0) + 1);
+  });
 
   const avgs = data.map((cu) => lecNums.reduce((s, n) => s + N(cu[`schools_with_lec${n}`]), 0) / Math.max(1, N(cu.total_target_schools) || 1));
   const sorted = [...avgs].sort((a, b) => a - b);
@@ -564,22 +619,72 @@ export function computeRegionalIssues(data, summaryData, year, term) {
     if (medianAvg >= 1 && avg < medianAvg - 1) {
       issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'LEC Behind Pace', value: `${avg.toFixed(1)} vs median ${medianAvg.toFixed(1)} LECs/school`, severity: 'high' });
     }
-    if (N(cu.total_active_mentors) > 0 && N(cu.total_observed_mentors) === 0) {
-      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'No Observations', value: '0 mentors observed', severity: 'high' });
+    const clusterCount = clusterCountByCu.get(String(cu.cu || '').trim().toLowerCase()) || 0;
+    if (clusterCount >= 2) {
+      issues.push({
+        cu: cu.cu, foa: cu.foa_name || '–', type: 'LEC Clustering',
+        value: `${clusterCount} schools with 3+ LECs in one week`,
+        severity: clusterCount >= 4 ? 'high' : 'medium',
+      });
     }
-    if (isT1) {
+    const mentorsActive = N(cu.total_active_mentors);
+    const mentorsObserved = N(cu.total_observed_mentors);
+    const obsPct = mentorsActive > 0 ? Math.round((mentorsObserved / mentorsActive) * 100) : 0;
+    if (mentorsActive > 0 && mentorsObserved === 0) {
+      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'No Observations', value: '0 mentors observed', severity: 'high' });
+    } else if (mentorsActive > 0 && obsPct < 50) {
+      // Matches the same <50% red threshold the CU-level observation-coverage
+      // table (ObservationByCU) already colors red — so a CU showing red
+      // there is never silently absent from this region-level rollup.
+      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'Low Observation Coverage', value: `${mentorsObserved}/${mentorsActive} (${obsPct}%)`, severity: 'medium' });
+    }
+    if (term === 'term1' || term === 'all') {
       const rec = N(cu.total_scholars_recruited);
       const tgt = n * 45;
       if (tgt > 0 && rec / tgt < 0.8) {
         issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'Recruitment', value: `${rec}/${tgt} (${Math.round(rec / tgt * 100)}%)`, severity: 'medium' });
       }
     }
-    const cuT1row = summaryData.find((d) => d.term === 'term1' && d.year == year && String(d.cu || '').trim().toLowerCase() === String(cu.cu || '').trim().toLowerCase());
-    const pbSchools = cuT1row
-      ? N(cuT1row.schools_completed_m1) + N(cuT1row.schools_completed_m2)
-      : N(cu.schools_completed_m1) + N(cu.schools_completed_m2);
+    // Sum across all 4 milestones unconditionally — a term1 row already reads
+    // 0 for m3/m4 (and vice versa for term2), so this is correct for every
+    // term selection without branching (see mergeRowsAcrossTerms for why the
+    // previous term1-only cross-lookup was needed, and wrong, before rows
+    // were merged for "All Terms").
+    const pbSchools = N(cu.schools_completed_m1) + N(cu.schools_completed_m2) + N(cu.schools_completed_m3) + N(cu.schools_completed_m4);
     if (n > 0 && pbSchools === 0) {
       issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'No PB Milestones', value: '0 schools reported', severity: 'medium' });
+    } else if (n > 0) {
+      // Distinct from "No PB Milestones" above (0 schools reported at all):
+      // this CU DOES have milestone reports, but the ratings on them skew poor.
+      const pbFields = ['m1', 'm2', 'm3', 'm4'];
+      const r = [0, 1, 2, 3].map((idx) => pbFields.reduce((s, m) => s + N(cu[`${m}_total_rating_${idx}`]), 0));
+      const ratedTotal = r[0] + r[1] + r[2] + r[3];
+      if (ratedTotal > 0) {
+        const qual = calculatePBQualityScore(r[0], r[1], r[2], r[3]);
+        if (qual < 50) {
+          issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'Low PB Quality', value: `${qual}% Good/Excellent`, severity: 'high' });
+        } else if (qual < 70) {
+          issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'Low PB Quality', value: `${qual}% Good/Excellent`, severity: 'medium' });
+        }
+      }
+    }
+
+    // Skills Day only exists as a Term 2 activity — gate to term2/all so a
+    // Term 1 view doesn't flag every CU for an activity that isn't due yet.
+    if (term === 'term2' || term === 'all') {
+      const sdSchools = N(cu.schools_with_skills_day);
+      const sdPct = n > 0 ? Math.round((sdSchools / n) * 100) : 0;
+      if (n > 0 && sdPct < 50) {
+        issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'Skills Day Pending', value: `${sdSchools}/${n} schools (${sdPct}%)`, severity: sdSchools === 0 ? 'high' : 'medium' });
+      }
+    }
+
+    // Club meetings — unconditional sum across all 4 (CM1-4), same
+    // all-terms-safe reasoning as the PB milestone check above.
+    const cmTotal = N(cu.schools_with_club_meeting_1) + N(cu.schools_with_club_meeting_2)
+      + N(cu.schools_with_club_meeting_3) + N(cu.schools_with_club_meeting_4);
+    if (n > 0 && cmTotal === 0) {
+      issues.push({ cu: cu.cu, foa: cu.foa_name || '–', type: 'No Club Meetings', value: '0 schools reported', severity: 'medium' });
     }
   });
 
@@ -594,7 +699,53 @@ export function computeRegionalIssues(data, summaryData, year, term) {
     .sort((a, b) => a.pct - b.pct)
     .slice(0, 5);
 
-  return { issues, bottom5 };
+  // ── Achievements — celebrate CUs whose Term 2 performance jumped notably
+  // above their own Term 1 baseline. Only meaningful once Term 2 data exists,
+  // so this is skipped entirely for a Term 1-only view (nothing to compare
+  // against yet).
+  const achievements = [];
+  if (term === 'term2' || term === 'all') {
+    const t1Lecs = getLECsForTerm(year, 'term1');
+    const t2Lecs = getLECsForTerm(year, 'term2');
+    data.forEach((cu) => {
+      const n = N(cu.total_target_schools);
+      if (n === 0) return;
+      const t1Row = summaryData.find((d) => d.term === 'term1' && d.year == year && String(d.cu || '').trim().toLowerCase() === String(cu.cu || '').trim().toLowerCase());
+      const t2Row = summaryData.find((d) => d.term === 'term2' && d.year == year && String(d.cu || '').trim().toLowerCase() === String(cu.cu || '').trim().toLowerCase());
+      if (!t1Row || !t2Row) return;
+
+      const lecPct = (row, lecs) => {
+        const del = lecs.reduce((s, ln) => s + N(row[`schools_with_lec${ln}`]), 0);
+        const exp = n * lecs.length;
+        return exp > 0 ? (del / exp) * 100 : null;
+      };
+      const t1LecPct = lecPct(t1Row, t1Lecs);
+      const t2LecPct = lecPct(t2Row, t2Lecs);
+      if (t1LecPct != null && t2LecPct != null && t2LecPct - t1LecPct >= 15) {
+        achievements.push({
+          cu: cu.cu, foa: cu.foa_name || '–', type: 'LEC Delivery Improved',
+          value: `${Math.round(t1LecPct)}% → ${Math.round(t2LecPct)}%`,
+        });
+      }
+
+      const t1RatedTotal = ['m1', 'm2'].reduce((s, m) => s + [0, 1, 2, 3].reduce((a, idx) => a + N(t1Row[`${m}_total_rating_${idx}`]), 0), 0);
+      const t2RatedTotal = ['m3', 'm4'].reduce((s, m) => s + [0, 1, 2, 3].reduce((a, idx) => a + N(t2Row[`${m}_total_rating_${idx}`]), 0), 0);
+      if (t1RatedTotal > 0 && t2RatedTotal > 0) {
+        const t1R = [0, 1, 2, 3].map((idx) => N(t1Row[`m1_total_rating_${idx}`]) + N(t1Row[`m2_total_rating_${idx}`]));
+        const t2R = [0, 1, 2, 3].map((idx) => N(t2Row[`m3_total_rating_${idx}`]) + N(t2Row[`m4_total_rating_${idx}`]));
+        const t1QualPct = calculatePBQualityScore(t1R[0], t1R[1], t1R[2], t1R[3]);
+        const t2QualPct = calculatePBQualityScore(t2R[0], t2R[1], t2R[2], t2R[3]);
+        if (t2QualPct - t1QualPct >= 15) {
+          achievements.push({
+            cu: cu.cu, foa: cu.foa_name || '–', type: 'PB Quality Improved',
+            value: `${t1QualPct}% → ${t2QualPct}%`,
+          });
+        }
+      }
+    });
+  }
+
+  return { issues, bottom5, achievements };
 }
 
 // ── LEC delivery schedule (legacy renderCUPriorityAlerts SCHEDULE) ───────────
@@ -615,7 +766,7 @@ export function getLECsDueByToday(termKey) {
 
 // ── CU Priority Alerts (legacy renderCUPriorityAlerts) ───────────────────────
 // data = the CU's school rows (deduped internally). Returns { alerts, bottom5 }.
-export function computeCuPriorityAlerts(data, year, term) {
+export function computeCuPriorityAlerts(data, year, term, schoolData = []) {
   const lecNums = getLECsForTerm(year, term);
   const isT1 = term === 'term1';
   const byId = new Map();
@@ -718,7 +869,39 @@ export function computeCuPriorityAlerts(data, year, term) {
     }
   }
 
-  // 6. LEC clustering (>60% of LECs in one week, ≥3 LECs).
+  // 6. Schools with no recruitment data at all — distinct from "low
+  // recruitment" above (which only catches 1-34, deliberately excluding 0).
+  // Recruitment is only ever captured in Term 1, so this always checks each
+  // school's own T1 row regardless of which term is currently selected —
+  // otherwise every school would falsely show "missing" whenever Term 2/All
+  // is selected, since total_scholars_recruited reads null outside Term 1.
+  const cuNameForRec = schools[0] ? String(schools[0].cu || '').trim().toLowerCase() : '';
+  const t1BySchool = new Map();
+  schoolData
+    .filter((d) => d.term === 'term1' && String(d.year) == year && String(d.cu || '').trim().toLowerCase() === cuNameForRec)
+    .forEach((d) => { if (!t1BySchool.has(String(d.school_id))) t1BySchool.set(String(d.school_id), d); });
+  const missingRec = schools.filter((s) => {
+    const t1 = t1BySchool.get(String(s.school_id));
+    const r = t1 ? N(t1.total_scholars_recruited) : N(s.total_scholars_recruited);
+    return r === 0;
+  });
+  if (missingRec.length > 0) {
+    alerts.push({
+      priority: missingRec.length > schools.length * 0.3 ? 'high' : 'medium',
+      category: 'Recruitment',
+      title: `${missingRec.length} School${missingRec.length > 1 ? 's' : ''} Missing Recruitment Data`,
+      description: 'These schools have no Term 1 scholar recruitment figures on record at all. Confirm whether recruitment happened but wasn\'t reported, or whether recruitment itself is still pending.',
+      metrics: [
+        { value: missingRec.length, label: 'Schools Missing Data' },
+        { value: `${schools.length ? Math.round(missingRec.length / schools.length * 100) : 0}%`, label: 'Of Total Schools' },
+        { value: 'T1', label: 'Term' },
+      ],
+      action: 'Confirm Recruitment Status',
+      schools: missingRec.map((s) => ({ name: s.school_name, mentor: s.mentor_name || '—' })),
+    });
+  }
+
+  // 7. LEC clustering (>60% of LECs in one week, ≥3 LECs).
   const clustered = mentors.map((m) => {
     const wks = {};
     lecNums.forEach((n) => { const w = m[`lec${n}_max_week`]; if (w) wks[w] = (wks[w] || 0) + 1; });

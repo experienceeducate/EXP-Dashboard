@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
-import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary } from '../lib/metrics.js';
+import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
 import { formatPercentage, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
 import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
@@ -18,9 +18,28 @@ function dedupSchools(rows) {
 }
 
 // ── All-CUs overview (no CU selected) ────────────────────────────────────────
-function AllCUsOverview({ data, year, term, onSelectCU }) {
-  const lecNums = getLECsForTerm(year, term);
+function AllCUsOverview({ data: rawData, year, term, schoolData, onSelectCU }) {
+  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
+  // Term-aware milestone pair — a term2 school row's m1/m2 fields read 0 (and
+  // vice versa for term1's m3/m4), same convention as CuMentorPerformance.
+  const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+  // Under "All Terms" there are 2 rows per school (term1 + term2), each
+  // nulling out the fields that don't apply to it. `findSchool` below assumes
+  // one row per school_id — merge first so it doesn't silently pick whichever
+  // term's row happens to come first and drop the other term's real data
+  // (same failure mode fixed in RegionalView — see mergeRowsAcrossTerms).
+  const data = term === 'all' ? mergeRowsAcrossTerms(rawData, (r) => String(r.school_id)) : rawData;
   const cus = [...new Set(data.map((d) => d.cu).filter(Boolean))].sort();
+
+  // Recruitment is only ever captured in Term 1 — a term2/term3 school row's
+  // total_scholars_recruited reads null. Every other recruitment figure in
+  // this app (CuScoreCards, CUBreakdown, RegionalView ScoreCards) falls back
+  // to the school's own Term 1 row; this table didn't, so it read 0 for every
+  // CU whenever a later term was selected.
+  const t1BySchool = new Map();
+  (schoolData || []).filter((d) => d.term === 'term1' && String(d.year) == year).forEach((d) => {
+    if (!t1BySchool.has(String(d.school_id))) t1BySchool.set(String(d.school_id), d);
+  });
 
   let totals = { schools: 0, lecsDel: 0, lecsExp: 0, rec: 0, recTgt: 0, gm: 0, pb: 0, obs: 0, mentors: 0 };
 
@@ -30,7 +49,12 @@ function AllCUsOverview({ data, year, term, onSelectCU }) {
     const n = schools.length;
     const foa = cuData[0]?.foa_name || '–';
     const findSchool = (sid) => cuData.find((d) => String(d.school_id) === String(sid));
-    const rec = schools.reduce((s, sid) => s + N(findSchool(sid).total_scholars_recruited), 0);
+    const rec = schools.reduce((s, sid) => {
+      const direct = N(findSchool(sid).total_scholars_recruited);
+      if (direct > 0) return s + direct;
+      const t1 = t1BySchool.get(String(sid));
+      return s + (t1 ? N(t1.total_scholars_recruited) : 0);
+    }, 0);
     const recTgt = n * 45;
     const recPct = formatPercentage(rec, recTgt);
     const lecsDel = schools.reduce((s, sid) => {
@@ -40,18 +64,18 @@ function AllCUsOverview({ data, year, term, onSelectCU }) {
     const lecsExp = n * lecNums.length;
     const lecsPct = formatPercentage(lecsDel, lecsExp);
     const hasGM = schools.filter((sid) => N(findSchool(sid).schools_with_gm)).length;
-    const hasPB = schools.filter((sid) => N(findSchool(sid).schools_completed_m1)).length;
+    const hasPB = schools.filter((sid) => pbFields.some((m) => N(findSchool(sid)[`schools_completed_${m}`]))).length;
     const mentors = [...new Set(cuData.map((d) => d.mentor_id))];
     const obs = mentors.filter((mid) => {
       const m = cuData.find((d) => String(d.mentor_id) === String(mid));
       return m && N(m.total_mentor_observations) > 0;
     }).length;
-    const r = [0, 1, 2, 3].map((idx) => schools.reduce((s, sid) => s + N(findSchool(sid)[`cu_total_rating_${idx}`]), 0));
+    const r = [0, 1, 2, 3].map((idx) => schools.reduce((s, sid) => s + pbFields.reduce((a, m) => a + N(findSchool(sid)[`${m}_total_rating_${idx}`]), 0), 0));
     const qual = calculatePBQualityScore(r[0], r[1], r[2], r[3]);
     const alerts = schools.filter((sid) => {
       const s = findSchool(sid);
       const lecsHad = lecNums.filter((ln) => N(s[`schools_with_lec${ln}`])).length;
-      return lecsHad < lecNums.length || !N(s.schools_with_gm) || !N(s.schools_completed_m1);
+      return lecsHad < lecNums.length || !N(s.schools_with_gm) || pbFields.every((m) => !N(s[`schools_completed_${m}`]));
     }).length;
 
     totals = {
@@ -175,8 +199,13 @@ function CuScoreCards({ schoolData, data, year, term, cu }) {
   }).length;
   const onTrackRate = formatPercentage(onTrack, n);
 
-  const pbTotal = sum(schools, (r) => N(r.m1_total_rated) + N(r.m2_total_rated));
-  const pbQuality = sum(schools, (r) => N(r.m1_quality_rated) + N(r.m2_quality_rated));
+  // Term-aware milestone pair, matching the GM/CM convention used elsewhere
+  // in this file (CuMentorPerformance) — a term2 row's m1/m2 fields read 0
+  // (and vice versa for term1's m3/m4), so hardcoding m1+m2 here left PB
+  // Quality permanently blank whenever term2 was selected.
+  const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+  const pbTotal = sum(schools, (r) => pbFields.reduce((s, m) => s + N(r[`${m}_total_rated`]), 0));
+  const pbQuality = sum(schools, (r) => pbFields.reduce((s, m) => s + N(r[`${m}_quality_rated`]), 0));
   const feedbackRate = formatPercentage(pbQuality, pbTotal);
 
   const mentorObsMap = new Map();
@@ -392,17 +421,18 @@ function CuMentorPerformance({ schoolData, data, year, term, cu }) {
     // Peer circles — mentor-level count; value repeats per school row, take max.
     const peerTotal = Math.max(...ss.map((r) => N(r.unique_peer_circle_meetings_held)), 0);
 
-    const pbDone = ss.some((s) => N(s.schools_completed_m1) || N(s.schools_completed_m2));
+    // PB milestones — term-aware pair, same convention as gmSessionFields/
+    // cmSessionFields above (a term2 row's m1/m2 fields read 0 and vice
+    // versa, so hardcoding m1/m2 left these permanently blank under term2).
+    const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+    const pbDone = ss.some((s) => pbFields.some((m) => N(s[`schools_completed_${m}`])));
     const obsCount = Math.max(...ss.map((r) => N(r.total_mentor_observations)), 0);
     const obsScores = ss.map((s) => Number(s.avg_cu_observation_score)).filter((v) => v > 0);
     const avgScore = obsScores.length > 0 ? obsScores.reduce((a, b) => a + b, 0) / obsScores.length : null;
 
-    // PB quality (M1+M2).
-    const m1q = sum(ss, (r) => N(r.m1_quality_rated));
-    const m1t = sum(ss, (r) => N(r.m1_total_rated));
-    const m2q = sum(ss, (r) => N(r.m2_quality_rated));
-    const m2t = sum(ss, (r) => N(r.m2_total_rated));
-    const pbQPct = (m1t + m2t) > 0 ? Math.round(((m1q + m2q) / (m1t + m2t)) * 100) : null;
+    const pbQ = sum(ss, (r) => pbFields.reduce((s, m) => s + N(r[`${m}_quality_rated`]), 0));
+    const pbT = sum(ss, (r) => pbFields.reduce((s, m) => s + N(r[`${m}_total_rated`]), 0));
+    const pbQPct = pbT > 0 ? Math.round((pbQ / pbT) * 100) : null;
 
     const rptTotal = ss.reduce((s, r) => s + N(r.total_reports_submitted), 0);
     const rptOnTime = ss.reduce((s, r) => s + N(r.reports_on_schedule) + N(r.reports_early), 0);
@@ -522,8 +552,8 @@ function AlertResolution({ alert, issueKey, onSaved }) {
   );
 }
 
-function PriorityAlerts({ data, year, term, cu }) {
-  const { alerts, bottom5, denom } = useMemo(() => computeCuPriorityAlerts(data, year, term), [data, year, term]);
+function PriorityAlerts({ data, year, term, cu, schoolData }) {
+  const { alerts, bottom5, denom } = useMemo(() => computeCuPriorityAlerts(data, year, term, schoolData), [data, year, term, schoolData]);
   const [openIdx, setOpenIdx] = useState(null);
   const [, setTick] = useState(0);
 
@@ -603,8 +633,12 @@ function SchoolSequencing({ data, year, term, schoolData }) {
                 </th>
                 {WEEKS.map((w) => {
                   const count = lecNums.filter((ln) => N(s[`schools_with_lec${ln}`]) && s[`lec${ln}_max_week`] === w).length;
-                  const bg = count === 0 ? '#f8f9fa' : count >= 2 ? 'rgba(201,85,74,.85)' : 'rgba(13,71,161,.55)';
-                  const fg = count === 0 ? '#ccc' : '#fff';
+                  // 1 = on-pace (light green) · 2 = still fine, a bit brisker
+                  // (deeper green) · 3+ = clustering / mentor-workload risk
+                  // (red) — matches the 3+ threshold computeLecClusters
+                  // already flags with ⚡.
+                  const bg = count === 0 ? '#f8f9fa' : count === 1 ? '#a5d6a7' : count === 2 ? '#4caf50' : '#c9554a';
+                  const fg = count === 0 ? '#ccc' : count === 1 ? '#1b3a1f' : '#fff';
                   const clickable = count > 0;
                   return (
                     <td key={w} style={{ padding: 3 }}>
@@ -654,6 +688,18 @@ function SequencingCellDrill({ school, week, year, term, schoolData, onClose }) 
           </div>
         </div>
         <div className="drill-body">
+          {lecsThisWeek.length >= 3 ? (
+            <div style={{ background: '#fdecea', border: `1px solid ${C.red}`, borderRadius: 8, padding: '.85rem 1rem', marginBottom: '1.25rem' }}>
+              <div style={{ fontWeight: 700, color: C.red, marginBottom: '.35rem' }}>
+                🚨 Action needed: {lecsThisWeek.length} LECs delivered in one week
+              </div>
+              <div style={{ fontSize: '.85rem', color: '#555' }}>
+                Delivering 3 or more LECs in the same week compresses scholar learning time and signals
+                catch-up scheduling. Sustained clustering risks mentor fatigue and reduced session quality.{' '}
+                <strong>FOAs should review pacing with {school.mentor_name || 'this mentor'} for {school.school_name}.</strong>
+              </div>
+            </div>
+          ) : null}
           <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
             <div style={{ background: '#eef2ff', borderRadius: 8, padding: '.5rem .9rem', textAlign: 'center' }}>
               <div style={{ fontSize: '.7rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.05em' }}>Mentor</div>
@@ -970,8 +1016,19 @@ function SkillsDayBySchool({ data }) {
 
 // ── Report Timeliness by school + CU total (legacy §2.8) ─────────────────────
 function CuReportTimeliness({ data }) {
-  const schools = dedupSchools(data);
-  const cuTotal = getReportTimelinessSummary(schools);
+  // Report timeliness counts are genuinely additive across terms (unlike
+  // most CU/school fields, which null out whichever term doesn't apply) —
+  // dedupSchools alone would silently keep only one term's row per school
+  // and drop the other term's real report counts under "All Terms". Group
+  // by school_id and sum instead.
+  const bySchool = new Map();
+  data.forEach((d) => {
+    const key = String(d.school_id);
+    if (!bySchool.has(key)) bySchool.set(key, []);
+    bySchool.get(key).push(d);
+  });
+  const schoolRows = [...bySchool.values()].map((rows) => ({ school: rows[0], rows }));
+  const cuTotal = getReportTimelinessSummary(data);
   if (cuTotal.total === 0) return <Placeholder label="No report data yet." />;
   return (
     <>
@@ -986,8 +1043,8 @@ function CuReportTimeliness({ data }) {
             </tr>
           </thead>
           <tbody>
-            {schools.map((s) => {
-              const cs = getReportTimelinessSummary([s]);
+            {schoolRows.map(({ school: s, rows }) => {
+              const cs = getReportTimelinessSummary(rows);
               if (cs.total === 0) return null;
               return (
                 <tr key={s.school_id} style={{ borderBottom: '1px solid #e9ecef' }}>
@@ -1052,7 +1109,7 @@ export default function CuView({ schoolData, cuData, year, term, cu, allowedCUs,
 
   if (!cu) {
     if (overviewData.length === 0) return <Placeholder label="No school data for the selected year / term." />;
-    return <AllCUsOverview data={overviewData} year={year} term={term} onSelectCU={onSelectCU} />;
+    return <AllCUsOverview data={overviewData} year={year} term={term} schoolData={schoolData} onSelectCU={onSelectCU} />;
   }
 
   if (cuRows.length === 0) return <Placeholder label="No school data for the selected CU." />;
@@ -1062,7 +1119,7 @@ export default function CuView({ schoolData, cuData, year, term, cu, allowedCUs,
 
   return (
     <div>
-      <PriorityAlerts data={cuRows} year={year} term={term} cu={cu} />
+      <PriorityAlerts data={cuRows} year={year} term={term} cu={cu} schoolData={schoolData} />
       <CuScoreCards schoolData={schoolData} data={cuRows} year={year} term={term} cu={cu} />
       <Section title="📅 School Skills Lab Sequencing" subtitle="LECs delivered per school per week (⚡ = 3+ LECs in one week)">
         {isFiltered && filteredRows.length === 0 ? <Placeholder label="No schools match this filter." /> : (

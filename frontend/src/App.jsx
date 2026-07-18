@@ -185,6 +185,22 @@ export default function App() {
   const cuOptions = useMemo(() => (access ? scopedCUs(access, summaryData, view === 'cu' ? '' : region) : []), [access, summaryData, region, view]);
   const tabs = useMemo(() => (access ? visibleViewTabs(access) : []), [access]);
 
+  // School/Mentor filter options — every distinct name on record for the
+  // selected CU/year (not term-scoped, so switching term doesn't make the
+  // currently-selected filter value disappear from its own dropdown).
+  const cuSchoolRows = useMemo(
+    () => (view === 'cu' && cu ? schoolData.filter((d) => String(d.year) == year && String(d.cu || '').toLowerCase() === String(cu).toLowerCase()) : []),
+    [schoolData, year, cu, view],
+  );
+  const schoolOptions = useMemo(
+    () => [...new Set(cuSchoolRows.map((d) => d.school_name).filter(Boolean))].sort(),
+    [cuSchoolRows],
+  );
+  const mentorOptions = useMemo(
+    () => [...new Set(cuSchoolRows.map((d) => d.mentor_name).filter(Boolean))].sort(),
+    [cuSchoolRows],
+  );
+
   const userEmail = (user && user.email) || (access && access.email) || '';
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -228,9 +244,17 @@ export default function App() {
               ))}
               <option value="all">All Terms</option>
             </select>
-            {view === 'regional' ? (
-              <select className="header-select" value={region} onChange={(e) => setRegion(e.target.value)} aria-label="Region">
-                <option value="">All regions…</option>
+            {(view === 'national' || view === 'regional') && regionOptions.length > 0 ? (
+              <select
+                className="header-select"
+                value={view === 'regional' ? region : ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val) { setView('regional'); setRegion(val); } else { setView('national'); setRegion(''); }
+                }}
+                aria-label="Region"
+              >
+                {access && access.hasNational ? <option value="">🌍 National Overview</option> : null}
                 {regionOptions.map((r) => (
                   <option key={r} value={r}>{r}</option>
                 ))}
@@ -246,32 +270,18 @@ export default function App() {
                 </select>
                 {cu ? (
                   <>
-                    <div className="header-input-wrap">
-                      <input
-                        className="header-input"
-                        placeholder="School name…"
-                        inputMode="search"
-                        autoComplete="off"
-                        value={schoolFilter}
-                        onChange={(e) => setSchoolFilter(e.target.value)}
-                      />
-                      {schoolFilter ? (
-                        <button type="button" className="header-input-clear" aria-label="Clear school filter" onClick={() => setSchoolFilter('')}>✕</button>
-                      ) : null}
-                    </div>
-                    <div className="header-input-wrap">
-                      <input
-                        className="header-input"
-                        placeholder="Mentor name…"
-                        inputMode="search"
-                        autoComplete="off"
-                        value={mentorFilter}
-                        onChange={(e) => setMentorFilter(e.target.value)}
-                      />
-                      {mentorFilter ? (
-                        <button type="button" className="header-input-clear" aria-label="Clear mentor filter" onClick={() => setMentorFilter('')}>✕</button>
-                      ) : null}
-                    </div>
+                    <select className="header-select" value={schoolFilter} onChange={(e) => setSchoolFilter(e.target.value)} aria-label="School">
+                      <option value="">All schools…</option>
+                      {schoolOptions.map((s) => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                    <select className="header-select" value={mentorFilter} onChange={(e) => setMentorFilter(e.target.value)} aria-label="Mentor">
+                      <option value="">All mentors…</option>
+                      {mentorOptions.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
                     {(schoolFilter || mentorFilter) ? (
                       <button className="header-clear-btn" onClick={() => { setSchoolFilter(''); setMentorFilter(''); }}>✕ Clear all</button>
                     ) : null}
