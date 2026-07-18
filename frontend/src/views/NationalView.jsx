@@ -21,7 +21,7 @@ import {
   avgScholarsPerLec,
   sum,
 } from '../lib/metrics.js';
-import { ragColor, ragKpiClass, delta, num, getGMLabel } from '../lib/format.js';
+import { ragColor, ragKpiClass, delta, num, getGMLabel, formatPercentage1 } from '../lib/format.js';
 import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, ScoreCard, Placeholder } from '../components/ui.jsx';
 
 const REGIONS = ['Central', 'East', 'North', 'South', 'West'];
@@ -40,10 +40,31 @@ export const NATIONAL_TABS = [
 const TABS = NATIONAL_TABS;
 
 // ── Executive Summary ────────────────────────────────────────────────────────
-function ExecTab({ summaryData, data, year, term, onDrill }) {
+function ExecTab({ summaryData, data, year, term, onDrill, onJumpTab }) {
   const k = useMemo(() => computeNationalKpis(summaryData, data, year, term), [summaryData, data, year, term]);
   const funnel = useMemo(() => computeScholarFunnel(summaryData, data, year, term), [summaryData, data, year, term]);
   const staticNote = term !== 'term1' ? ' (T1)' : '';
+
+  // Mentor Facilitation Quality (Term-on-Term Comparison card) — from LEC
+  // observation scores, a second BigQuery source (see ADR-008), fetched once
+  // unfiltered by term so both sides of any term comparison are available in
+  // one request. Rate = % of observed mentors rated Meeting or Exceeding
+  // Expectations (quality index ≥ 2.0/3.0) — same "rated Good/Excellent"
+  // convention already used for PB Quality.
+  const [mqRows, setMqRows] = useState([]);
+  useEffect(() => {
+    let active = true;
+    api.fetchMentorQualitySummary().then((res) => { if (active) setMqRows(res.data || []); }).catch(() => { if (active) setMqRows([]); });
+    return () => { active = false; };
+  }, []);
+  const facQualityForTerm = (t) => {
+    const rows = mqRows.filter((r) => r.term === t);
+    const excellent = sum(rows, (r) => N(r.mentors_excellent));
+    const meets = sum(rows, (r) => N(r.mentors_meets));
+    const below = sum(rows, (r) => N(r.mentors_below));
+    const total = excellent + meets + below;
+    return total > 0 ? Math.round(((excellent + meets) / total) * 100) : null;
+  };
 
   // Term comparison
   const TERM_ORDER = ['term1', 'term2', 'term3'];
@@ -64,6 +85,12 @@ function ExecTab({ summaryData, data, year, term, onDrill }) {
   const prev = useMemo(() => (prevTerm ? getTermMetrics(summaryData, prevYear, prevTerm, null) : null), [summaryData, prevYear, prevTerm]);
   const t1cmp = useMemo(() => (term === 'term2' ? getTermMetrics(summaryData, year, 'term1', null) : null), [summaryData, year, term]);
   const compareWith = t1cmp || prev;
+  // Mentor-quality data has no year dimension — a comparison against a prior
+  // *year's* term (prevYear !== year) has no meaningful counterpart there, so
+  // only compute it when comparing within the same year (t1cmp, or same-year prevTerm).
+  const compareTermKey = t1cmp ? 'term1' : (prevTerm && prevYear === year ? prevTerm : null);
+  const curFacQuality = term !== 'all' ? facQualityForTerm(term) : null;
+  const compareFacQuality = compareTermKey ? facQualityForTerm(compareTermKey) : null;
 
   const regLecPcts = REGIONS.map((reg) => {
     const rd = data.filter((d) => String(d.region || '').trim().toLowerCase() === reg.toLowerCase());
@@ -212,6 +239,18 @@ function ExecTab({ summaryData, data, year, term, onDrill }) {
             <CompareCard label="Avg Scholars / LEC" cur={cur.avgScholars} compare={compareWith ? compareWith.avgScholars : '–'} compareLabel={t1cmp ? `Term 1 ${year}` : prevLabel} tr={delta(cur.avgScholars, compareWith?.avgScholars)} metric="avg_scholars" onDrill={onDrill} termYear={`${term.replace('term', 'Term ')} ${year}`} />
             <CompareCard label={`${cur.isProjected ? '📈 Projected Retention' : 'Scholar Retention'} (LEC ${cur.lastLec})`} cur={`${cur.retention}%${cur.isProjected ? ' (projected)' : ''}`} compare={compareWith ? `${compareWith.retention}%` : '–'} compareLabel={t1cmp ? `Term 1 ${year}` : prevLabel} tr={delta(cur.retention, compareWith?.retention)} metric="retention" onDrill={onDrill} termYear={`${term.replace('term', 'Term ')} ${year}`} />
             <CompareCard label="PB Quality" cur={`${cur.qualityPct}%`} compare={compareWith ? `${compareWith.qualityPct}%` : '–'} compareLabel={t1cmp ? `Term 1 ${year}` : prevLabel} tr={delta(cur.qualityPct, compareWith?.qualityPct)} metric="pb_quality" onDrill={onDrill} termYear={`${term.replace('term', 'Term ')} ${year}`} />
+            {curFacQuality != null ? (
+              <CompareCard
+                label="Mentor Facilitation Quality"
+                cur={`${curFacQuality}%`}
+                compare={compareFacQuality != null ? `${compareFacQuality}%` : '–'}
+                compareLabel={t1cmp ? `Term 1 ${year}` : prevLabel}
+                tr={delta(curFacQuality, compareFacQuality)}
+                termYear={`${term.replace('term', 'Term ')} ${year}`}
+                onClickOverride={() => onJumpTab && onJumpTab('mentor')}
+                drillLabel="⌕ View Mentor Quality"
+              />
+            ) : null}
           </div>
         </Section>
       ) : null}
@@ -340,15 +379,15 @@ function PerformanceInsights({ insights }) {
   );
 }
 
-function CompareCard({ label, cur, compare, compareLabel, tr, metric, onDrill, termYear }) {
+function CompareCard({ label, cur, compare, compareLabel, tr, metric, onDrill, termYear, onClickOverride, drillLabel }) {
   return (
     <div
       style={{ background: '#f8f9fa', borderRadius: 8, padding: '1.25rem', borderLeft: `4px solid ${C.blue}`, cursor: 'pointer' }}
-      onClick={() => onDrill({ metric })}
+      onClick={onClickOverride || (() => onDrill({ metric }))}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '.75rem' }}>
         <div style={{ fontSize: '.75rem', fontWeight: 700, textTransform: 'uppercase', color: C.navy }}>{label}</div>
-        <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕ drill</span>
+        <span style={{ fontSize: '.65rem', color: '#0077b6' }}>{drillLabel || '⌕ drill'}</span>
       </div>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: '1rem', flexWrap: 'wrap' }}>
         <div>
@@ -404,7 +443,7 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
     const schoolsWith = sum(data, (d) => N(d[`schools_with_lec${n}`]));
     const scholars = sum(data, (d) => N(d[`lec${n}_scholars`]));
     const nonScholars = sum(data, (d) => N(d[`lec${n}_non_scholars`]));
-    const compPct = totalSchools > 0 ? Math.round((schoolsWith / totalSchools) * 100) : 0;
+    const compPct = formatPercentage1(schoolsWith, totalSchools);
     const avgS = schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—';
     return { label: `LEC ${n}`, lecNum: n, schoolsWith, scholars, nonScholars, compPct, avgS };
   });
@@ -413,7 +452,7 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const totalLECSchoolDeliveries = lecRows.reduce((s, r) => s + r.schoolsWith, 0);
   const totalLECScholars = lecRows.reduce((s, r) => s + r.scholars, 0);
   const lecsExpected = totalSchools * lecNums.length;
-  const lecDeliveryPct = lecsExpected > 0 ? Math.round((totalLECSchoolDeliveries / lecsExpected) * 100) : 0;
+  const lecDeliveryPct = formatPercentage1(totalLECSchoolDeliveries, lecsExpected);
   const avgLECScholars = totalLECSchoolDeliveries > 0 ? (totalLECScholars / totalLECSchoolDeliveries).toFixed(1) : '—';
 
   // GM 2 / GM 3 / GM Total tiles — fixed 825-school denominator per session (legacy).
@@ -422,10 +461,10 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const GM_TOTAL_TARGET = GM2_TARGET + GM3_TARGET;
   const gm2Schools = sum(uniqueCURows, (d) => N(d.schools_with_gm2));
   const gm3Schools = sum(uniqueCURows, (d) => N(d.schools_with_gm3));
-  const gm2Pct = Math.round((gm2Schools / GM2_TARGET) * 100);
-  const gm3Pct = Math.round((gm3Schools / GM3_TARGET) * 100);
+  const gm2Pct = formatPercentage1(gm2Schools, GM2_TARGET);
+  const gm3Pct = formatPercentage1(gm3Schools, GM3_TARGET);
   const gmTotalSchools = gm2Schools + gm3Schools;
-  const gmTotalPct = Math.round((gmTotalSchools / GM_TOTAL_TARGET) * 100);
+  const gmTotalPct = formatPercentage1(gmTotalSchools, GM_TOTAL_TARGET);
 
   const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term), [summaryData, data, year, term]);
   const clusters = useMemo(() => computeLecClusters(schoolData, year, term), [schoolData, year, term]);
@@ -439,7 +478,7 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
 
   const activityHeader = (() => {
     const gmSchTotal = sum(data, (d) => N(d.schools_with_gm));
-    const gmSchPct = totalSchools > 0 ? Math.round((gmSchTotal / totalSchools) * 100) : 0;
+    const gmSchPct = formatPercentage1(gmSchTotal, totalSchools);
     const termLbl = term === 'term2' ? 'T2' : term === 'term1' ? 'T1' : 'all terms';
     const leading = lecRows.reduce((best, r) => (r.compPct > (best?.pct || 0) ? { lecNum: r.lecNum, pct: r.compPct } : best), null);
     const leadingStr = leading ? `LEC ${leading.lecNum} leads at ${leading.pct}%` : null;
@@ -623,10 +662,10 @@ function RegionalComparisonTable({ data, lecNums, term }) {
               const n = sum(rdUniq, (d) => N(d.total_target_schools));
               const lDel = sum(rd, (d) => lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0));
               const lExp = n * lecNums.length;
-              const lPct = lExp > 0 ? Math.round((lDel / lExp) * 100) : 0;
+              const lPct = formatPercentage1(lDel, lExp);
               const gm = sum(rdUniq, (d) => gmKeys.reduce((a, k) => a + N(d[k]), 0));
               const gmExp = n * gmKeys.length;
-              const gmPct = gmExp > 0 ? Math.round((gm / gmExp) * 100) : 0;
+              const gmPct = formatPercentage1(gm, gmExp);
               const pbM3 = sum(rd, (d) => N(d.schools_completed_m3));
               const pbM4 = sum(rd, (d) => N(d.schools_completed_m4));
               const pbM1 = sum(rdUniq, (d) => N(d.schools_completed_m1) || N(d.schools_with_pb_milestone));
@@ -637,11 +676,11 @@ function RegionalComparisonTable({ data, lecNums, term }) {
                   <td className="center">{gm}/{gmExp} ({gmPct}%)</td>
                   {term === 'term2' ? (
                     <>
-                      <td className="center">{pbM3}/{n} ({n > 0 ? Math.round((pbM3 / n) * 100) : 0}%)</td>
-                      <td className="center">{pbM4}/{n} ({n > 0 ? Math.round((pbM4 / n) * 100) : 0}%)</td>
+                      <td className="center">{pbM3}/{n} ({formatPercentage1(pbM3, n)}%)</td>
+                      <td className="center">{pbM4}/{n} ({formatPercentage1(pbM4, n)}%)</td>
                     </>
                   ) : (
-                    <td className="center">{pbM1}/{n} M1 ({n > 0 ? Math.round((pbM1 / n) * 100) : 0}%)</td>
+                    <td className="center">{pbM1}/{n} M1 ({formatPercentage1(pbM1, n)}%)</td>
                   )}
                 </tr>
               );
@@ -775,13 +814,13 @@ function LecTabInsights({ data, year, term, onDrill }) {
   const totalS = sum(data, (d) => N(d.total_target_schools));
   const delivered = sum(data, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
   const expected = totalS * lecNums.length;
-  const lecPct = expected > 0 ? Math.round((delivered / expected) * 100) : 0;
+  const lecPct = formatPercentage1(delivered, expected);
   const durVals = data.map((d) => N(d.avg_lec_session_duration)).filter((v) => v > 0);
   const avgDur = durVals.length > 0 ? Math.round(durVals.reduce((s, v) => s + v, 0) / durVals.length) : 0;
   const lec6 = sum(data, (d) => N(d.schools_with_lec6));
-  const lec6Pct = totalS > 0 ? Math.round((lec6 / totalS) * 100) : 0;
+  const lec6Pct = formatPercentage1(lec6, totalS);
   const lec14 = sum(data, (d) => N(d.schools_with_lec14));
-  const lec14Pct = totalS > 0 ? Math.round((lec14 / totalS) * 100) : 0;
+  const lec14Pct = formatPercentage1(lec14, totalS);
   const avgSch = avgScholarsPerLec(data, lecNums);
 
   const lagging = data.filter((d) => {
@@ -843,13 +882,13 @@ function PbTabInsights({ summaryData, data, year, onDrill }) {
   const pbTt1 = sum(src, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
   const pbPctT1 = pbTt1 > 0 ? Math.round((pb2t1 / pbTt1) * 100) : 0;
   const m1done = sum(src, (d) => N(d.schools_completed_m1));
-  const m1Pct = totalS > 0 ? Math.round((m1done / totalS) * 100) : 0;
+  const m1Pct = formatPercentage1(m1done, totalS);
   const t2src = summaryData.filter((d) => d.year == year && d.term === 'term2');
   const pb2t2 = sum(t2src, (d) => N(d.m3_quality_rated) + N(d.m4_quality_rated));
   const pbTt2 = sum(t2src, (d) => N(d.m3_total_rated) + N(d.m4_total_rated));
   const pbPctT2 = pbTt2 > 0 ? Math.round((pb2t2 / pbTt2) * 100) : 0;
   const m3done = sum(t2src, (d) => N(d.schools_completed_m3));
-  const m3Pct = totalS > 0 ? Math.round((m3done / totalS) * 100) : 0;
+  const m3Pct = formatPercentage1(m3done, totalS);
 
   const pbInsight = pbPctT1 >= 80
     ? <>✅ <strong>T1 PB quality excellent at {pbPctT1}%</strong> — {num(pb2t1)} of {num(pbTt1)} scholars rated Good or Excellent.</>
@@ -1061,7 +1100,7 @@ function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
     const rd = regionFilter ? rows.filter((d) => String(d.region || '').toLowerCase() === regionFilter.toLowerCase()) : rows;
     const done = sum(rd, (d) => N(d[`schools_completed_m${m}`]));
     const tot = sum(rd, (d) => N(d.total_target_schools));
-    const pct = tot > 0 ? Math.round((done / tot) * 100) : 0;
+    const pct = formatPercentage1(done, tot);
     return { done, tot, pct };
   };
 
@@ -1148,7 +1187,7 @@ function GmCompletion({ data, term, onDrill }) {
   if (totalS === 0) return null;
 
   const gmTotal = sum(data, (d) => N(d.schools_with_gm));
-  const gmPct = Math.round((gmTotal / totalS) * 100);
+  const gmPct = formatPercentage1(gmTotal, totalS);
   const gmRag = gmPct >= 80 ? C.green : gmPct >= 60 ? C.yellow : C.red;
   const gmBg = gmPct >= 80 ? '#EEF5ED' : gmPct >= 60 ? '#FBF1DD' : '#FCF3F1';
   const gmScholars = sum(data, (d) => N(d.GM_total_scholars));
@@ -1193,7 +1232,7 @@ function GmCompletion({ data, term, onDrill }) {
               {active.map((s) => {
                 const cnt = sum(data, (d) => N(d[s.key]));
                 const sch = sum(data, (d) => N(d[s.schlKey]));
-                const pct = totalS > 0 ? Math.round((cnt / totalS) * 100) : 0;
+                const pct = formatPercentage1(cnt, totalS);
                 return (
                   <tr key={s.key}>
                     <td style={{ fontWeight: 600 }}>{s.label}</td>
@@ -1204,7 +1243,7 @@ function GmCompletion({ data, term, onDrill }) {
                       const rCU = term === 'all' ? [...new Map(rr.map((d) => [d.cu, d])).values()] : rr;
                       const rT = sum(rCU, (d) => N(d.total_target_schools));
                       const rC = sum(rr, (d) => N(d[s.key]));
-                      const rP = rT > 0 ? Math.round((rC / rT) * 100) : 0;
+                      const rP = formatPercentage1(rC, rT);
                       return (
                         <td
                           key={reg}
@@ -1253,7 +1292,7 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
 
   const skillsDaySchools = sum(data, (d) => N(d.schools_with_skills_day));
   const skillsDayTarget = sum(data, (d) => N(d.total_target_schools));
-  const skillsDayPct = skillsDayTarget > 0 ? Math.round((skillsDaySchools / skillsDayTarget) * 100) : 0;
+  const skillsDayPct = formatPercentage1(skillsDaySchools, skillsDayTarget);
   const showSkillsDayHero = term === 'term2' || term === 'term3' || term === 'all';
 
   const obsScores = data.map((d) => N(d.avg_cu_observation_score)).filter((v) => v > 0);
@@ -1351,7 +1390,7 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
         <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
           {nsBreak.buckets.map((b, i) => {
             const count = nsBreak.natCounts[b] || 0;
-            const pct = nsBreak.natTotal > 0 ? Math.round((count / nsBreak.natTotal) * 100) : 0;
+            const pct = formatPercentage1(count, nsBreak.natTotal);
             return (
               <div
                 key={b}
@@ -1468,14 +1507,14 @@ function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
     const withCD = sum(cuRows, (d) => N(d.schools_with_community_day));
     const cdSch = sum(rows, (d) => N(d.cd_scholar_attendance));
     const cdNon = sum(rows, (d) => N(d.cd_non_scholar_attendance));
-    const pct = total > 0 ? Math.round((withCD / total) * 100) : 0;
+    const pct = formatPercentage1(withCD, total);
     const avg = withCD > 0 ? (cdSch / withCD).toFixed(1) : '—';
     const regRows = REGIONS.map((reg) => {
       const ru = cuRows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
       const rd = rows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
       const rs = sum(ru, (d) => N(d.total_target_schools));
       const rw = sum(ru, (d) => N(d.schools_with_community_day));
-      const rP = rs > 0 ? Math.round((rw / rs) * 100) : 0;
+      const rP = formatPercentage1(rw, rs);
       return { reg, rs, rw, rP, sch: sum(rd, (d) => N(d.cd_scholar_attendance)), ns: sum(rd, (d) => N(d.cd_non_scholar_attendance)) };
     });
     blocks.push(
@@ -1507,7 +1546,7 @@ function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
     const sdMale = sum(rows, (d) => N(d.sd_male_scholars));
     const sdFemale = sum(rows, (d) => N(d.sd_female_scholars));
     const sdNon = sum(rows, (d) => N(d.sd_total_non_scholars));
-    const pct = total > 0 ? Math.round((withSD / total) * 100) : 0;
+    const pct = formatPercentage1(withSD, total);
     const avg = withSD > 0 ? (sdSch / withSD).toFixed(1) : '—';
     if (withSD > 0) {
       const regRows = REGIONS.map((reg) => {
@@ -1515,7 +1554,7 @@ function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
         const rd = rows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
         const rs = sum(ru, (d) => N(d.total_target_schools));
         const rw = sum(ru, (d) => N(d.schools_with_skills_day));
-        const rP = rs > 0 ? Math.round((rw / rs) * 100) : 0;
+        const rP = formatPercentage1(rw, rs);
         const rSch = sum(rd, (d) => N(d.sd_total_scholars));
         const rMale = sum(rd, (d) => N(d.sd_male_scholars));
         const rFemale = sum(rd, (d) => N(d.sd_female_scholars));
@@ -1583,7 +1622,7 @@ function ClubMilestones({ summaryData, data, year, term, onDrill }) {
         <tbody>
           {active.map((m) => {
             const natCount = sum(rows, (d) => N(d[m.key]));
-            const natPct = total > 0 ? Math.round((natCount / total) * 100) : 0;
+            const natPct = formatPercentage1(natCount, total);
             const drillMilestone = (initialRegion) => onDrill({ metric: 'club_milestone', milestoneKey: m.key, milestoneLabel: m.label, ...(initialRegion ? { initialRegion } : {}) });
             return (
               <tr key={m.key}>
@@ -1594,7 +1633,7 @@ function ClubMilestones({ summaryData, data, year, term, onDrill }) {
                   const rCU = [...new Map(rr.map((d) => [d.cu, d])).values()];
                   const rTot = sum(rCU, (d) => N(d.total_target_schools));
                   const rCount = sum(rr, (d) => N(d[m.key]));
-                  const rP = rTot > 0 ? Math.round((rCount / rTot) * 100) : 0;
+                  const rP = formatPercentage1(rCount, rTot);
                   return (
                     <td
                       key={reg}
@@ -3459,7 +3498,7 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
 
   const renderTabContent = (tabId) => {
     switch (tabId) {
-      case 'exec': return <ExecTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />;
+      case 'exec': return <ExecTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} onJumpTab={setTab} />;
       case 'lec': return <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
       case 'pb': return <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />;
       case 'quality': return <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;

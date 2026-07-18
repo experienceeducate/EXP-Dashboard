@@ -10,6 +10,16 @@ export function formatPercentage(value, total) {
   return Math.round((value / total) * 100);
 }
 
+// Safe percentage to 1 decimal place. Used for completion/participation
+// rates specifically — with whole-number rounding, e.g. 373/825 (45.2%)
+// rounds to a visually-misleading "100%" wherever near-complete coverage
+// (e.g. 822/825) would otherwise be indistinguishable from truly complete
+// (825/825). Returns 0 when total is falsy.
+export function formatPercentage1(value, total) {
+  if (!total || total === 0) return 0;
+  return Math.round((value / total) * 1000) / 10;
+}
+
 // RAG class from a percentage: high ≥80 / medium ≥60 / low
 export function getPercentageClass(p) {
   const n = parseInt(p, 10);

@@ -3,7 +3,7 @@
 // All functions are pure — they take data + year/term rather than reading the DOM.
 // ─────────────────────────────────────────────────────────────────────────────
 import { getLECsForTerm } from './config.js';
-import { calculatePBQualityScore } from './format.js';
+import { calculatePBQualityScore, formatPercentage1 } from './format.js';
 
 const N = (v) => Number(v) || 0;
 export const sum = (rows, fn) => rows.reduce((s, d) => s + fn(d), 0);
@@ -156,7 +156,7 @@ export function getTermMetrics(summaryData, year, term, cuFilter) {
     lecsDelivered,
     lecsExpected,
     totalSchools,
-    lecPct: lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0,
+    lecPct: formatPercentage1(lecsDelivered, lecsExpected),
     avgScholars: avgScholarsPerLec(termRows, lecNums),
     recruited,
     activated,
@@ -182,7 +182,7 @@ export function computeNationalKpis(summaryData, data, year, term) {
 
   const lecsDelivered = sum(data, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
   const lecsExpected = totalSchools * lecNums.length;
-  const lecDeliveryPct = lecsExpected > 0 ? Math.round((lecsDelivered / lecsExpected) * 100) : 0;
+  const lecDeliveryPct = formatPercentage1(lecsDelivered, lecsExpected);
 
   const avgScholars = avgScholarsPerLec(data, lecNums);
 
@@ -974,7 +974,7 @@ export function computeNonScholar(schoolData, year, term) {
   const rows = schoolData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
   const lecNums = getLECsForTerm(year, term === 'all' ? 'term1' : term);
   const withNS = rows.filter((d) => lecNums.some((n) => N(d[`lec${n}_non_scholars`]) > 0)).length;
-  const pctWith = rows.length > 0 ? Math.round((withNS / rows.length) * 100) : 0;
+  const pctWith = formatPercentage1(withNS, rows.length);
   const buckets = { '0': 0, '1-10': 0, '11-20': 0, '21-30': 0, '31+': 0 };
   rows.forEach((d) => {
     const total = lecNums.reduce((s, n) => s + N(d[`lec${n}_non_scholars`]), 0);
