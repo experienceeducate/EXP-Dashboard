@@ -889,6 +889,8 @@ function PbTabInsights({ summaryData, data, year, onDrill }) {
   const pbPctT2 = pbTt2 > 0 ? Math.round((pb2t2 / pbTt2) * 100) : 0;
   const m3done = sum(t2src, (d) => N(d.schools_completed_m3));
   const m3Pct = formatPercentage1(m3done, totalS);
+  const m4done = sum(t2src, (d) => N(d.schools_completed_m4));
+  const m4Pct = formatPercentage1(m4done, totalS);
 
   const pbInsight = pbPctT1 >= 80
     ? <>✅ <strong>T1 PB quality excellent at {pbPctT1}%</strong> — {num(pb2t1)} of {num(pbTt1)} scholars rated Good or Excellent.</>
@@ -916,6 +918,7 @@ function PbTabInsights({ summaryData, data, year, onDrill }) {
         <KpiHeroCard label="PB Quality (T2 M3+M4)" valueClass={pbTt2 > 0 ? ragKpiClass(pbPctT2) : 'kpi-blue'} value={pbTt2 > 0 ? pbPctT2 : '—'} unit={pbTt2 > 0 ? '%' : ''} sub={pbTt2 > 0 ? `${num(pb2t2)} of ${num(pbTt2)} rated ≥2` : 'No T2 milestone data yet'} drill={pbTt2 > 0 ? '⌕ Regional breakdown' : 'Awaiting M3+M4 data'} onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term2' })} />
         <KpiHeroCard label="M1 Completed (T1)" valueClass={ragKpiClass(m1Pct)} value={m1Pct} unit="%" sub={`${m1done} of ${totalS} schools`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 1 })} />
         <KpiHeroCard label="M3 Completed (T2)" valueClass={m3done > 0 ? ragKpiClass(m3Pct) : 'kpi-blue'} value={m3done > 0 ? m3Pct : '—'} unit={m3done > 0 ? '%' : ''} sub={m3done > 0 ? `${m3done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m3done > 0 ? '⌕ Regional breakdown' : 'Awaiting M3 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 3 })} />
+        <KpiHeroCard label="M4 Completed (T2)" valueClass={m4done > 0 ? ragKpiClass(m4Pct) : 'kpi-blue'} value={m4done > 0 ? m4Pct : '—'} unit={m4done > 0 ? '%' : ''} sub={m4done > 0 ? `${m4done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m4done > 0 ? '⌕ Regional breakdown' : 'Awaiting M4 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 4 })} />
       </div>
     </div>
   );
@@ -2387,7 +2390,7 @@ function MentorQualityTab({ term, year, summaryData }) {
           </button>
         ))}
       </div>
-      {subTab === 'highlights' ? <MentorQualityHighlightsSubTab term={term} onJumpSubTab={setSubTab} /> : null}
+      {subTab === 'highlights' ? <MentorQualityHighlightsSubTab term={term} year={year} summaryData={summaryData} onJumpSubTab={setSubTab} /> : null}
       {subTab === 'lec' ? <LecObservationSubTab term={term} year={year} summaryData={summaryData} /> : null}
       {subTab === 'group-mentoring' ? (
         <ObservationSourceSubTab
@@ -2518,7 +2521,7 @@ function MentorQualityTab({ term, year, summaryData }) {
   );
 }
 
-function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
+function MentorQualityHighlightsSubTab({ term, year, summaryData, onJumpSubTab }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [hl, setHl] = useState(null);
@@ -2539,7 +2542,34 @@ function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
   if (error) return <Placeholder label={error} />;
   if (!hl) return <Placeholder label="No mentor quality data for the selected term." />;
 
-  const { lec, skills_day: sd, group_mentoring: gm, combined_theme_summary: themes } = hl;
+  const { skills_day: sd, group_mentoring: gm, combined_theme_summary: themes } = hl;
+
+  // LEC's "mentors assigned/observed" here comes from the backend's bronze
+  // mentor-roster rollup (`/highlights`), which reports a different total
+  // (the full ever-registered roster) than the LEC/GM/Skills Day sub-tabs
+  // now show (gold_exp's total_active_mentors, reconciled — see
+  // ObservationSourceSubTab/LecObservationSubTab). Override with the same
+  // gold_exp figures here so the Highlights card matches what "View LEC
+  // Observation" jumps to.
+  const goldCuRowsForYear = summaryData.filter((d) => String(d.year) === String(year));
+  const goldByCu = new Map();
+  if (term !== 'all') {
+    goldCuRowsForYear.filter((d) => d.term === term).forEach((d) => goldByCu.set(normCu(d.cu), d));
+  } else {
+    goldCuRowsForYear.forEach((d) => {
+      const key = normCu(d.cu);
+      const existing = goldByCu.get(key);
+      if (!existing || MQ_TERM_ORDER.indexOf(d.term) > MQ_TERM_ORDER.indexOf(existing.term)) {
+        goldByCu.set(key, d);
+      }
+    });
+  }
+  const goldRows = [...goldByCu.values()];
+  const lec = {
+    ...hl.lec,
+    total_mentors_assigned: sum(goldRows, (r) => N(r.total_active_mentors)),
+    mentors_observed: sum(goldRows, (r) => Math.min(N(r.total_observed_mentors), N(r.total_active_mentors))),
+  };
   const pctObserved = lec.total_mentors_assigned > 0 ? Math.round((lec.mentors_observed / lec.total_mentors_assigned) * 1000) / 10 : 0;
 
   const SOURCE_CARDS = [
