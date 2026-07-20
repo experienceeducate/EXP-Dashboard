@@ -138,6 +138,8 @@ body { margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; backgro
 .breakdown-table tbody td.center { text-align:center; }
 .breakdown-table tbody tr.clickable { cursor:pointer; transition:all .2s; }
 .breakdown-table tbody tr.clickable:hover { background:linear-gradient(90deg,#f0f8ff 0%,#fff 100%); }
+.breakdown-table tbody td.clickable { cursor:pointer; transition:background .2s; }
+.breakdown-table tbody td.clickable:hover { background:#f0f8ff; }
 .item-name { font-weight:700; color:var(--educate-navy); font-size:1rem; }
 
 /* Login */

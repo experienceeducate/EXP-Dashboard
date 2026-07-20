@@ -208,7 +208,7 @@ function ExecTab({ summaryData, data, year, term, onDrill, onJumpTab }) {
           trend={k.qualityRate == null ? 'No T2 milestone data yet' : 'Good + Excellent ratings'}
           sub={k.qualityRate == null ? 'M3/M4 data not yet collected' : <><strong>{num(k.pb2)}</strong> of {num(k.totalPB)} passbooks rated ≥2</>}
           drill="⌕ Regional breakdown"
-          onClick={() => onDrill({ metric: 'pb_quality' })}
+          onClick={() => onDrill({ metric: 'pb_quality', pbTerm: term })}
         />
         <KpiHeroCard
           label="Mentor Observation Coverage"
@@ -912,10 +912,10 @@ function PbTabInsights({ summaryData, data, year, onDrill }) {
         </div>
       </div>
       <div className="kpi-hero-strip">
-        <KpiHeroCard label="PB Quality (T1 M1+M2)" valueClass={ragKpiClass(pbPctT1)} value={pbPctT1} unit="%" sub={`${num(pb2t1)} of ${num(pbTt1)} rated ≥2`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_quality' })} />
-        <KpiHeroCard label="PB Quality (T2 M3+M4)" valueClass={pbTt2 > 0 ? ragKpiClass(pbPctT2) : 'kpi-blue'} value={pbTt2 > 0 ? pbPctT2 : '—'} unit={pbTt2 > 0 ? '%' : ''} sub={pbTt2 > 0 ? `${num(pb2t2)} of ${num(pbTt2)} rated ≥2` : 'No T2 milestone data yet'} drill={pbTt2 > 0 ? '⌕ Regional breakdown' : 'Awaiting M3+M4 data'} onClick={() => onDrill({ metric: 'pb_quality' })} />
-        <KpiHeroCard label="M1 Completed (T1)" valueClass={ragKpiClass(m1Pct)} value={m1Pct} unit="%" sub={`${m1done} of ${totalS} schools`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_completion' })} />
-        <KpiHeroCard label="M3 Completed (T2)" valueClass={m3done > 0 ? ragKpiClass(m3Pct) : 'kpi-blue'} value={m3done > 0 ? m3Pct : '—'} unit={m3done > 0 ? '%' : ''} sub={m3done > 0 ? `${m3done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m3done > 0 ? '⌕ Regional breakdown' : 'Awaiting M3 data'} onClick={() => onDrill({ metric: 'pb_completion' })} />
+        <KpiHeroCard label="PB Quality (T1 M1+M2)" valueClass={ragKpiClass(pbPctT1)} value={pbPctT1} unit="%" sub={`${num(pb2t1)} of ${num(pbTt1)} rated ≥2`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term1' })} />
+        <KpiHeroCard label="PB Quality (T2 M3+M4)" valueClass={pbTt2 > 0 ? ragKpiClass(pbPctT2) : 'kpi-blue'} value={pbTt2 > 0 ? pbPctT2 : '—'} unit={pbTt2 > 0 ? '%' : ''} sub={pbTt2 > 0 ? `${num(pb2t2)} of ${num(pbTt2)} rated ≥2` : 'No T2 milestone data yet'} drill={pbTt2 > 0 ? '⌕ Regional breakdown' : 'Awaiting M3+M4 data'} onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term2' })} />
+        <KpiHeroCard label="M1 Completed (T1)" valueClass={ragKpiClass(m1Pct)} value={m1Pct} unit="%" sub={`${m1done} of ${totalS} schools`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 1 })} />
+        <KpiHeroCard label="M3 Completed (T2)" valueClass={m3done > 0 ? ragKpiClass(m3Pct) : 'kpi-blue'} value={m3done > 0 ? m3Pct : '—'} unit={m3done > 0 ? '%' : ''} sub={m3done > 0 ? `${m3done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m3done > 0 ? '⌕ Regional breakdown' : 'Awaiting M3 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 3 })} />
       </div>
     </div>
   );
@@ -1035,7 +1035,7 @@ function PbQualitySection({ summaryData, year, term, showAll, onToggle, onDrill 
               const schRep = sum(rd, (d) => N(d[completionField]));
               const schTot = sum(rd, (d) => N(d.total_target_schools));
               return (
-                <tr key={region} className="clickable" onClick={() => onDrill({ metric: 'pb_quality' })}>
+                <tr key={region} className="clickable" onClick={() => onDrill({ metric: 'pb_quality', pbTerm: showAll ? 'all' : dataTerm })}>
                   <td style={{ fontWeight: 700 }}>{region} <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
                   <td className="center">{schRep}/{schTot}</td>
                   <td className="center" style={{ fontWeight: 700, color: qual !== null ? qCol(qual) : '#aaa' }}>{qual !== null ? `${qual}%` : '—'}</td>
@@ -1113,7 +1113,7 @@ function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
           return (
             <div
               key={ms.m}
-              onClick={() => onDrill({ metric: 'pb_completion' })}
+              onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: ms.m })}
               style={{ background: '#f8f9fa', borderRadius: 8, padding: '1rem', borderLeft: `4px solid ${border}`, cursor: 'pointer' }}
             >
               <div style={{ fontSize: '.72rem', fontWeight: 700, textTransform: 'uppercase', color: '#888' }}>Milestone {ms.m} Completed <span style={{ color: '#0077b6' }}>⌕</span></div>
@@ -1135,11 +1135,11 @@ function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
           </thead>
           <tbody>
             {regions.map((region) => (
-              <tr key={region} className="clickable" onClick={() => onDrill({ metric: 'pb_completion' })}>
-                <td className="item-name">{region} <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
+              <tr key={region}>
+                <td className="item-name clickable" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: milestones[0].m })}>{region} <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
                 {milestones.map((ms) => {
                   const c = cell(ms.src, ms.m, region);
-                  return <td key={ms.m} className="center" style={{ fontWeight: 700, color: ragColor(c.pct) }}>{c.done}/{c.tot} ({c.pct}%)</td>;
+                  return <td key={ms.m} className="center clickable" style={{ fontWeight: 700, color: ragColor(c.pct) }} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: ms.m })}>{c.done}/{c.tot} ({c.pct}%)</td>;
                 })}
               </tr>
             ))}
@@ -2392,6 +2392,8 @@ function MentorQualityTab({ term, year, summaryData }) {
       {subTab === 'group-mentoring' ? (
         <ObservationSourceSubTab
           term={term}
+          year={year}
+          summaryData={summaryData}
           title="Group Mentoring"
           api={{
             fetchSummaryByCu: api.fetchGroupMentoringSummaryByCu,
@@ -2449,6 +2451,8 @@ function MentorQualityTab({ term, year, summaryData }) {
       {subTab === 'skills-day' ? (
         <ObservationSourceSubTab
           term={term}
+          year={year}
+          summaryData={summaryData}
           title="Skills Day"
           api={{
             fetchSummaryByCu: api.fetchSkillsDaySummaryByCu,
@@ -2709,7 +2713,7 @@ function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
 
 // ── Generic Observation Source sub-tab (Group Mentoring / Skills Day share this shape) ──
 
-function ObservationSourceSubTab({ term, title, api: sourceApi, dimensionColumns, extraKpis, renderMentorRow, mentorColumns, renderObservation, renderCommentMeta, spotlightThemes }) {
+function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceApi, dimensionColumns, extraKpis, renderMentorRow, mentorColumns, renderObservation, renderCommentMeta, spotlightThemes }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cuRows, setCuRows] = useState([]);
@@ -2775,8 +2779,29 @@ function ObservationSourceSubTab({ term, title, api: sourceApi, dimensionColumns
   if (error) return <Placeholder label={error} />;
   if (cuRows.length === 0) return <Placeholder label={`No ${title} data for the selected term.`} />;
 
-  const totalAssigned = sum(cuRows, (r) => N(r.total_mentors_assigned));
-  const mentorsObserved = sum(cuRows, (r) => N(r.mentors_observed));
+  // Mentor coverage (assigned vs. observed) comes from the gold_exp CU model
+  // (summaryData), not this source's own bronze mentor roster — same
+  // reconciliation as LecObservationSubTab, so all three observation sources
+  // (LEC/GM/Skills Day) report the same "mentors assigned" denominator instead
+  // of each showing a different total (the bronze roster counts every
+  // ever-registered mentor; gold_exp scopes to the term's active roster).
+  const goldCuRowsForYear = summaryData.filter((d) => String(d.year) === String(year));
+  const goldByCu = new Map();
+  if (term !== 'all') {
+    goldCuRowsForYear.filter((d) => d.term === term).forEach((d) => goldByCu.set(normCu(d.cu), d));
+  } else {
+    goldCuRowsForYear.forEach((d) => {
+      const key = normCu(d.cu);
+      const existing = goldByCu.get(key);
+      if (!existing || MQ_TERM_ORDER.indexOf(d.term) > MQ_TERM_ORDER.indexOf(existing.term)) {
+        goldByCu.set(key, d);
+      }
+    });
+  }
+  const goldRows = [...goldByCu.values()];
+
+  const totalAssigned = sum(goldRows, (r) => N(r.total_active_mentors));
+  const mentorsObserved = sum(goldRows, (r) => Math.min(N(r.total_observed_mentors), N(r.total_active_mentors)));
   const pctObserved = totalAssigned > 0 ? Math.round((mentorsObserved / totalAssigned) * 1000) / 10 : 0;
   const totalObservations = sum(cuRows, (r) => N(r.total_observations));
   const qualityIndex = weightedAvg(cuRows, 'quality_index', 'total_observations');
@@ -2785,8 +2810,9 @@ function ObservationSourceSubTab({ term, title, api: sourceApi, dimensionColumns
   const regions = [...new Set(cuRows.map((r) => r.region))].sort();
   const regionRows = regions.map((region) => {
     const rows = cuRows.filter((r) => r.region === region);
-    const assigned = sum(rows, (r) => N(r.total_mentors_assigned));
-    const observed = sum(rows, (r) => N(r.mentors_observed));
+    const goldRegionRows = goldRows.filter((r) => String(r.region || '').toLowerCase() === region.toLowerCase());
+    const assigned = sum(goldRegionRows, (r) => N(r.total_active_mentors));
+    const observed = sum(goldRegionRows, (r) => Math.min(N(r.total_observed_mentors), N(r.total_active_mentors)));
     const qi = weightedAvg(rows, 'quality_index', 'total_observations');
     return {
       region, assigned, observed,
