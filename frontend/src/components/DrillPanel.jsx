@@ -55,6 +55,11 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
   if (metric === 'avg_scholars') {
     return { val: avgScholarsPerLec(rows, lecNums), sub: 'per school per session' };
   }
+  if (metric === 'lec_duration') {
+    const durVals = rows.map((d) => N(d.avg_lec_session_duration)).filter((v) => v > 0);
+    const avg = durVals.length > 0 ? Math.round(durVals.reduce((s, v) => s + v, 0) / durVals.length) : 0;
+    return { val: avg, sub: avg > 0 ? `${durVals.length} school${durVals.length !== 1 ? 's' : ''} with duration data · target 70–90 min` : 'No session duration data' };
+  }
   if (metric === 'pb_quality') {
     // Never T1-only: M3/M4 quality is genuinely carried on each row's own T2
     // data, unlike recruitment (see the `recruitment` branch above) — borrowing
