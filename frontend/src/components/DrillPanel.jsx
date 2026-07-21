@@ -1,5 +1,5 @@
 // Slide-in drill panel (Mewaka-style right drawer). Supports a multi-level
-// region → CU → mentor drill for the selected metric, plus the
+// region → CU → school drill for the selected metric, plus the
 // "How this is calculated" card from METRIC_DEFINITIONS.
 import { useState } from 'react';
 import { METRIC_DEFINITIONS, getLECsForTerm, C } from '../lib/config.js';
@@ -167,25 +167,52 @@ function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey, p
   });
 }
 
+// School type isn't a reliable live column (see docs/DROPPED_SECTIONS.md §3.2)
+// — derive it from Term1 pitch-attendance instead: S5-only → A-Level,
+// S3-only → O-Level, both → Mixed.
+function deriveSchoolType(t1Rows) {
+  const s3 = sum(t1Rows, (d) => N(d.s3_male_pitch_attendance) + N(d.s3_female_pitch_attendance));
+  const s5 = sum(t1Rows, (d) => N(d.s5_male_pitch_attendance) + N(d.s5_female_pitch_attendance));
+  if (s5 > 0 && s3 > 0) return 'Mixed';
+  if (s5 > 0) return 'A-Level';
+  if (s3 > 0) return 'O-Level';
+  return '—';
+}
+
+// Bio fields (mentor, FOA, derived school type) for one school, read off its
+// Term1 row where possible since type is derived from Term1 pitch attendance.
+function schoolBio(schoolRowsForSchool, t1RowsForSchool) {
+  const t1 = t1RowsForSchool.length > 0 ? t1RowsForSchool : schoolRowsForSchool;
+  const primary = t1[0] || schoolRowsForSchool[0] || {};
+  return {
+    mentorName: primary.mentor_name || '—',
+    foaName: primary.foa_name || '—',
+    schoolType: deriveSchoolType(t1),
+  };
+}
+
 // School-level rows within a CU for per-school ✓/✗ indicators (GM, club milestones,
-// BMP) — legacy _kpiDrillCU "school-level" branch, not a mentor aggregate.
+// BMP) — legacy _kpiDrillCU "school-level" branch.
 function schoolFieldRows(schoolData, year, term, cu, fieldKey) {
   const inCu = (d) => String(d.cu || '').toLowerCase() === String(cu).toLowerCase();
   const rows = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inCu(d));
+  const t1All = (schoolData || []).filter((d) => d.year == year && d.term === 'term1' && inCu(d));
   const map = new Map();
   rows.forEach((r) => {
     const name = r.school_name || r.school_id || 'Unknown';
     if (!map.has(name)) map.set(name, r);
   });
   return [...map.entries()]
-    .map(([name, r]) => ({ key: name, name, mentor: r.mentor_name || '—', held: N(r[fieldKey]) > 0 }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .map(([name, r]) => ({ key: name, name, held: N(r[fieldKey]) > 0, ...schoolBio([r], t1All.filter((d) => (d.school_name || d.school_id || 'Unknown') === name)) }))
+    // Poor performers first: not-held (✗) schools before held (✓) ones.
+    .sort((a, b) => Number(a.held) - Number(b.held) || a.name.localeCompare(b.name));
 }
 
 // School-level rows within a CU (each school's own row(s), evaluated as a
 // single-entity group) — the drill floor for every metric except Mentor
 // Observation Coverage (below) and the Mentor Quality tab, which has its own
-// separate region → CU → mentor drill.
+// separate region → CU → mentor drill. Carries bio data (mentor, FOA, derived
+// school type) and sorts worst-performer-first.
 function schoolAggRows(metric, schoolData, year, term, cu, lecNum, pbTerm, milestoneNum) {
   const lecNums = getLECsForTerm(year, term);
   const inCu = (d) => String(d.cu || '').toLowerCase() === String(cu).toLowerCase();
@@ -204,8 +231,9 @@ function schoolAggRows(metric, schoolData, year, term, cu, lecNum, pbTerm, miles
       schoolCount: s.rows.length,
       t1SchoolCount: t1Rows.length > 0 ? t1Rows.length : s.rows.length,
     });
-    return { key: sid, name: s.name, val, sub: sub || `Mentor: ${s.mentor}` };
-  }).sort((a, b) => b.val - a.val);
+    return { key: sid, name: s.name, val, sub: sub || `Mentor: ${s.mentor}`, ...schoolBio(s.rows, t1Rows) };
+  // Poor performers first: lowest value on top.
+  }).sort((a, b) => a.val - b.val || a.name.localeCompare(b.name));
 }
 
 // Mentor-level rows within a CU — used only for Mentor Observation Coverage.
@@ -258,7 +286,7 @@ function MetricDefCard({ metric }) {
 }
 
 export default function DrillPanel({ drill, summaryData, schoolData, year, term, onClose }) {
-  // stack: [] = regions · [region] = CUs · [region, cu] = mentors (or schools, for GM / club milestones).
+  // stack: [] = regions · [region] = CUs · [region, cu] = schools.
   const [stack, setStack] = useState(() => (drill && drill.initialRegion ? [drill.initialRegion] : []));
   if (!drill) return null;
   const { metric, lecNum, milestoneKey, pbTerm, milestoneNum } = drill;
@@ -272,7 +300,7 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
   const isMentorLevel = metric === 'observations';
 
   // LEC clustering is a flat schools list (legacy openClusterDrill), not a
-  // region → CU → mentor aggregate — handle it separately.
+  // region → CU → school aggregate — handle it separately.
   if (metric === 'lec_clustering') {
     const clusters = drill.clusters || [];
     return (
@@ -441,7 +469,7 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
     colHeader = 'Mentor';
   } else if (isBooleanSchoolField) {
     const fieldKey = metric === 'gm' ? 'schools_with_gm' : milestoneKey;
-    rows = schoolFieldRows(schoolData, year, term, stack[1], fieldKey).map((r) => ({ key: r.key, name: r.name, val: r.held ? '✓' : '✗', sub: r.mentor, held: r.held }));
+    rows = schoolFieldRows(schoolData, year, term, stack[1], fieldKey).map((r) => ({ ...r, val: r.held ? '✓' : '✗' }));
     colHeader = 'School';
   } else {
     rows = schoolAggRows(metric, schoolData, year, term, stack[1], lecNum, pbTerm, milestoneNum);
@@ -498,12 +526,20 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
               <tr>
                 <th>{colHeader}</th>
                 <th className="center">Value</th>
-                <th>Detail</th>
+                {level === 'school' ? (
+                  <>
+                    <th>Mentor</th>
+                    <th>FOA</th>
+                    <th>School Type</th>
+                  </>
+                ) : (
+                  <th>Detail</th>
+                )}
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={3} style={{ color: '#888', padding: '1rem' }}>No data at this level.</td></tr>
+                <tr><td colSpan={level === 'school' ? 5 : 3} style={{ color: '#888', padding: '1rem' }}>No data at this level.</td></tr>
               ) : rows.map((r) => {
                 const clickable = level !== 'school' && level !== 'mentor';
                 const isBooleanRow = level === 'school' && isBooleanSchoolField;
@@ -512,7 +548,15 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
                   <tr key={r.key} className={clickable ? 'clickable' : undefined} onClick={clickable ? () => drillInto(r.name) : undefined}>
                     <td className="item-name">{r.name}{clickable ? <span style={{ fontSize: '.65rem', color: '#0077b6' }}> ⌕</span> : null}</td>
                     <td className="center" style={{ fontWeight: 800, color: valueColor }}>{r.val}{!isBooleanRow && isPct ? '%' : ''}</td>
-                    <td style={{ color: '#555' }}>{r.sub}</td>
+                    {level === 'school' ? (
+                      <>
+                        <td style={{ color: '#555' }}>{r.mentorName}</td>
+                        <td style={{ color: '#555' }}>{r.foaName}</td>
+                        <td style={{ color: '#555' }}>{r.schoolType}</td>
+                      </>
+                    ) : (
+                      <td style={{ color: '#555' }}>{r.sub}</td>
+                    )}
                   </tr>
                 );
               })}
