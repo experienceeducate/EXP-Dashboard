@@ -116,7 +116,7 @@ def _build_fallback_access_config() -> dict:
             "rukungiri": ["martin.asiimwe@experienceeducate.org"],
             "kanungu": ["delex.nasasira@experienceeducate.org"],
             "pallisa": ["babra.mpindi@experienceeducate.org"],
-            "luweero-nakasongola": ["geoffrey.odong@experienceeducate.org"],
+            "luweero - nakasongola": ["geoffrey.odong@experienceeducate.org"],
             "mayuge": ["kalulusaleh1@gmail.com"],
             "lugazi": ["kasulejoshua52@gmail.com"],
             "hoima": ["rose.kimuli@experienceeducate.org"],
