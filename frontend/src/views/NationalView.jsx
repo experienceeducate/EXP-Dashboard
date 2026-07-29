@@ -862,7 +862,7 @@ function PbTab({ summaryData, data, year, term, onDrill }) {
   const [showAll, setShowAll] = useState(false);
   return (
     <>
-      <PbTabInsights summaryData={summaryData} data={data} year={year} onDrill={onDrill} />
+      <PbTabInsights summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
       <PbQualitySection summaryData={summaryData} year={year} term={term} showAll={showAll} onToggle={() => setShowAll((s) => !s)} onDrill={onDrill} />
       <Section title="📋 PB Milestone Completion" subtitle="Schools that reported each milestone, by region">
         <PbMilestoneCompletion summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
@@ -874,7 +874,7 @@ function PbTab({ summaryData, data, year, term, onDrill }) {
   );
 }
 
-function PbTabInsights({ summaryData, data, year, onDrill }) {
+function PbTabInsights({ summaryData, data, year, term, onDrill }) {
   const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
   const src = t1.length > 0 ? t1 : data;
   const totalS = sum(data, (d) => N(d.total_target_schools));
@@ -883,18 +883,39 @@ function PbTabInsights({ summaryData, data, year, onDrill }) {
   const pbPctT1 = pbTt1 > 0 ? Math.round((pb2t1 / pbTt1) * 100) : 0;
   const m1done = sum(src, (d) => N(d.schools_completed_m1));
   const m1Pct = formatPercentage1(m1done, totalS);
+  const m2done = sum(src, (d) => N(d.schools_completed_m2));
+  const m2Pct = formatPercentage1(m2done, totalS);
   const t2src = summaryData.filter((d) => d.year == year && d.term === 'term2');
   const pb2t2 = sum(t2src, (d) => N(d.m3_quality_rated) + N(d.m4_quality_rated));
   const pbTt2 = sum(t2src, (d) => N(d.m3_total_rated) + N(d.m4_total_rated));
   const pbPctT2 = pbTt2 > 0 ? Math.round((pb2t2 / pbTt2) * 100) : 0;
   const m3done = sum(t2src, (d) => N(d.schools_completed_m3));
   const m3Pct = formatPercentage1(m3done, totalS);
+  const m4done = sum(t2src, (d) => N(d.schools_completed_m4));
+  const m4Pct = formatPercentage1(m4done, totalS);
+  // Completion cards follow the term filter (same term -> milestone mapping as
+  // PbMilestoneCompletion below): T1 -> M1+M2, T2 -> M3+M4, All Terms -> all four.
+  const showT1Completion = term !== 'term2';
+  const showT2Completion = term === 'term2' || term === 'all';
 
-  const pbInsight = pbPctT1 >= 80
-    ? <>✅ <strong>T1 PB quality excellent at {pbPctT1}%</strong> — {num(pb2t1)} of {num(pbTt1)} scholars rated Good or Excellent.</>
-    : pbPctT1 >= 60
-      ? <>⚠️ <strong>T1 PB quality at {pbPctT1}%</strong> — some regions below 70% threshold. Mentor coaching may be needed.</>
-      : <>🔴 <strong>T1 PB quality critical at {pbPctT1}%</strong> — immediate attention needed on mentor feedback quality.</>;
+  // Insights follow the term filter — same "not term2 -> T1, term2 -> T2" rule
+  // as the completion cards, so "All Terms" defaults to the T1 baseline.
+  const insightIsT2 = term === 'term2';
+  const qPct = insightIsT2 ? pbPctT2 : pbPctT1;
+  const qDone = insightIsT2 ? pb2t2 : pb2t1;
+  const qTotal = insightIsT2 ? pbTt2 : pbTt1;
+  const qLabel = insightIsT2 ? 'T2' : 'T1';
+  const compDone = insightIsT2 ? m3done : m1done;
+  const compPct = insightIsT2 ? m3Pct : m1Pct;
+  const compLabel = insightIsT2 ? 'M3' : 'M1';
+
+  const pbInsight = qTotal === 0
+    ? <>ℹ️ <strong>No {qLabel} milestone quality data yet</strong> — check back once ratings are submitted.</>
+    : qPct >= 80
+      ? <>✅ <strong>{qLabel} PB quality excellent at {qPct}%</strong> — {num(qDone)} of {num(qTotal)} scholars rated Good or Excellent.</>
+      : qPct >= 60
+        ? <>⚠️ <strong>{qLabel} PB quality at {qPct}%</strong> — some regions below 70% threshold. Mentor coaching may be needed.</>
+        : <>🔴 <strong>{qLabel} PB quality critical at {qPct}%</strong> — immediate attention needed on mentor feedback quality.</>;
 
   return (
     <div style={{ marginBottom: '1.5rem' }}>
@@ -902,20 +923,30 @@ function PbTabInsights({ summaryData, data, year, onDrill }) {
         <div className="kt-strip-label">📋 Passbook Quality — Key Insights</div>
         <div className="kt-strip-list">
           <div className="kt-strip-item">
-            <div className={`kt-strip-bar ${pbPctT1 >= 80 ? '' : 'amber'}`} />
+            <div className={`kt-strip-bar ${qTotal > 0 && qPct >= 80 ? '' : 'amber'}`} />
             <div>{pbInsight}</div>
           </div>
           <div className="kt-strip-item">
             <div className="kt-strip-bar" />
-            <div>M1 completion: <strong>{m1done}</strong> of {totalS} schools ({m1Pct}%). {m1Pct < 60 ? '⚠️ Behind target.' : 'Good progress.'}</div>
+            <div>{compLabel} completion: <strong>{compDone}</strong> of {totalS} schools ({compPct}%). {compPct < 60 ? '⚠️ Behind target.' : 'Good progress.'}</div>
           </div>
         </div>
       </div>
       <div className="kpi-hero-strip">
         <KpiHeroCard label="PB Quality (T1 M1+M2)" valueClass={ragKpiClass(pbPctT1)} value={pbPctT1} unit="%" sub={`${num(pb2t1)} of ${num(pbTt1)} rated ≥2`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term1' })} />
         <KpiHeroCard label="PB Quality (T2 M3+M4)" valueClass={pbTt2 > 0 ? ragKpiClass(pbPctT2) : 'kpi-blue'} value={pbTt2 > 0 ? pbPctT2 : '—'} unit={pbTt2 > 0 ? '%' : ''} sub={pbTt2 > 0 ? `${num(pb2t2)} of ${num(pbTt2)} rated ≥2` : 'No T2 milestone data yet'} drill={pbTt2 > 0 ? '⌕ Regional breakdown' : 'Awaiting M3+M4 data'} onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term2' })} />
-        <KpiHeroCard label="M1 Completed (T1)" valueClass={ragKpiClass(m1Pct)} value={m1Pct} unit="%" sub={`${m1done} of ${totalS} schools`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 1 })} />
-        <KpiHeroCard label="M3 Completed (T2)" valueClass={m3done > 0 ? ragKpiClass(m3Pct) : 'kpi-blue'} value={m3done > 0 ? m3Pct : '—'} unit={m3done > 0 ? '%' : ''} sub={m3done > 0 ? `${m3done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m3done > 0 ? '⌕ Regional breakdown' : 'Awaiting M3 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 3 })} />
+        {showT1Completion ? (
+          <>
+            <KpiHeroCard label="M1 Completed (T1)" valueClass={ragKpiClass(m1Pct)} value={m1Pct} unit="%" sub={`${m1done} of ${totalS} schools`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 1 })} />
+            <KpiHeroCard label="M2 Completed (T1)" valueClass={m2done > 0 ? ragKpiClass(m2Pct) : 'kpi-blue'} value={m2done > 0 ? m2Pct : '—'} unit={m2done > 0 ? '%' : ''} sub={m2done > 0 ? `${m2done} of ${totalS} schools` : 'No M2 completion data yet'} drill={m2done > 0 ? '⌕ Regional breakdown' : 'Awaiting M2 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 2 })} />
+          </>
+        ) : null}
+        {showT2Completion ? (
+          <>
+            <KpiHeroCard label="M3 Completed (T2)" valueClass={m3done > 0 ? ragKpiClass(m3Pct) : 'kpi-blue'} value={m3done > 0 ? m3Pct : '—'} unit={m3done > 0 ? '%' : ''} sub={m3done > 0 ? `${m3done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m3done > 0 ? '⌕ Regional breakdown' : 'Awaiting M3 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 3 })} />
+            <KpiHeroCard label="M4 Completed (T2)" valueClass={m4done > 0 ? ragKpiClass(m4Pct) : 'kpi-blue'} value={m4done > 0 ? m4Pct : '—'} unit={m4done > 0 ? '%' : ''} sub={m4done > 0 ? `${m4done} of ${totalS} schools` : 'No M4 completion data yet'} drill={m4done > 0 ? '⌕ Regional breakdown' : 'Awaiting M4 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 4 })} />
+          </>
+        ) : null}
       </div>
     </div>
   );
