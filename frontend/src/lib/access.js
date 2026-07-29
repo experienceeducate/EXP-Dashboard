@@ -20,10 +20,12 @@ export function normalizeAccess(access) {
 
 // Which top-level view tabs are visible (legacy buildViewTabs).
 // national users → National only; regional officers → Regional + CU; FOA → CU only.
+// Dashboard Guide is static reference content, not access-scoped data, so
+// every role gets it regardless of the branches above.
 export function visibleViewTabs(access) {
   const a = normalizeAccess(access);
-  if (a.hasNational) return ['national'];
-  const tabs = [];
+  if (a.hasNational) return ['guide', 'national'];
+  const tabs = ['guide'];
   if (!a.nationalOnly && a.regions.length > 0) tabs.push('regional');
   if (!a.nationalOnly && (a.regions.length > 0 || a.cus.length > 0)) tabs.push('cu');
   return tabs;
