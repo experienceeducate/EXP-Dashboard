@@ -9,8 +9,9 @@ import DrillPanel from './components/DrillPanel.jsx';
 import NationalView, { NATIONAL_TABS } from './views/NationalView.jsx';
 import RegionalView from './views/RegionalView.jsx';
 import CuView from './views/CuView.jsx';
+import GuideView from './views/GuideView.jsx';
 
-const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View' };
+const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide' };
 const TERM_ORDER = ['term1', 'term2', 'term3'];
 
 const SSO_ERRORS = {
@@ -317,19 +318,21 @@ export default function App() {
             <p>{headerSubtitle}</p>
           </div>
           <div className="header-right">
-            {view !== 'cu' ? (
+            {view !== 'cu' && view !== 'guide' ? (
               <select className="header-select" value={year} onChange={(e) => setYear(e.target.value)} aria-label="Year">
                 {years.map((y) => (
                   <option key={y} value={y}>{y}</option>
                 ))}
               </select>
             ) : null}
-            <select className="header-select" value={term} onChange={(e) => setTerm(e.target.value)} aria-label="Term">
-              {terms.map((t) => (
-                <option key={t} value={t}>{getTermLabel(t)}</option>
-              ))}
-              <option value="all">All Terms</option>
-            </select>
+            {view !== 'guide' ? (
+              <select className="header-select" value={term} onChange={(e) => setTerm(e.target.value)} aria-label="Term">
+                {terms.map((t) => (
+                  <option key={t} value={t}>{getTermLabel(t)}</option>
+                ))}
+                <option value="all">All Terms</option>
+              </select>
+            ) : null}
             {(view === 'national' || view === 'regional') && regionOptions.length > 0 ? (
               <select
                 className="header-select"
@@ -427,6 +430,7 @@ export default function App() {
             onSelectCU={(name) => setCu(name)}
           />
         ) : null}
+        {view === 'guide' ? <GuideView /> : null}
       </main>
 
       {drill ? (
