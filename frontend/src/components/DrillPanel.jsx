@@ -37,7 +37,7 @@ const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_qu
 // term or milestone the user clicked, rather than whatever term happens to be
 // selected globally — several PB tiles (e.g. "T1 M1+M2" and "T2 M3+M4") are
 // shown side by side regardless of the ambient term filter.
-function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount, lecNums, lecNum, singleEntity, milestoneKey, pbTerm, milestoneNum, term }) {
+function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount, lecNums, lecNum, singleEntity, milestoneKey, pbTerm, milestoneNum, term, gmField }) {
   if (metric === 'lec_delivery') {
     const del = sum(rows, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
     const exp = schoolCount * lecNums.length;
@@ -103,7 +103,10 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
     return { val: s.onTrackPct, sub: `${s.onTrack} on track of ${s.total} reports` };
   }
   if (metric === 'gm') {
-    const gm = sum(rows, (d) => N(d.schools_with_gm));
+    // gmField lets a specific session tile/row (GM1/GM2/GM3) drill into its own
+    // field instead of the combined "at least 1 session" schools_with_gm.
+    const field = gmField || 'schools_with_gm';
+    const gm = sum(rows, (d) => N(d[field]));
     return { val: schoolCount > 0 ? Math.round((gm / schoolCount) * 100) : 0, sub: `${gm} of ${schoolCount} schools` };
   }
   if (metric === 'community_day') {
@@ -123,7 +126,7 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
 }
 
 // Region-level rows (from CU summaryData).
-function regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum) {
+function regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
   const lecNums = getLECsForTerm(year, term);
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
   const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
@@ -136,7 +139,7 @@ function regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTer
     const rdObs = obsSrc.filter((d) => match(d, reg));
     const forSchools = rd.length > 0 ? rd : rdT1;
     const { val, sub } = evalMetric(metric, {
-      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum, milestoneKey, term, pbTerm, milestoneNum,
+      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum, milestoneKey, term, pbTerm, milestoneNum, gmField,
       schoolCount: sum(forSchools, (d) => N(d.total_target_schools)),
       t1SchoolCount: sum(rdT1, (d) => N(d.total_target_schools)),
     });
@@ -145,7 +148,7 @@ function regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTer
 }
 
 // CU-level rows within a region.
-function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey, pbTerm, milestoneNum) {
+function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
   const lecNums = getLECsForTerm(year, term);
   const inRegion = (d) => String(d.region || '').trim().toLowerCase() === String(region).trim().toLowerCase();
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inRegion(d));
@@ -159,7 +162,7 @@ function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey, p
     const rdObs = byCu(obsSrc, c);
     const forSchools = rd.length > 0 ? rd : rdT1;
     const { val, sub } = evalMetric(metric, {
-      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum, milestoneKey, term, pbTerm, milestoneNum,
+      rows: rd, t1Rows: rdT1, obsRows: rdObs, lecNums, lecNum, milestoneKey, term, pbTerm, milestoneNum, gmField,
       schoolCount: sum(forSchools, (d) => N(d.total_target_schools)),
       t1SchoolCount: sum(rdT1, (d) => N(d.total_target_schools)),
     });
@@ -289,7 +292,7 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
   // stack: [] = regions · [region] = CUs · [region, cu] = schools.
   const [stack, setStack] = useState(() => (drill && drill.initialRegion ? [drill.initialRegion] : []));
   if (!drill) return null;
-  const { metric, lecNum, milestoneKey, pbTerm, milestoneNum } = drill;
+  const { metric, lecNum, milestoneKey, pbTerm, milestoneNum, gmField, gmLabel } = drill;
   // Region → CU → School for every metric here (the Mentor Quality tab has its
   // own separate region → CU → mentor drill, not this panel). GM and club
   // milestones show a per-school ✓/✗ against a single field; Mentor Observation
@@ -452,23 +455,24 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
 
   const label = metric === 'lec_single' ? `LEC ${lecNum || ''}`
     : metric === 'club_milestone' ? (drill.milestoneLabel || METRIC_LABELS.club_milestone)
-      : METRIC_LABELS[metric] || metric;
+      : metric === 'gm' ? (gmLabel || METRIC_LABELS.gm)
+        : METRIC_LABELS[metric] || metric;
   const isPct = PCT_METRICS.has(metric);
 
   const level = stack.length === 0 ? 'region' : stack.length === 1 ? 'cu' : (isMentorLevel ? 'mentor' : 'school');
   let rows;
   let colHeader;
   if (level === 'region') {
-    rows = regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum);
+    rows = regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
     colHeader = 'Region';
   } else if (level === 'cu') {
-    rows = cuRows(metric, summaryData, year, term, stack[0], lecNum, milestoneKey, pbTerm, milestoneNum);
+    rows = cuRows(metric, summaryData, year, term, stack[0], lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
     colHeader = 'Cluster Unit';
   } else if (level === 'mentor') {
     rows = mentorObsRows(schoolData, year, term, stack[1]);
     colHeader = 'Mentor';
   } else if (isBooleanSchoolField) {
-    const fieldKey = metric === 'gm' ? 'schools_with_gm' : milestoneKey;
+    const fieldKey = metric === 'gm' ? (gmField || 'schools_with_gm') : milestoneKey;
     rows = schoolFieldRows(schoolData, year, term, stack[1], fieldKey).map((r) => ({ ...r, val: r.held ? '✓' : '✗' }));
     colHeader = 'School';
   } else {
