@@ -537,7 +537,7 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
             pct={gm2Pct}
             fill={gm2Pct >= 80 ? '#2e7d5a' : gm2Pct >= 60 ? '#C38A1F' : '#C9554A'}
             diag="GM Session 2 delivered"
-            onClick={() => onDrill({ metric: 'gm' })}
+            onClick={() => onDrill({ metric: 'gm', gmField: 'schools_with_gm2', gmLabel: 'GM 2' })}
           />
           <MetricTile
             label="GM 3"
@@ -548,7 +548,7 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
             pct={gm3Pct}
             fill={gm3Pct >= 80 ? '#2e7d5a' : gm3Pct >= 60 ? '#C38A1F' : '#C9554A'}
             diag="GM Session 3 delivered"
-            onClick={() => onDrill({ metric: 'gm' })}
+            onClick={() => onDrill({ metric: 'gm', gmField: 'schools_with_gm3', gmLabel: 'GM 3' })}
           />
           <MetricTile
             label={`${getGMLabel()} Total`}
@@ -1236,7 +1236,13 @@ function GmCompletion({ data, term, onDrill }) {
                 return (
                   <tr key={s.key}>
                     <td style={{ fontWeight: 600 }}>{s.label}</td>
-                    <td className="center" style={{ fontWeight: 700, color: ragColor(pct) }}>{cnt} / {totalS} ({pct}%)</td>
+                    <td
+                      className="center"
+                      onClick={() => onDrill({ metric: 'gm', gmField: s.key, gmLabel: s.label })}
+                      style={{ fontWeight: 700, color: ragColor(pct), cursor: 'pointer' }}
+                    >
+                      {cnt} / {totalS} ({pct}%)
+                    </td>
                     <td className="center">{sch > 0 ? num(sch) : '—'}</td>
                     {regions.map((reg) => {
                       const rr = data.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
@@ -1248,7 +1254,7 @@ function GmCompletion({ data, term, onDrill }) {
                         <td
                           key={reg}
                           className="center"
-                          onClick={() => onDrill({ metric: 'gm', initialRegion: reg })}
+                          onClick={() => onDrill({ metric: 'gm', initialRegion: reg, gmField: s.key, gmLabel: s.label })}
                           style={{ fontWeight: 600, color: rC > 0 ? ragColor(rP) : '#ccc', cursor: 'pointer' }}
                         >
                           {rC > 0 ? `${rC} (${rP}%)` : '—'}
