@@ -1023,3 +1023,110 @@ export function computeNonScholarBreakdown(schoolData, year, term) {
 
   return { buckets: NS_BUCKETS, natCounts, natTotal, natMaxAvg, regionData };
 }
+
+// ── Large Class Size analysis (Learning Agenda) ─────────────────────────────
+// Per user decision: "large class" threshold differs by term — 45 (the PDM's
+// original per-session target, used to grade Term 1) vs. 60 (the size Term 2
+// deliberately tested — see the sheet's own learning question, "does
+// increasing the number to 60 reduce the number of learners in the
+// classes"). "Non-scholars in class" is the existing community-attendee
+// concept (lecN_non_scholars), not excess enrolled scholars — same fields
+// computeNonScholar/computeNonScholarBreakdown above already use.
+const CLASS_SIZE_THRESHOLD = { term1: 45, term2: 60 };
+
+function schoolClassSizeStats(school, year, term) {
+  const lecNums = getLECsForTerm(year, term);
+  let totalScholars = 0;
+  let totalNonScholars = 0;
+  let delivered = 0;
+  lecNums.forEach((n) => {
+    if (N(school[`schools_with_lec${n}`])) {
+      totalScholars += N(school[`lec${n}_scholars`]);
+      totalNonScholars += N(school[`lec${n}_non_scholars`]);
+      delivered += 1;
+    }
+  });
+  return {
+    avgScholars: delivered > 0 ? totalScholars / delivered : 0,
+    avgNonScholars: delivered > 0 ? totalNonScholars / delivered : 0,
+    totalNonScholars,
+    delivered,
+  };
+}
+
+function classSizeTermSummary(schoolData, year, term) {
+  const threshold = CLASS_SIZE_THRESHOLD[term];
+  const rows = schoolData.filter((d) => String(d.year) == String(year) && d.term === term);
+  const schools = rows
+    .map((d) => {
+      const key = String(d.school_id || d.school_name || 'unknown');
+      const name = d.school_name || d.school_id || 'Unknown';
+      const stats = schoolClassSizeStats(d, year, term);
+      return {
+        key, name, cu: d.cu, region: d.region,
+        avgScholars: stats.avgScholars,
+        avgNonScholars: stats.avgNonScholars,
+        totalNonScholars: stats.totalNonScholars,
+        isLarge: stats.delivered > 0 && stats.avgScholars > threshold,
+        hasNonScholars: stats.totalNonScholars > 0,
+      };
+    })
+    .filter((s) => s.avgScholars > 0 || s.totalNonScholars > 0);
+
+  const totalSchools = schools.length;
+  const large = schools.filter((s) => s.isLarge);
+  const withNonScholars = schools.filter((s) => s.hasNonScholars);
+  const avgClassSize = totalSchools > 0
+    ? Math.round((sum(schools, (s) => s.avgScholars) / totalSchools) * 10) / 10
+    : 0;
+
+  return {
+    threshold,
+    totalSchools,
+    avgClassSize,
+    large,
+    largeCount: large.length,
+    largePct: formatPercentage1(large.length, totalSchools),
+    totalNonScholars: sum(schools, (s) => s.totalNonScholars),
+    withNonScholars,
+    withNonScholarsCount: withNonScholars.length,
+    withNonScholarsPct: formatPercentage1(withNonScholars.length, totalSchools),
+    schools,
+  };
+}
+
+// Returns Term 1 vs. Term 2 class-size summaries plus: which schools carried
+// non-scholar (community) attendance in T1 vs. still do in T2, and which
+// schools remain above their term's own large-class threshold right now.
+export function computeClassSizeAnalysis(schoolData, year) {
+  const term1 = classSizeTermSummary(schoolData, year, 'term1');
+  const term2 = classSizeTermSummary(schoolData, year, 'term2');
+
+  const t1NSKeys = new Set(term1.withNonScholars.map((s) => s.key));
+  const t2NSKeys = new Set(term2.withNonScholars.map((s) => s.key));
+  const t1ByKey = new Map(term1.schools.map((s) => [s.key, s]));
+  const t2ByKey = new Map(term2.schools.map((s) => [s.key, s]));
+
+  const stillHaveNonScholars = [...t1NSKeys].filter((k) => t2NSKeys.has(k)).map((k) => t2ByKey.get(k) || t1ByKey.get(k));
+  const stoppedHavingNonScholars = [...t1NSKeys].filter((k) => !t2NSKeys.has(k)).map((k) => t1ByKey.get(k));
+  const newlyHaveNonScholars = [...t2NSKeys].filter((k) => !t1NSKeys.has(k)).map((k) => t2ByKey.get(k));
+
+  const current = term2.totalSchools > 0 ? term2 : term1;
+
+  return {
+    term1,
+    term2,
+    reduction: {
+      avgClassSizeDiff: Math.round((term1.avgClassSize - term2.avgClassSize) * 10) / 10,
+      largePctDiff: term1.totalSchools > 0 && term2.totalSchools > 0
+        ? Math.round((term1.largePct - term2.largePct) * 10) / 10
+        : null,
+    },
+    nonScholarSchoolChange: { stillHaveNonScholars, stoppedHavingNonScholars, newlyHaveNonScholars },
+    currentTerm: current === term2 ? 'term2' : 'term1',
+    currentlyLarge: current.large,
+    currentlyLargeCount: current.largeCount,
+    currentlyLargePct: current.largePct,
+    currentTotalSchools: current.totalSchools,
+  };
+}

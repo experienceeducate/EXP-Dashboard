@@ -19,6 +19,7 @@ import {
   computeExecutiveInsights,
   getLECsDueByToday,
   avgScholarsPerLec,
+  computeClassSizeAnalysis,
   sum,
 } from '../lib/metrics.js';
 import { ragColor, ragKpiClass, delta, num, getGMLabel, formatPercentage1 } from '../lib/format.js';
@@ -3558,6 +3559,10 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
 
           {liveData ? <LmmLiveComparison liveData={liveData} /> : null}
 
+          {m.id === 'reduction-in-the-average-learners-in-class' ? (
+            <LmmClassSizeAnalysis schoolData={schoolData} year={year} />
+          ) : null}
+
           <details open={!liveData} style={{ marginBottom: '.9rem' }}>
             <summary style={{ cursor: 'pointer', fontSize: '.75rem', fontWeight: 700, color: '#0077b6', marginBottom: '.5rem' }}>
               Full reference (learning question, targets, data source, decision trigger…)
@@ -3589,6 +3594,129 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
         </div>
       </aside>
     </>
+  );
+}
+
+// Large Class Size analysis — Term 1 (45-scholar target) vs. Term 2 (60-scholar
+// ceiling, deliberately tested per the sheet's own learning question), plus
+// which schools carried community non-scholar attendance in T1 vs. still do
+// now, and how many schools remain above their term's threshold.
+function LmmClassSizeAnalysis({ schoolData, year }) {
+  const [showAllLarge, setShowAllLarge] = useState(false);
+  const [showAllChange, setShowAllChange] = useState(null);
+
+  const a = useMemo(() => (schoolData && schoolData.length ? computeClassSizeAnalysis(schoolData, year) : null), [schoolData, year]);
+  if (!a || (a.term1.totalSchools === 0 && a.term2.totalSchools === 0)) return null;
+
+  const { term1, term2, reduction, nonScholarSchoolChange, currentTerm, currentlyLarge, currentlyLargeCount, currentlyLargePct, currentTotalSchools } = a;
+  const currentLabel = currentTerm === 'term2' ? 'Term 2' : 'Term 1';
+  const sortedLarge = [...currentlyLarge].sort((x, y) => y.avgScholars - x.avgScholars);
+  const visibleLarge = showAllLarge ? sortedLarge : sortedLarge.slice(0, 15);
+
+  const changeGroups = [
+    { key: 'stillHaveNonScholars', label: 'Still have non-scholars (T1 → T2)', color: C.navy, list: nonScholarSchoolChange.stillHaveNonScholars },
+    { key: 'stoppedHavingNonScholars', label: 'Had non-scholars in T1, none in T2', color: '#c98a00', list: nonScholarSchoolChange.stoppedHavingNonScholars },
+    { key: 'newlyHaveNonScholars', label: 'New in T2 (no non-scholars in T1)', color: C.green, list: nonScholarSchoolChange.newlyHaveNonScholars },
+  ];
+
+  return (
+    <div style={{ marginBottom: '1.25rem' }}>
+      <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
+        Large Class Size Analysis — Term 1 (&gt;45) vs. Term 2 (&gt;60)
+      </div>
+
+      <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', marginBottom: '.9rem' }}>
+        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
+          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Avg Scholars/Session</div>
+          <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.avgClassSize || '—'} → T2 {term2.avgClassSize || '—'}</div>
+          <div style={{ fontSize: '.72rem', color: reduction.avgClassSizeDiff > 0 ? C.green : reduction.avgClassSizeDiff < 0 ? '#c98a00' : '#666' }}>
+            {reduction.avgClassSizeDiff > 0 ? `▼ ${reduction.avgClassSizeDiff} reduction` : reduction.avgClassSizeDiff < 0 ? `▲ ${Math.abs(reduction.avgClassSizeDiff)} increase` : 'No change'}
+          </div>
+        </div>
+        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
+          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Schools Above Threshold</div>
+          <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.largePct}% ({term1.largeCount}/{term1.totalSchools}) → T2 {term2.largePct}% ({term2.largeCount}/{term2.totalSchools})</div>
+          <div style={{ fontSize: '.72rem', color: '#666' }}>T1 threshold 45 · T2 threshold 60</div>
+        </div>
+        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
+          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Non-Scholars in Class</div>
+          <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.totalNonScholars.toLocaleString()} → T2 {term2.totalNonScholars.toLocaleString()}</div>
+          <div style={{ fontSize: '.72rem', color: '#666' }}>{term1.withNonScholarsPct}% of T1 schools · {term2.withNonScholarsPct}% of T2 schools had any</div>
+        </div>
+      </div>
+
+      <div style={{ marginBottom: '.9rem' }}>
+        <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
+          Schools with non-scholar attendance — T1 vs. T2
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+          {changeGroups.map((g) => (
+            <details key={g.key} open={showAllChange === g.key} style={{ background: '#fafafa', border: '1px solid #eee', borderRadius: 8, padding: '.5rem .75rem' }}>
+              <summary
+                style={{ cursor: 'pointer', fontSize: '.8rem', fontWeight: 700, color: g.color }}
+                onClick={(e) => { e.preventDefault(); setShowAllChange(showAllChange === g.key ? null : g.key); }}
+              >
+                {g.label} — {g.list.length} school{g.list.length !== 1 ? 's' : ''}
+              </summary>
+              {g.list.length > 0 ? (
+                <div style={{ marginTop: '.5rem', display: 'flex', flexWrap: 'wrap', gap: '.35rem' }}>
+                  {g.list.map((s) => (
+                    <span key={s.key} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.75rem', color: '#333' }}>
+                      {s.name}{s.cu ? ` · ${s.cu}` : ''}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </details>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
+          Schools still above the large-class threshold — {currentLabel} ({currentlyLargeCount} of {currentTotalSchools}, {currentlyLargePct}%)
+        </div>
+        {sortedLarge.length === 0 ? (
+          <div style={{ fontSize: '.8rem', color: C.green, padding: '.5rem 0' }}>✅ No schools currently above the {currentLabel} threshold.</div>
+        ) : (
+          <>
+            <div className="table-wrap" style={{ marginBottom: '.4rem' }}>
+              <table className="breakdown-table">
+                <thead>
+                  <tr>
+                    <th style={THWRAP}>School</th>
+                    <th style={THWRAP}>CU</th>
+                    <th style={THWRAP}>Region</th>
+                    <th style={THWRAP}>Avg Scholars/Session</th>
+                    <th style={THWRAP}>Avg Non-Scholars/Session</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleLarge.map((s) => (
+                    <tr key={s.key}>
+                      <td style={{ fontWeight: 700 }}>{s.name}</td>
+                      <td>{s.cu || '—'}</td>
+                      <td>{s.region || '—'}</td>
+                      <td>{s.avgScholars.toFixed(1)}</td>
+                      <td>{s.avgNonScholars.toFixed(1)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {sortedLarge.length > 15 ? (
+              <button
+                type="button"
+                onClick={() => setShowAllLarge((v) => !v)}
+                style={{ border: 'none', background: 'none', color: '#0077b6', fontWeight: 700, fontSize: '.78rem', cursor: 'pointer', padding: 0 }}
+              >
+                {showAllLarge ? 'Show fewer' : `Show all ${sortedLarge.length} schools`}
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
