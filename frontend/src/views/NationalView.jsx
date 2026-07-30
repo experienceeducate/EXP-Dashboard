@@ -3140,6 +3140,7 @@ function ObservationSourceDrill({
 
 // ── Learning & Measurement Map (static content — see docs/LEARNING_AND_MEASUREMENT_MAP.md) ──
 const LMM_PILLARS = ['Investment Memo', 'Learning Agenda', 'Product Health Metrics', 'Theory of Change'];
+const LMM_PILLAR_LABELS = { 'Learning Agenda': 'Implementation Learning Agenda' };
 const LMM_STATUS = {
   on_track: { label: 'On Track', color: C.green, icon: '✅' },
   monitor: { label: 'Monitor', color: '#c98a00', icon: '⚠️' },
@@ -3385,11 +3386,6 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
     });
   }
 
-  // Learning Agenda / Product Health Metrics / Theory of Change carry stale
-  // learning questions pending an update from the user — hide their content
-  // (not just a data tweak, so no per-metric flag needed) until refreshed.
-  const isWip = pillar !== 'Investment Memo';
-
   return (
     <>
       <div className="key-takeaways-strip" style={{ marginBottom: '1rem' }}>
@@ -3402,29 +3398,23 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
               <strong>Data Status:</strong> We are actively mapping remaining data sources to BigQuery. Some temporary data gaps currently exist as we complete this integration.
             </div>
           </div>
-          {!isWip ? (
-            <div className="kt-strip-item">
-              <div className={`kt-strip-bar ${noneCount > liveCount + partialCount ? 'amber' : ''}`} />
-              <div>
-                In <strong>{pillar}</strong>: <strong>{liveCount} live</strong>, <strong>{partialCount} partial/proxy</strong>, <strong>{noneCount} not yet available</strong> ({allPillarMetrics.length} metrics total).
-              </div>
+          <div className="kt-strip-item">
+            <div className={`kt-strip-bar ${noneCount > liveCount + partialCount ? 'amber' : ''}`} />
+            <div>
+              In <strong>{LMM_PILLAR_LABELS[pillar] || pillar}</strong>: <strong>{liveCount} live</strong>, <strong>{partialCount} partial/proxy</strong>, <strong>{noneCount} not yet available</strong> ({allPillarMetrics.length} metrics total).
             </div>
-          ) : null}
+          </div>
         </div>
       </div>
 
       <div className="nat-tab-bar" style={{ marginBottom: '1rem' }}>
         {LMM_PILLARS.map((p) => (
           <button key={p} type="button" className={`nat-tab-btn ${pillar === p ? 'active' : ''}`} onClick={() => setPillar(p)}>
-            {p} <span style={{ opacity: 0.6, fontSize: '.75rem' }}>({LMM_METRICS.filter((m) => m.pillar === p && !LMM_HIDDEN_METRIC_IDS.has(m.id)).length})</span>
+            {LMM_PILLAR_LABELS[p] || p} <span style={{ opacity: 0.6, fontSize: '.75rem' }}>({LMM_METRICS.filter((m) => m.pillar === p && !LMM_HIDDEN_METRIC_IDS.has(m.id)).length})</span>
           </button>
         ))}
       </div>
 
-      {isWip ? (
-        <Placeholder label={`${pillar} — work in progress. Learning questions for this pillar are being updated; content is hidden until the refresh lands.`} />
-      ) : (
-      <>
       <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1.25rem' }}>
         {[[false, `All ${allPillarMetrics.length}`], [true, `Live/partial only (${liveCount + partialCount})`]].map(([val, label]) => (
           <button
@@ -3464,8 +3454,6 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
       {activeMetric ? (
         <LmmMetricDrill key={activeMetric.id} metric={activeMetric} onClose={() => setActiveMetric(null)} onJumpTab={onJumpTab} summaryData={summaryData} schoolData={schoolData} year={year} />
       ) : null}
-      </>
-      )}
     </>
   );
 }
