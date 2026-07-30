@@ -1480,6 +1480,8 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
         </div>
       </Section>
 
+      <ClassSizeVsNonScholarsSection schoolData={schoolData} year={year} />
+
       <Section title={`${term === 'term2' ? '🔬 Skills Day' : term === 'all' ? '🎉 Community Day / 🔬 Skills Day' : '🎉 Community Day'}`} subtitle="Delivery and attendance by region">
         <CommunitySkillsDay summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
       </Section>
@@ -3559,10 +3561,6 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
 
           {liveData ? <LmmLiveComparison liveData={liveData} /> : null}
 
-          {m.id === 'reduction-in-the-average-learners-in-class' ? (
-            <LmmClassSizeAnalysis schoolData={schoolData} year={year} />
-          ) : null}
-
           <details open={!liveData} style={{ marginBottom: '.9rem' }}>
             <summary style={{ cursor: 'pointer', fontSize: '.75rem', fontWeight: 700, color: '#0077b6', marginBottom: '.5rem' }}>
               Full reference (learning question, targets, data source, decision trigger…)
@@ -3598,10 +3596,14 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
 }
 
 // Large Class Size analysis — Term 1 (45-scholar target) vs. Term 2 (60-scholar
-// ceiling, deliberately tested per the sheet's own learning question), plus
-// which schools carried community non-scholar attendance in T1 vs. still do
-// now, and how many schools remain above their term's threshold.
-function LmmClassSizeAnalysis({ schoolData, year }) {
+// ceiling, deliberately tested per the sheet's own learning question) — lives
+// on the Programme Quality tab, alongside the Non-Scholar Participation
+// section it builds on, rather than inside the Learning & Measurement Map
+// drill. Core comparison: avg scholars vs. avg non-scholars per session,
+// nationally and by region, Term 1 vs. Term 2 — plus which schools carried
+// non-scholar (community) attendance in T1 vs. still do now, and how many
+// schools remain above their term's own threshold.
+function ClassSizeVsNonScholarsSection({ schoolData, year }) {
   const [showAllLarge, setShowAllLarge] = useState(false);
   const [showAllChange, setShowAllChange] = useState(null);
 
@@ -3620,12 +3622,11 @@ function LmmClassSizeAnalysis({ schoolData, year }) {
   ];
 
   return (
-    <div style={{ marginBottom: '1.25rem' }}>
-      <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
-        Large Class Size Analysis — Term 1 (&gt;45) vs. Term 2 (&gt;60)
-      </div>
-
-      <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', marginBottom: '.9rem' }}>
+    <Section
+      title="📏 Large Class Size — Scholars vs. Non-Scholars"
+      subtitle={`Avg Scholars/Session T1 ${term1.avgClassSize} → T2 ${term2.avgClassSize} · Avg Non-Scholars/Session T1 ${term1.avgNonScholars} → T2 ${term2.avgNonScholars}`}
+    >
+      <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
         <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
           <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Avg Scholars/Session</div>
           <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.avgClassSize || '—'} → T2 {term2.avgClassSize || '—'}</div>
@@ -3634,21 +3635,55 @@ function LmmClassSizeAnalysis({ schoolData, year }) {
           </div>
         </div>
         <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
+          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Avg Non-Scholars/Session</div>
+          <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.avgNonScholars || '—'} → T2 {term2.avgNonScholars || '—'}</div>
+          <div style={{ fontSize: '.72rem', color: '#666' }}>{term1.withNonScholarsPct}% of T1 schools · {term2.withNonScholarsPct}% of T2 schools had any</div>
+        </div>
+        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
           <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Schools Above Threshold</div>
           <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.largePct}% ({term1.largeCount}/{term1.totalSchools}) → T2 {term2.largePct}% ({term2.largeCount}/{term2.totalSchools})</div>
           <div style={{ fontSize: '.72rem', color: '#666' }}>T1 threshold 45 · T2 threshold 60</div>
         </div>
-        <div style={{ flex: '1 1 200px', background: '#eef2ff', borderRadius: 8, padding: '.6rem .8rem' }}>
-          <div style={{ fontSize: '.68rem', color: '#555', textTransform: 'uppercase', letterSpacing: '.04em' }}>Non-Scholars in Class</div>
-          <div style={{ fontWeight: 700, color: C.navy }}>T1 {term1.totalNonScholars.toLocaleString()} → T2 {term2.totalNonScholars.toLocaleString()}</div>
-          <div style={{ fontSize: '.72rem', color: '#666' }}>{term1.withNonScholarsPct}% of T1 schools · {term2.withNonScholarsPct}% of T2 schools had any</div>
-        </div>
       </div>
 
-      <div style={{ marginBottom: '.9rem' }}>
-        <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
-          Schools with non-scholar attendance — T1 vs. T2
-        </div>
+      <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem' }}>Avg Scholars vs. Non-Scholars by Region</div>
+      <div className="table-wrap" style={{ marginBottom: '1.25rem' }}>
+        <table className="breakdown-table">
+          <thead>
+            <tr>
+              <th>Region</th>
+              <th className="center">T1 Avg Scholars</th>
+              <th className="center">T1 Avg Non-Scholars</th>
+              <th className="center">T2 Avg Scholars</th>
+              <th className="center">T2 Avg Non-Scholars</th>
+            </tr>
+          </thead>
+          <tbody>
+            {term2.byRegion.map((r2) => {
+              const r1 = term1.byRegion.find((r) => r.region === r2.region);
+              return (
+                <tr key={r2.region}>
+                  <td className="item-name">{r2.region}</td>
+                  <td className="center">{r1 ? r1.avgScholars : '—'}</td>
+                  <td className="center">{r1 ? r1.avgNonScholars : '—'}</td>
+                  <td className="center">{r2.avgScholars}</td>
+                  <td className="center">{r2.avgNonScholars}</td>
+                </tr>
+              );
+            })}
+            <tr style={{ background: '#f0f4ff', borderTop: '2px solid #dee2e6', fontWeight: 800 }}>
+              <td>National</td>
+              <td className="center">{term1.avgClassSize}</td>
+              <td className="center">{term1.avgNonScholars}</td>
+              <td className="center">{term2.avgClassSize}</td>
+              <td className="center">{term2.avgNonScholars}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginBottom: '1.25rem' }}>
+        <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem' }}>Schools with non-scholar attendance — T1 vs. T2</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
           {changeGroups.map((g) => (
             <details key={g.key} open={showAllChange === g.key} style={{ background: '#fafafa', border: '1px solid #eee', borderRadius: 8, padding: '.5rem .75rem' }}>
@@ -3673,7 +3708,7 @@ function LmmClassSizeAnalysis({ schoolData, year }) {
       </div>
 
       <div>
-        <div style={{ fontSize: '.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.4rem' }}>
+        <div style={{ fontWeight: 700, marginBottom: '.5rem', fontSize: '.9rem' }}>
           Schools still above the large-class threshold — {currentLabel} ({currentlyLargeCount} of {currentTotalSchools}, {currentlyLargePct}%)
         </div>
         {sortedLarge.length === 0 ? (
@@ -3716,7 +3751,7 @@ function LmmClassSizeAnalysis({ schoolData, year }) {
           </>
         )}
       </div>
-    </div>
+    </Section>
   );
 }
 
