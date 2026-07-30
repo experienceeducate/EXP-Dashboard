@@ -272,3 +272,77 @@ export function resolveLiveMetric(metricId, summaryData, year, schoolData) {
   const resolver = RESOLVERS[metricId];
   return resolver ? resolver(summaryData, year, schoolData) : null;
 }
+
+// ── Progress vs. the sheet's own annual (end-point) target, for the 3
+// Investment Memo metrics where both a live number AND a numeric annual
+// target exist. The end-point target text is prose (e.g. ">80% reporting
+// receiving Passbook feedback"), so the numeric target below is a
+// judgment-call transcription of that text, not a parse — re-check it by
+// hand if the source sheet's wording changes.
+//
+// "Achieved" is cumulative year-to-date (every term with data so far, not
+// just the latest one) — an OKR is graded against the whole year, not a
+// single term snapshot. Per-term variation still surfaces elsewhere (the
+// Term 1 vs. Term 2 comparison table in the drill panel); this is a separate,
+// cumulative figure for the target comparison specifically. Returns null for
+// every other metric (no numeric target to compare against, or no live
+// source at all).
+const PROGRESS_RESOLVERS = {
+  // Recruited/activated is already a fixed, term-invariant figure (always
+  // sourced from Term 1 rows — see getTermMetrics) — nothing to accumulate.
+  '36000-scholars-recruited-and-activated': (summaryData, year) => {
+    const m = getTermMetrics(summaryData, year, 'term1', null);
+    if (!m) return null;
+    return { achieved: m.activated, target: 36000, unit: 'count', achievedLabel: 'scholars activated' };
+  },
+  'milestone-quality-rate': (summaryData, year) => {
+    // Cumulative across every milestone delivered so far this year (M1-M4,
+    // across all terms' rows) — same 1-decimal precision as pbQualityPct.
+    // Each row only carries real counts for the milestones that term
+    // actually ran (the other milestone fields are 0 on that row — see
+    // mergeRowsAcrossTerms' docstring), so summing across all of a year's
+    // rows aggregates correctly without double-counting.
+    const rows = summaryData.filter((d) => String(d.year) === String(year));
+    if (!rows.length) return null;
+    const fields = ['m1', 'm2', 'm3', 'm4'];
+    const q = sum(rows, (d) => fields.reduce((s, f) => s + N(d[`${f}_quality_rated`]), 0));
+    const t = sum(rows, (d) => fields.reduce((s, f) => s + N(d[`${f}_total_rated`]), 0));
+    if (!t) return null;
+    const achieved = pct(q, t);
+    // Annual target ">70% on all key milestone" (endpointTarget) — not the
+    // 80% mid-point checkpoint.
+    return { achieved, target: 70, unit: 'pct', achievedLabel: 'milestone quality rate' };
+  },
+  'passbook-feedback-rate': (summaryData, year) => {
+    // Per user decision: proxy this off school-level Passbook Milestone
+    // Completion (docs/METRICS.md §2.5 — schools_completed_mN /
+    // total_target_schools) instead of scholar-level milestone ratings. It's
+    // already a documented, established formula elsewhere in the app,
+    // inherently bounded ≤100% (completed schools can't exceed total
+    // schools), and doesn't need a different denominator per term the way
+    // the scholar-rate version did. Cumulative achieved = best (max) of the
+    // 4 milestones' completion rates so far this year — same "best
+    // milestone, not a sum" rationale used elsewhere in this file.
+    const yearRows = summaryData.filter((d) => String(d.year) === String(year));
+    const t1Rows = yearRows.filter((d) => d.term === 'term1');
+    if (!t1Rows.length) return null;
+    const totalSchools = sum(t1Rows, (d) => N(d.total_target_schools));
+    if (!totalSchools) return null;
+    const rates = ['m1', 'm2', 'm3', 'm4'].map(
+      (f) => sum(yearRows, (d) => N(d[`schools_completed_${f}`])) / totalSchools,
+    );
+    const achieved = Math.round(Math.max(...rates) * 1000) / 10;
+    // Annual target ">80% reporting receiving Passbook feedback" (endpointTarget)
+    // — not the 85% mid-point checkpoint.
+    return { achieved, target: 80, unit: 'pct', achievedLabel: 'schools w/ passbook milestone completed' };
+  },
+};
+
+export function resolveProgress(metricId, summaryData, year) {
+  const resolver = PROGRESS_RESOLVERS[metricId];
+  if (!resolver) return null;
+  const result = resolver(summaryData, year);
+  if (!result) return null;
+  const pctOfTarget = result.target > 0 ? Math.round((result.achieved / result.target) * 1000) / 10 : null;
+  return { ...result, pctOfTarget, onTrack: pctOfTarget != null && pctOfTarget >= 100 };
+}

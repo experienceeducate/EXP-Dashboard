@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import * as api from '../lib/api.js';
 import { LMM_METRICS } from '../data/learningMeasurementMap.js';
 import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
-import { resolveLiveMetric } from '../lib/lmmLiveMetrics.js';
+import { resolveLiveMetric, resolveProgress } from '../lib/lmmLiveMetrics.js';
 import { getLECsForTerm, C, TERM_CONFIG } from '../lib/config.js';
 import {
   computeNationalKpis,
@@ -3111,7 +3111,7 @@ const LMM_STATUS = {
   unknown: { label: 'Unknown', color: '#888', icon: '•' },
 };
 const LMM_LIVE = {
-  live: { label: 'Live in dashboard', color: C.green, icon: '🟢' },
+  live: { label: 'Live', color: C.green, icon: '🟢' },
   partial: { label: 'Partial / proxy data', color: '#c98a00', icon: '🟡' },
   none: { label: 'Not yet available', color: '#888', icon: '⚪' },
 };
@@ -3135,6 +3135,149 @@ function LmmLiveBadge({ liveStatus }) {
   );
 }
 
+// "Achieved" vs. the annual (end-point) target, for the handful of metrics with a
+// numeric target to compare against (see resolveProgress) — a computed
+// on-track/off-track, not the sheet's static status field.
+// KR/group-level rollup — sits between the OKR statement and the individual
+// metric drill-downs, so a reader gets "what did we achieve on this KR" before
+// having to open each component metric separately.
+function LmmGroupAchievement({ metrics, summaryData, year }) {
+  const withProgress = metrics
+    .filter((m) => m.liveStatus === 'live')
+    .map((m) => ({ m, progress: resolveProgress(m.id, summaryData, year) }))
+    .filter((x) => x.progress);
+  const liveNoTarget = metrics.filter((m) => m.liveStatus === 'live' && !withProgress.some((x) => x.m.id === m.id));
+
+  // No live data at all — neutral, not part of the R/A/G scale (there's
+  // nothing yet to grade).
+  if (withProgress.length === 0 && liveNoTarget.length === 0) {
+    return (
+      <div style={{ background: '#f1f1f1', borderLeft: '4px solid #bbb', borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.8rem', color: '#555' }}>
+        <div style={{ fontSize: '.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.3rem' }}>Achievement</div>
+        No live metrics yet for this result — see individual components below.
+      </div>
+    );
+  }
+
+  const onTrack = withProgress.filter((x) => x.progress.onTrack);
+  const offTrack = withProgress.filter((x) => !x.progress.onTrack);
+  // RAG: green if every component with a target is on track, red if none are,
+  // amber for a mix (or live components with no numeric target to grade yet).
+  let rag;
+  if (withProgress.length === 0) rag = 'amber';
+  else if (offTrack.length === 0) rag = 'green';
+  else if (onTrack.length === 0) rag = 'red';
+  else rag = 'amber';
+  const RAG_STYLE = {
+    green: { bg: '#eaf7ed', accent: C.green },
+    amber: { bg: '#fff8e6', accent: '#c98a00' },
+    red: { bg: '#fdecea', accent: '#c0392b' },
+  };
+  const { bg, accent } = RAG_STYLE[rag];
+
+  // One flowing sentence — the table below already carries the per-metric
+  // achieved/target/gap detail, so this is a summary, not a second data dump.
+  const fmt = (v, unit) => (unit === 'pct' ? `${v}%` : Math.round(v).toLocaleString());
+  const clauses = [];
+  if (withProgress.length > 0) {
+    if (offTrack.length === 0) {
+      clauses.push(`All ${withProgress.length} component${withProgress.length !== 1 ? 's are' : ' is'} on track against ${withProgress.length !== 1 ? 'their' : 'its'} annual target${withProgress.length !== 1 ? 's' : ''}`);
+    } else if (onTrack.length === 0) {
+      clauses.push(`None of the ${withProgress.length} components are on track against their annual targets`);
+    } else {
+      clauses.push(`${onTrack.length} of ${withProgress.length} components are on track against their annual targets`);
+    }
+    const detail = withProgress
+      .map(({ m, progress }) => `${m.name} at ${fmt(progress.achieved, progress.unit)} (${progress.pctOfTarget}% of target, ${progress.onTrack ? 'on track' : 'off track'})`)
+      .join('; ');
+    clauses.push(detail);
+  }
+  if (liveNoTarget.length > 0) {
+    clauses.push(`${liveNoTarget.map((m) => m.name).join(', ')} ${liveNoTarget.length !== 1 ? 'are' : 'is'} live with no numeric target set for comparison yet`);
+  }
+
+  return (
+    <div style={{ background: bg, borderLeft: `4px solid ${accent}`, borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.8rem', color: '#222', lineHeight: 1.5 }}>
+      <div style={{ fontSize: '.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', color: '#888', marginBottom: '.3rem' }}>Achievement</div>
+      {clauses.join('. ')}.
+    </div>
+  );
+}
+
+// Component-result table for a KR group — one row per metric, clicking a row
+// opens the same full drill panel (LmmMetricDrill) the old card list did.
+function LmmMetricsTable({ metrics, summaryData, year, schoolData, onSelect }) {
+  return (
+    <div className="table-wrap" style={{ marginBottom: '.5rem' }}>
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th style={THWRAP}>Metric</th>
+            <th style={THWRAP}>Data</th>
+            <th style={THWRAP}>Status</th>
+            <th style={THWRAP}>Result vs. Target</th>
+            <th style={THWRAP}>Gap</th>
+          </tr>
+        </thead>
+        <tbody>
+          {metrics.map((m) => {
+            const rowLive = m.liveStatus === 'live' ? resolveLiveMetric(m.id, summaryData, year, schoolData) : null;
+            const progress = m.liveStatus === 'live' ? resolveProgress(m.id, summaryData, year) : null;
+            const live = LMM_LIVE[m.liveStatus] || LMM_LIVE.none;
+
+            let resultCell = '—';
+            let gapCell = '—';
+            let gapColor = '#888';
+            if (progress) {
+              const fmt = (v) => (progress.unit === 'pct' ? `${v}%` : Math.round(v).toLocaleString());
+              resultCell = `${fmt(progress.achieved)} / ${fmt(progress.target)}`;
+              const gap = Math.round((progress.achieved - progress.target) * 10) / 10;
+              gapColor = gap >= 0 ? C.green : '#c98a00';
+              gapCell = gap >= 0 ? '+' : '';
+              gapCell += progress.unit === 'pct' ? `${gap}pp` : Math.round(gap).toLocaleString();
+            } else if (rowLive) {
+              resultCell = rowLive.national.term2;
+            }
+
+            return (
+              <tr key={m.id} className="clickable" onClick={() => onSelect(m)}>
+                <td style={{ fontWeight: 700 }}>{m.name}<DrillTag /></td>
+                <td style={{ color: live.color, fontWeight: 700, whiteSpace: 'nowrap' }}>{live.icon} {live.label}</td>
+                <td><LmmStatusPill status={m.status} /></td>
+                <td style={{ whiteSpace: 'nowrap' }}>{resultCell}</td>
+                <td style={{ color: gapColor, fontWeight: 700, whiteSpace: 'nowrap' }}>{gapCell}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function LmmProgressBar({ progress }) {
+  const { achieved, target, unit, achievedLabel, pctOfTarget, onTrack } = progress;
+  const fmt = (v) => (unit === 'pct' ? `${v}%` : Math.round(v).toLocaleString());
+  const barPct = Math.max(0, Math.min(100, pctOfTarget));
+  const color = onTrack ? C.green : '#c98a00';
+  return (
+    <div style={{ marginBottom: '.9rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.3rem' }}>
+        <div style={{ fontSize: '.78rem', color: '#444' }}>
+          <strong style={{ color: C.navy }}>Achieved: </strong>
+          {fmt(achieved)}{unit === 'pct' ? '' : ` ${achievedLabel}`} <span style={{ color: '#888' }}>(target: {fmt(target)}{unit === 'pct' ? '' : ` ${achievedLabel}`})</span>
+        </div>
+        <span style={{ fontSize: '.72rem', fontWeight: 700, color, whiteSpace: 'nowrap' }}>
+          {onTrack ? '✅ On Track' : '⚠️ Off Track'} — {pctOfTarget}% of target
+        </span>
+      </div>
+      <div style={{ height: 8, borderRadius: 999, background: '#e9ecef', overflow: 'hidden' }}>
+        <div style={{ height: '100%', width: `${barPct}%`, borderRadius: 999, background: color }} />
+      </div>
+    </div>
+  );
+}
+
 const LMM_LIVE_SORT = { live: 0, partial: 1, none: 2 };
 
 // The source sheet's own OKR labels don't line up with the approved Investment
@@ -3151,6 +3294,11 @@ const LMM_GROUP_CANONICAL = {
   'Implementation OKRs': 'Implementation OKRs — General (Frontline Quality)',
 };
 
+// Per user instruction — the catch-all "Implementation OKRs — General
+// (Frontline Quality)" group (not tied to a specific KR in the approved
+// memo) is hidden from the Investment Memo pillar entirely.
+const LMM_HIDDEN_METRIC_IDS = new Set(['patron-qaility-mentor-rating']);
+
 // Investment Memo groups: Product OKRs first (in Objective/KR order), then all
 // Implementation OKRs groups — per user instruction ("Delivery" and
 // "Implementation" are the same OKR tree, not two separate ones).
@@ -3162,7 +3310,6 @@ const LMM_IM_GROUP_ORDER = [
   'Product OKRs - Objective 2: KR3',
   'Implementation OKRs — Objective 1: KR1 (Frontline Hallmark Index)',
   'Implementation OKRs — Objective 2: KR2 (Team Culture Survey)',
-  'Implementation OKRs — General (Frontline Quality)',
 ];
 
 function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year }) {
@@ -3170,7 +3317,7 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
   const [activeMetric, setActiveMetric] = useState(null);
   const [liveOnly, setLiveOnly] = useState(false);
 
-  const allPillarMetrics = LMM_METRICS.filter((m) => m.pillar === pillar);
+  const allPillarMetrics = LMM_METRICS.filter((m) => m.pillar === pillar && !LMM_HIDDEN_METRIC_IDS.has(m.id));
   const liveCount = allPillarMetrics.filter((m) => m.liveStatus === 'live').length;
   const partialCount = allPillarMetrics.filter((m) => m.liveStatus === 'partial').length;
   const noneCount = allPillarMetrics.filter((m) => m.liveStatus === 'none').length;
@@ -3201,6 +3348,11 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
     });
   }
 
+  // Learning Agenda / Product Health Metrics / Theory of Change carry stale
+  // learning questions pending an update from the user — hide their content
+  // (not just a data tweak, so no per-metric flag needed) until refreshed.
+  const isWip = pillar !== 'Investment Memo';
+
   return (
     <>
       <div className="key-takeaways-strip" style={{ marginBottom: '1rem' }}>
@@ -3213,23 +3365,29 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
               <strong>Data Status:</strong> We are actively mapping remaining data sources to BigQuery. Some temporary data gaps currently exist as we complete this integration.
             </div>
           </div>
-          <div className="kt-strip-item">
-            <div className={`kt-strip-bar ${noneCount > liveCount + partialCount ? 'amber' : ''}`} />
-            <div>
-              In <strong>{pillar}</strong>: <strong>{liveCount} live</strong>, <strong>{partialCount} partial/proxy</strong>, <strong>{noneCount} not yet available</strong> ({allPillarMetrics.length} metrics total).
+          {!isWip ? (
+            <div className="kt-strip-item">
+              <div className={`kt-strip-bar ${noneCount > liveCount + partialCount ? 'amber' : ''}`} />
+              <div>
+                In <strong>{pillar}</strong>: <strong>{liveCount} live</strong>, <strong>{partialCount} partial/proxy</strong>, <strong>{noneCount} not yet available</strong> ({allPillarMetrics.length} metrics total).
+              </div>
             </div>
-          </div>
+          ) : null}
         </div>
       </div>
 
       <div className="nat-tab-bar" style={{ marginBottom: '1rem' }}>
         {LMM_PILLARS.map((p) => (
           <button key={p} type="button" className={`nat-tab-btn ${pillar === p ? 'active' : ''}`} onClick={() => setPillar(p)}>
-            {p} <span style={{ opacity: 0.6, fontSize: '.75rem' }}>({LMM_METRICS.filter((m) => m.pillar === p).length})</span>
+            {p} <span style={{ opacity: 0.6, fontSize: '.75rem' }}>({LMM_METRICS.filter((m) => m.pillar === p && !LMM_HIDDEN_METRIC_IDS.has(m.id)).length})</span>
           </button>
         ))}
       </div>
 
+      {isWip ? (
+        <Placeholder label={`${pillar} — work in progress. Learning questions for this pillar are being updated; content is hidden until the refresh lands.`} />
+      ) : (
+      <>
       <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1.25rem' }}>
         {[[false, `All ${allPillarMetrics.length}`], [true, `Live/partial only (${liveCount + partialCount})`]].map(([val, label]) => (
           <button
@@ -3253,44 +3411,15 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
             <div style={{ background: '#f0f4ff', border: '1px solid #dbe4ff', borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.8rem', color: '#333' }}>
               <div style={{ marginBottom: okr.keyResult ? '.4rem' : 0 }}>{okr.objective}</div>
               {okr.keyResult ? <div style={{ fontWeight: 700 }}>{okr.keyResult}</div> : null}
-              {okr.note ? <div style={{ marginTop: '.4rem', fontSize: '.72rem', color: '#888', fontStyle: 'italic' }}>{okr.note}</div> : null}
             </div>
           ) : (
             <LmmGroupContext metrics={g.metrics} />
           )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-            {g.metrics.map((m) => {
-              const rowLive = m.liveStatus === 'live' ? resolveLiveMetric(m.id, summaryData, year, schoolData) : null;
-              return (
-              <div
-                key={m.id}
-                className="clickable"
-                onClick={() => setActiveMetric(m)}
-                style={{ padding: '.7rem .9rem', background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 8, cursor: 'pointer' }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '.5rem' }}>
-                  <div style={{ fontWeight: 700, fontSize: '.9rem' }}>{m.name}</div>
-                  <LmmStatusPill status={m.status} />
-                </div>
-                {rowLive ? (
-                  <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginTop: '.4rem', fontSize: '.78rem' }}>
-                    <div><span style={{ color: '#888' }}>T1: </span><strong style={{ color: C.navy }}>{rowLive.national.term1}</strong></div>
-                    <div><span style={{ color: '#888' }}>T2: </span><strong style={{ color: C.navy }}>{rowLive.national.term2}</strong></div>
-                  </div>
-                ) : null}
-                <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '.5rem', marginTop: '.3rem' }}>
-                  <div style={{ fontSize: '.72rem', color: '#666' }}>
-                    <span style={{ color: LMM_PRIORITY_COLOR[m.priority] || '#666', fontWeight: 700 }}>{m.priority}</span> · {m.category}
-                  </div>
-                  <LmmLiveBadge liveStatus={m.liveStatus} />
-                </div>
-                <div style={{ fontSize: '.68rem', color: '#0077b6', fontWeight: 700, marginTop: '.35rem' }}>
-                  ⌕ Click for {rowLive ? 'region/CU drill-down' : 'details'}
-                </div>
-              </div>
-              );
-            })}
+          <LmmGroupAchievement metrics={g.metrics} summaryData={summaryData} year={year} />
+          <div style={{ fontSize: '.7rem', fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: '.4rem' }}>
+            Drill into each component result
           </div>
+          <LmmMetricsTable metrics={g.metrics} summaryData={summaryData} year={year} schoolData={schoolData} onSelect={setActiveMetric} />
         </Section>
         );
       })}
@@ -3298,6 +3427,8 @@ function LearningMeasurementMapTab({ onJumpTab, summaryData, schoolData, year })
       {activeMetric ? (
         <LmmMetricDrill key={activeMetric.id} metric={activeMetric} onClose={() => setActiveMetric(null)} onJumpTab={onJumpTab} summaryData={summaryData} schoolData={schoolData} year={year} />
       ) : null}
+      </>
+      )}
     </>
   );
 }
@@ -3357,6 +3488,7 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
   const jumpLabel = m.jumpTab ? (TABS.find((t) => t.id === m.jumpTab)?.label || m.jumpTab) : null;
   const okr = OKR_DESCRIPTIONS[m.okrGroup];
   const liveData = m.liveStatus === 'live' ? resolveLiveMetric(m.id, summaryData, year, schoolData) : null;
+  const progress = m.liveStatus === 'live' ? resolveProgress(m.id, summaryData, year) : null;
 
   return (
     <>
@@ -3377,7 +3509,6 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
             <div style={{ background: '#f0f4ff', border: '1px solid #dbe4ff', borderRadius: 8, padding: '.75rem .9rem', marginBottom: '1rem', fontSize: '.78rem', color: '#333' }}>
               <div style={{ marginBottom: okr.keyResult ? '.4rem' : 0 }}>{okr.objective}</div>
               {okr.keyResult ? <div style={{ fontWeight: 700 }}>{okr.keyResult}</div> : null}
-              {okr.note ? <div style={{ marginTop: '.4rem', fontSize: '.7rem', color: '#888', fontStyle: 'italic' }}>{okr.note}</div> : null}
             </div>
           ) : null}
           <div
@@ -3397,6 +3528,8 @@ function LmmMetricDrill({ metric, onClose, onJumpTab, summaryData, schoolData, y
               </button>
             ) : null}
           </div>
+
+          {progress ? <LmmProgressBar progress={progress} /> : null}
 
           {liveData ? <LmmLiveComparison liveData={liveData} /> : null}
 
@@ -3456,7 +3589,7 @@ function LmmLiveComparison({ liveData }) {
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '.4rem' }}>
         <div style={{ fontSize: '.75rem', fontWeight: 700, color: '#555' }}>
-          {region ? `CUs in ${region}` : 'By region — click to drill into CUs'}
+          {region ? `Result areas — CUs in ${region}` : 'Result areas — by region, click to drill into CUs'}
         </div>
         {region ? (
           <button
