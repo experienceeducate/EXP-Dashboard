@@ -1076,14 +1076,27 @@ function classSizeTermSummary(schoolData, year, term) {
   const totalSchools = schools.length;
   const large = schools.filter((s) => s.isLarge);
   const withNonScholars = schools.filter((s) => s.hasNonScholars);
-  const avgClassSize = totalSchools > 0
-    ? Math.round((sum(schools, (s) => s.avgScholars) / totalSchools) * 10) / 10
-    : 0;
+  const avgOf = (list, fn) => (list.length > 0 ? Math.round((sum(list, fn) / list.length) * 10) / 10 : 0);
+  const avgClassSize = avgOf(schools, (s) => s.avgScholars);
+  const avgNonScholars = avgOf(schools, (s) => s.avgNonScholars);
+
+  const regions = [...new Set(schools.map((s) => s.region).filter(Boolean))].sort();
+  const byRegion = regions.map((region) => {
+    const rSchools = schools.filter((s) => s.region === region);
+    return {
+      region,
+      totalSchools: rSchools.length,
+      avgScholars: avgOf(rSchools, (s) => s.avgScholars),
+      avgNonScholars: avgOf(rSchools, (s) => s.avgNonScholars),
+      largeCount: rSchools.filter((s) => s.isLarge).length,
+    };
+  });
 
   return {
     threshold,
     totalSchools,
     avgClassSize,
+    avgNonScholars,
     large,
     largeCount: large.length,
     largePct: formatPercentage1(large.length, totalSchools),
@@ -1091,6 +1104,7 @@ function classSizeTermSummary(schoolData, year, term) {
     withNonScholars,
     withNonScholarsCount: withNonScholars.length,
     withNonScholarsPct: formatPercentage1(withNonScholars.length, totalSchools),
+    byRegion,
     schools,
   };
 }
