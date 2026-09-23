@@ -76,10 +76,34 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "anthropic/claude-sonnet-5"
 
+    # ── Weekly digest (optional — the /internal/digest/run route 503s until
+    # DIGEST_INTERNAL_TOKEN is set; email send / OpenAI narrative each no-op
+    # individually if their own settings are blank, so local testing doesn't
+    # require every secret at once). See docs/DECISION.md.
+    DIGEST_INTERNAL_TOKEN: str = ""
+    DIGEST_SMTP_HOST: str = "smtp.gmail.com"
+    DIGEST_SMTP_PORT: int = 587
+    DIGEST_SMTP_USERNAME: str = ""
+    DIGEST_SMTP_PASSWORD: str = ""
+    DIGEST_FROM_EMAIL: str = ""
+    # Comma-separated. Every Friday's scheduled run sends a DRAFT here ONLY —
+    # the full recipient list (ACCESS_CONFIG's "national" emails) is never
+    # emailed until someone with repo access manually runs the "send" workflow
+    # after reviewing the draft. See .github/workflows/weekly-digest*.yml.
+    DIGEST_REVIEWER_EMAILS: str = "afra.nuwasiima@experienceeducate.org,janet.namugaya@experienceeducate.org"
+
+    @property
+    def digest_reviewer_list(self) -> list[str]:
+        return [e.strip() for e in self.DIGEST_REVIEWER_EMAILS.split(",") if e.strip()]
+
     @property
     def table_ref(self) -> str:
         """Fully-qualified, backtick-quoted table reference for SQL."""
         return f"`{self.BQ_PROJECT_ID}.{self.BQ_DATASET}.{self.BQ_TABLE}`"
+
+    @property
+    def digest_snapshots_table(self) -> str:
+        return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_dashboard_digest_snapshots"
 
     @property
     def cors_origins(self) -> list[str]:

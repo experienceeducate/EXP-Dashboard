@@ -1,0 +1,30 @@
+name: weekly-digest-send
+
+# Manual only — never scheduled. Run this from the Actions tab ("Run
+# workflow") after reviewing that week's draft from weekly-digest-preview.
+# Recomputes the same day's digest, emails the full national distribution
+# list (ACCESS_CONFIG's "national" emails), and writes this week's snapshot
+# for next week's trend comparison.
+
+on:
+  workflow_dispatch: {}
+
+env:
+  API_HOST: https://exp-dashboard-api.educateapps.work
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send digest to full distribution list
+        run: |
+          status=$(curl -s -o response.json -w "%{http_code}" -X POST "${API_HOST}/internal/digest/run" \
+            -H "Content-Type: application/json" \
+            -H "X-Digest-Token: ${{ secrets.DIGEST_INTERNAL_TOKEN }}" \
+            -d '{"mode": "send"}')
+          echo "HTTP status: $status"
+          cat response.json
+          if [ "$status" != "200" ]; then
+            echo "::error::Digest send failed (HTTP $status)"
+            exit 1
+          fi

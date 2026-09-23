@@ -1,0 +1,31 @@
+name: weekly-digest-preview
+
+# Runs automatically every Friday morning (EAT). Computes the digest and
+# emails a DRAFT to DIGEST_REVIEWER_EMAILS only — never the full distribution
+# list. Review the draft, then run the "weekly-digest-send" workflow by hand
+# (Actions tab → Run workflow) once it looks right.
+
+on:
+  schedule:
+    - cron: '0 5 * * 5' # 05:00 UTC = ~08:00 EAT, Friday
+  workflow_dispatch: {} # allow an ad-hoc preview too
+
+env:
+  API_HOST: https://exp-dashboard-api.educateapps.work
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger digest preview
+        run: |
+          status=$(curl -s -o response.json -w "%{http_code}" -X POST "${API_HOST}/internal/digest/run" \
+            -H "Content-Type: application/json" \
+            -H "X-Digest-Token: ${{ secrets.DIGEST_INTERNAL_TOKEN }}" \
+            -d '{"mode": "preview"}')
+          echo "HTTP status: $status"
+          cat response.json
+          if [ "$status" != "200" ]; then
+            echo "::error::Digest preview run failed (HTTP $status)"
+            exit 1
+          fi

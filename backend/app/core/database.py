@@ -99,8 +99,9 @@ def insert_rows(table_ref: str, rows: list[dict]) -> list[dict]:
 def query_rows_ignore_missing_table(sql: str, params=None) -> list[dict[str, Any]]:
     """Like run_query, but returns [] instead of raising if the target table
     doesn't exist yet — used for app-owned tables data engineering hasn't
-    created yet. See insert_rows' docstring for why both NotFound and
-    Forbidden are caught here."""
+    created yet (e.g. the digest snapshot table), so a dependent feature
+    degrades gracefully instead of 500ing. See insert_rows' docstring for why
+    both NotFound and Forbidden are caught here."""
     from google.api_core.exceptions import Forbidden, NotFound
 
     try:
