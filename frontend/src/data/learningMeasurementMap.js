@@ -460,8 +460,8 @@ export const LMM_METRICS = [
     "id": "reduction-in-the-average-learners-in-class",
     "status": "monitor",
     "liveStatus": "live",
-    "jumpTab": "quality",
-    "liveNote": "Avg Scholars/LEC — LEC Delivery tab; avg scholars vs. non-scholars per session, Term 1 vs. Term 2, on the Programme Quality tab's Large Class Size section."
+    "jumpTab": "lec",
+    "liveNote": "Avg Scholars/LEC — LEC Delivery tab; Large Class Size Analysis below (scholars vs. non-scholars vs. total learners per session, Term 1 vs. Term 2) computed from school-level data."
   },
   {
     "pillar": "Product Health Metrics",

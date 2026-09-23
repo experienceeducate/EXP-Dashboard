@@ -1066,8 +1066,13 @@ function classSizeTermSummary(schoolData, year, term) {
         key, name, cu: d.cu, region: d.region,
         avgScholars: stats.avgScholars,
         avgNonScholars: stats.avgNonScholars,
+        avgTotalLearners: stats.avgScholars + stats.avgNonScholars,
         totalNonScholars: stats.totalNonScholars,
-        isLarge: stats.delivered > 0 && stats.avgScholars > threshold,
+        // "Large" is graded on everyone physically in the session — scholars
+        // AND non-scholars — not scholars alone. A school running 40 scholars
+        // + 25 non-scholars is a 65-learner room even though its scholar
+        // count alone sits under the 45/60 target.
+        isLarge: stats.delivered > 0 && (stats.avgScholars + stats.avgNonScholars) > threshold,
         hasNonScholars: stats.totalNonScholars > 0,
       };
     })
@@ -1079,6 +1084,7 @@ function classSizeTermSummary(schoolData, year, term) {
   const avgOf = (list, fn) => (list.length > 0 ? Math.round((sum(list, fn) / list.length) * 10) / 10 : 0);
   const avgClassSize = avgOf(schools, (s) => s.avgScholars);
   const avgNonScholars = avgOf(schools, (s) => s.avgNonScholars);
+  const avgTotalLearners = avgOf(schools, (s) => s.avgTotalLearners);
 
   const regions = [...new Set(schools.map((s) => s.region).filter(Boolean))].sort();
   const byRegion = regions.map((region) => {
@@ -1088,6 +1094,7 @@ function classSizeTermSummary(schoolData, year, term) {
       totalSchools: rSchools.length,
       avgScholars: avgOf(rSchools, (s) => s.avgScholars),
       avgNonScholars: avgOf(rSchools, (s) => s.avgNonScholars),
+      avgTotalLearners: avgOf(rSchools, (s) => s.avgTotalLearners),
       largeCount: rSchools.filter((s) => s.isLarge).length,
     };
   });
@@ -1097,6 +1104,7 @@ function classSizeTermSummary(schoolData, year, term) {
     totalSchools,
     avgClassSize,
     avgNonScholars,
+    avgTotalLearners,
     large,
     largeCount: large.length,
     largePct: formatPercentage1(large.length, totalSchools),
