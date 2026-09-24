@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     CACHE_MAXSIZE: int = 512
     CACHE_TTL_SECONDS: int = 300
 
+    # ── App-owned BigQuery storage / shared LLM config ──────────────────────
+    # Dataset (separate from the read-only gold model) for tables this app
+    # writes to itself — digest snapshots, E!nsight audit log, etc. Features
+    # using it should degrade gracefully if data engineering hasn't created
+    # their table yet (see database.insert_rows / query_rows_ignore_missing_table).
+    DASHBOARD_APP_DATASET: str = "dashboard_app"
+    # OpenRouter (OpenAI-compatible API) so features can target Claude models
+    # via the `openai` SDK's base_url override. Optional — each caller no-ops
+    # without a key.
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "anthropic/claude-sonnet-5"
+
     @property
     def table_ref(self) -> str:
         """Fully-qualified, backtick-quoted table reference for SQL."""
