@@ -32,7 +32,16 @@ def summary(
     term: str | None = Query(default=None, description="term1|term2|term3, omit for all"),
     user: UserAccess = Depends(current_user),
 ):
-    """Combined CU- and school-level rows within the caller's access scope."""
+    """Combined CU- and school-level rows within the caller's access scope.
+    Backed by the gold model (~158 columns) — the source for every headline
+    delivery metric: LEC delivery (schools_with_lecN/total_target_schools),
+    retention (lec2_scholars/lec14_scholars), recruitment
+    (total_scholars_recruited), passbook quality (mN_quality_rated/
+    mN_total_rated), mentor coverage (total_active_mentors/
+    total_observed_mentors), Group Mentoring, Community/Skills Day, and Club
+    Milestones — see docs/METRICS.md §7 for the full field list. NOT for
+    mentor observation ratings or free-text comments — that's Mentor Quality.
+    """
     cu_rows = _fetch_level(LEVEL_CU, term, user)
     school_rows = _fetch_level(LEVEL_SCHOOL, term, user)
     return {

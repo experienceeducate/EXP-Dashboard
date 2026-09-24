@@ -232,3 +232,52 @@ export const fetchGroupMentoringSummaryByCu = groupMentoringApi.fetchSummaryByCu
 export const fetchGroupMentoringMentors = groupMentoringApi.fetchMentors;
 export const fetchGroupMentoringMentorObservations = groupMentoringApi.fetchMentorObservations;
 export const fetchGroupMentoringComments = groupMentoringApi.fetchComments;
+
+// ── E!nsight (see docs/ENSIGHT.md) ───────────────────────────────────────────
+// GET /api/ensight/availability → { status, available }
+export async function fetchEnsightAvailability() {
+  return request('/api/ensight/availability');
+}
+
+// POST /api/ensight/ask → { status, answer, route, cached, cached_minutes_ago, sources, rows, row_count, notes }
+export async function askEnsight(question, history, filters = {}, forceRefresh = false) {
+  return request('/api/ensight/ask', {
+    method: 'POST',
+    body: {
+      question,
+      history: history || [],
+      term: filters.term || null,
+      cu: filters.cu || null,
+      force_refresh: !!forceRefresh,
+    },
+  });
+}
+
+// POST /api/ensight/export → a binary .pptx/.docx file. Not routed through
+// request() — that helper only ever parses JSON — so this does its own fetch
+// and Content-Disposition parsing, same as the JWT/client-header attachment
+// any other /api/* call needs (a plain <a href> can't attach either header).
+export async function exportEnsight(format, items) {
+  let res;
+  try {
+    res = await fetch(`${BASE}/api/ensight/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Exp-Client': CLIENT_HEADER, Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ format, items }),
+    });
+  } catch (e) {
+    throw new ApiError(`Network error: ${e.message}`, 0);
+  }
+  if (res.status === 401) {
+    clearToken();
+    throw new ApiError('Unauthorized', 401);
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(body.detail || `Export failed (${res.status})`, res.status);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="([^"]+)"/);
+  return { blob, filename: match ? match[1] : `E!nsight-Report.${format}` };
+}

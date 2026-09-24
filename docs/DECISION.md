@@ -4,6 +4,68 @@ Short ADRs capturing the "why". Newest first.
 
 ---
 
+## ADR-010 — E!nsight: dashboard-first Q&A, generated SQL as a guardrailed fallback
+**Status:** Accepted · **Date:** 2026-09-23
+
+**Context.** Programme staff repeatedly ask ad-hoc questions ("which CU had
+the lowest LEC delivery rate last term?") that the dashboard's fixed views
+can't answer directly, and today that means someone hand-writes a BigQuery
+query. ADR-003 dropped an analytics chat widget because the reference app's
+version had no in-cluster bot to proxy; this is a different shape of feature
+— it answers from the dashboard's own already-correct endpoints wherever it
+can, and only falls back to a model-generated query, heavily guardrailed,
+when it can't. ADR-003's reasoning doesn't apply to that shape, so this
+supersedes it rather than contradicting it.
+
+**Decision.** Add `app/routers/ensight.py` (`GET /availability`, `POST /ask`)
+implementing the four-step pipeline documented in full in `docs/ENSIGHT.md`:
+plan (route: dashboard/sql/refuse) → call up to 3 existing endpoints
+in-process, or write one SQL query → guardrails (one repair attempt on
+failure) → a four-label answer (Key finding / Insight / Conclusion /
+Recommendation). An endpoint-sourced answer is preferred over a generated
+one wherever possible, since the endpoints already encode every correction
+this team has paid for one audit at a time; a generated-SQL answer is always
+labelled "direct warehouse query" so it's never confused with a screen
+number.
+
+**The one documented exception to ADR-002.** `CLAUDE.md`/ADR-002 ban
+f-stringing user input into SQL. E!nsight's SQL-writing step necessarily
+produces a full query as text — there is no parameterized-query shape for
+"a question in plain English". The guardrails in `core/ensight_guardrails.py`
+are the substitute control: comment-stripped single-statement SELECT/WITH
+only, a fully-qualified table allowlist, no `SELECT *`, a free dry run (catches
+syntax/schema errors and estimates bytes before a cent is spent), a byte
+budget, a PII gate that reads the dry run's *output schema* (never the SQL
+text — that's what tells `COUNT(DISTINCT mentor_id)` apart from `SELECT
+mentor_id`), and `maximum_bytes_billed` on the real job. Underneath all of
+it, the service account has no write access anywhere in the warehouse
+(verified: `create_table` 403s on every dataset) — these checks catch an
+honest mistake early; they are not the security boundary.
+
+**Gated tighter than the rest of the app.** Every other route scopes rows to
+the caller's access; E!nsight instead gates the whole feature to emails
+explicitly listed in `ACCESS_CONFIG["national"]` — excluding `national_only`
+(any other `@experienceeducate.org` address) and all regional/CU staff —
+because it is the one feature that spends real (OpenRouter) money per
+question and turns a typed sentence into a warehouse query. `GET
+/api/ensight/availability` is open to any signed-in user purely so the SPA
+can decide whether to render the tab at all, rather than showing everyone a
+tab that 403s; it also reports the feature off when `OPENROUTER_API_KEY`
+is unset, so an unconfigured deployment degrades cleanly.
+
+**Consequences.** A fourth data-write path joins the three in
+`DATA_ENG_BIGQUERY_TABLES_REQUEST.md` (table 4, `raw_ensight_audit_log`) —
+until that table exists, every question is still answered, but the audit
+insert degrades to a logged warning, same pattern as the digest snapshot
+table. The answer cache and per-user rate limit are in-memory, so they reset
+on pod restart and don't survive the single-process invariant being broken —
+another reason not to add replicas without moving shared state to Redis
+first (ADR-001). Budget roughly US$0.05 and 30-50s per question; up to 5
+model calls (plan, dashboard-answer-or-not, write-SQL, one repair, final
+answer).
+
+---
+
 ## ADR-009 — Learning & Measurement Map: static content, not a data source
 **Status:** Accepted · **Date:** 2026-07-18
 

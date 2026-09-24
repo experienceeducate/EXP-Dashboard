@@ -77,6 +77,7 @@ def current_user(
     user = UserAccess(
         email=payload.get("sub", ""),
         has_national=bool(acc.get("hasNational")),
+        national_only=bool(acc.get("nationalOnly")),
         regions=list(acc.get("regions", [])),
         cus=list(acc.get("cus", [])),
     )

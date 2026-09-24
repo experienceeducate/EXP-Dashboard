@@ -10,8 +10,9 @@ import NationalView, { NATIONAL_TABS } from './views/NationalView.jsx';
 import RegionalView from './views/RegionalView.jsx';
 import CuView from './views/CuView.jsx';
 import GuideView from './views/GuideView.jsx';
+import EnsightView from './views/EnsightView.jsx';
 
-const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide' };
+const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide', ensight: 'E!nsight' };
 const TERM_ORDER = ['term1', 'term2', 'term3'];
 
 const SSO_ERRORS = {
@@ -109,6 +110,7 @@ export default function App() {
   const [summaryData, setSummaryData] = useState([]);
   const [schoolData, setSchoolData] = useState([]);
   const [access, setAccess] = useState(null);
+  const [ensightAvailable, setEnsightAvailable] = useState(false);
   const [dataSource, setDataSource] = useState('bigquery');
   const [loadedAt, setLoadedAt] = useState(null);
 
@@ -191,6 +193,26 @@ export default function App() {
     };
   }, [authed, user]);
 
+  // E!nsight is gated tighter than the rest of the app (listed national users
+  // only, and only once OPENROUTER_API_KEY is configured) — ask the backend
+  // rather than inferring it from the access object, so the tab doesn't
+  // appear only to 403 when clicked. See docs/ENSIGHT.md.
+  useEffect(() => {
+    if (!authed) return;
+    let active = true;
+    api
+      .fetchEnsightAvailability()
+      .then((res) => {
+        if (active) setEnsightAvailable(!!res.available);
+      })
+      .catch(() => {
+        if (active) setEnsightAvailable(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authed]);
+
   // Fetch CU school rows when a CU is selected in CU view.
   useEffect(() => {
     let active = true;
@@ -234,6 +256,7 @@ export default function App() {
     setSummaryData([]);
     setSchoolData([]);
     setAccess(null);
+    setEnsightAvailable(false);
   };
 
   const handleRefresh = () => loadData();
@@ -270,7 +293,10 @@ export default function App() {
   );
   const regionOptions = useMemo(() => (access ? scopedRegions(access, summaryData) : []), [access, summaryData]);
   const cuOptions = useMemo(() => (access ? scopedCUs(access, summaryData, view === 'cu' ? '' : region) : []), [access, summaryData, region, view]);
-  const tabs = useMemo(() => (access ? visibleViewTabs(access) : []), [access]);
+  const tabs = useMemo(() => {
+    const base = access ? visibleViewTabs(access) : [];
+    return ensightAvailable ? [...base, 'ensight'] : base;
+  }, [access, ensightAvailable]);
 
   // School/Mentor filter options — every distinct name on record for the
   // selected CU/year (not term-scoped, so switching term doesn't make the
@@ -306,7 +332,8 @@ export default function App() {
     return <LoadingOverlay progress={loadPct} message={loadMsg} />;
   }
 
-  const headerSubtitle = `${VIEW_LABELS[view] || ''} · ${year} ${getTermLabelShort(term)}`;
+  const headerSubtitle =
+    view === 'ensight' ? VIEW_LABELS.ensight : `${VIEW_LABELS[view] || ''} · ${year} ${getTermLabelShort(term)}`;
 
   return (
     <div>
@@ -318,7 +345,7 @@ export default function App() {
             <p>{headerSubtitle}</p>
           </div>
           <div className="header-right">
-            {view !== 'cu' && view !== 'guide' ? (
+            {view !== 'cu' && view !== 'guide' && view !== 'ensight' ? (
               <select className="header-select" value={year} onChange={(e) => setYear(e.target.value)} aria-label="Year">
                 {years.map((y) => (
                   <option key={y} value={y}>{y}</option>
@@ -431,6 +458,7 @@ export default function App() {
           />
         ) : null}
         {view === 'guide' ? <GuideView /> : null}
+        {view === 'ensight' ? <EnsightView term={term} /> : null}
       </main>
 
       {drill ? (
