@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
 import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
-import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
+import { getIssueKey, getIssueStatus, loadIssueTracker, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend } from './NationalView.jsx';
 
 const N = (v) => Number(v) || 0;
@@ -499,14 +499,21 @@ const STATUS_META = {
 const PRIORITY_ICON = { critical: '🔴', high: '🟠', medium: '🟡' };
 const PRIORITY_COLOR = { critical: C.red, high: '#e67e22', medium: C.yellow };
 
-function AlertResolution({ alert, issueKey, onSaved }) {
+function AlertResolution({ alert, issueKey, region, cu, onSaved }) {
   const iss = getIssueStatus(issueKey);
   const [status, setStatus] = useState(iss.status === 'resolved' ? 'resolved' : iss.status === 'in-progress' ? 'in-progress' : 'in-progress');
   const [notes, setNotes] = useState('');
   const timeline = [...(iss.timeline || [])].reverse();
 
-  const save = () => {
-    updateIssueStatus(issueKey, status, notes.trim() || `Marked ${status}`, 'Dashboard User');
+  const save = async () => {
+    await updateIssueStatus(issueKey, status, {
+      region,
+      cu,
+      issueType: alert.category,
+      issueDetail: alert.title,
+      severity: alert.priority,
+      notes: notes.trim() || `Marked ${status}`,
+    });
     setNotes('');
     onSaved();
   };
@@ -556,6 +563,20 @@ function PriorityAlerts({ data, year, term, cu, schoolData }) {
   const { alerts, bottom5, denom } = useMemo(() => computeCuPriorityAlerts(data, year, term, schoolData), [data, year, term, schoolData]);
   const [openIdx, setOpenIdx] = useState(null);
   const [, setTick] = useState(0);
+  const region = data[0]?.region || '';
+
+  // Issue status/timeline is fetched once per mount (access-scoped server
+  // side) — bump `tick` once it resolves so the synchronous getIssueStatus()
+  // reads below reflect it.
+  useEffect(() => {
+    let active = true;
+    loadIssueTracker().then(() => {
+      if (active) setTick((t) => t + 1);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <>
@@ -580,7 +601,7 @@ function PriorityAlerts({ data, year, term, cu, schoolData }) {
                   </div>
                   <span style={{ background: meta.bg, color: meta.fg, padding: '.2rem .6rem', borderRadius: 999, fontSize: '.72rem', fontWeight: 700, whiteSpace: 'nowrap' }}>{meta.label}</span>
                 </div>
-                {openIdx === i ? <AlertResolution alert={alert} issueKey={issueKey} onSaved={() => setTick((t) => t + 1)} /> : null}
+                {openIdx === i ? <AlertResolution alert={alert} issueKey={issueKey} region={region} cu={cu} onSaved={() => setTick((t) => t + 1)} /> : null}
               </div>
             );
           })
