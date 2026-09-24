@@ -25,6 +25,7 @@ access_mod.ACCESS_CONFIG = access_mod._normalise(
         "national": ["admin@experienceeducate.org"],
         "regional": {"Central": ["central@experienceeducate.org"]},
         "cu": {"mpigi": ["cu@experienceeducate.org"]},
+        "admin": ["analytics-admin@experienceeducate.org"],
     }
 )
 

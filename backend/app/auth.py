@@ -77,8 +77,10 @@ def current_user(
     user = UserAccess(
         email=payload.get("sub", ""),
         has_national=bool(acc.get("hasNational")),
+        national_only=bool(acc.get("nationalOnly")),
         regions=list(acc.get("regions", [])),
         cus=list(acc.get("cus", [])),
+        is_admin=bool(acc.get("isAdmin")),
     )
     if not user.has_any_access:
         raise HTTPException(

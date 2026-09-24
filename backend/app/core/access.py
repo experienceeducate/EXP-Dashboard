@@ -10,8 +10,13 @@ ACCESS_CONFIG shape::
     {
       "national": ["alice@experienceeducate.org", ...],
       "regional": {"Central": ["bob@...", ...], "Eastern": [...]},
-      "cu":       {"mpigi": ["carol@...", ...], "entebbe": [...]}
+      "cu":       {"mpigi": ["carol@...", ...], "entebbe": [...]},
+      "admin":    ["alice@experienceeducate.org", ...]
     }
+
+``admin`` is a separate, independent list — it grants the Admin usage-
+analytics tab and is orthogonal to national/regional/cu row-scoping (an
+admin with no other access still can't see programme rows).
 
 Loaded from ``ACCESS_CONFIG_PATH`` (JSON) if set, else the fallback below (ported
 verbatim from the legacy ``buildFallbackAccessConfig()``).
@@ -122,6 +127,25 @@ def _build_fallback_access_config() -> dict:
             "lugazi": ["kasulejoshua52@gmail.com", "charity.chebet@experienceeducate.org"],
             "hoima": ["rose.kimuli@experienceeducate.org"],
         },
+        # Defaults to a copy of "national" — edit independently to narrow who
+        # gets the Admin usage-analytics tab.
+        "admin": [
+            "afra.nuwasiima@experienceeducate.org",
+            "hellen.namisi@experienceeducate.org",
+            "evelyne.naisanga@experienceeducate.org",
+            "franz.biije@experienceeducate.org",
+            "francis.kusiimwa@experienceeducate.org",
+            "janet.namugaya@experienceeducate.org",
+            "caroline.chandia@experienceeducate.org",
+            "charlotte.aijuka@experienceeducate.org",
+            "john.osikuku@experienceeducate.org",
+            "millicent.mwendwa@experienceeducate.org",
+            "maggie@experienceeducate.org",
+            "veronica@experienceeducate.org",
+            "michael.thiriku@experienceeducate.org",
+            "ovon.m@experienceeducate.org",
+            "aloysie.tumwesigire@experienceeducate.org",
+        ],
     }
 
 
@@ -135,6 +159,7 @@ def _normalise(raw: dict) -> dict:
         "national": clean(raw.get("national")),
         "regional": {r: clean(v) for r, v in (raw.get("regional") or {}).items()},
         "cu": {c: clean(v) for c, v in (raw.get("cu") or {}).items()},
+        "admin": clean(raw.get("admin")),
     }
 
 
@@ -158,6 +183,7 @@ class UserAccess:
     national_only: bool = False
     regions: list[str] = field(default_factory=list)
     cus: list[str] = field(default_factory=list)
+    is_admin: bool = False
 
     @property
     def has_any_access(self) -> bool:
@@ -184,6 +210,7 @@ class UserAccess:
             "nationalOnly": self.national_only,
             "regions": self.regions,
             "cus": self.cus,
+            "isAdmin": self.is_admin,
         }
 
 
@@ -191,6 +218,10 @@ def resolve_access(email: str, config: dict | None = None) -> UserAccess:
     """Map an email to its access scope using ACCESS_CONFIG."""
     config = config or ACCESS_CONFIG
     email = (email or "").strip().lower()
+
+    # Orthogonal to national/regional/cu row-scoping below — an admin with no
+    # other access still can't see programme rows, and vice versa.
+    is_admin = email in config.get("admin", [])
 
     # 1. Explicitly listed national users → full access.
     if email in config.get("national", []):
@@ -200,21 +231,22 @@ def resolve_access(email: str, config: dict | None = None) -> UserAccess:
             national_only=False,
             regions=list(config.get("regional", {}).keys()),
             cus=[],
+            is_admin=is_admin,
         )
 
     # 2. Regional officers.
     regions = [r for r, emails in config.get("regional", {}).items() if email in emails]
     if regions:
-        return UserAccess(email=email, regions=regions)
+        return UserAccess(email=email, regions=regions, is_admin=is_admin)
 
     # 3. CU / FOA.
     cus = [c for c, emails in config.get("cu", {}).items() if email in emails]
     if cus:
-        return UserAccess(email=email, cus=cus)
+        return UserAccess(email=email, cus=cus, is_admin=is_admin)
 
     # 4. Any other email on the allowed domain → National view only.
     if email.endswith("@" + settings.OAUTH_ALLOWED_DOMAIN):
-        return UserAccess(email=email, has_national=True, national_only=True)
+        return UserAccess(email=email, has_national=True, national_only=True, is_admin=is_admin)
 
     # 5. Unknown → no access.
-    return UserAccess(email=email)
+    return UserAccess(email=email, is_admin=is_admin)

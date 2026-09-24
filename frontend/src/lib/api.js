@@ -232,3 +232,50 @@ export const fetchGroupMentoringSummaryByCu = groupMentoringApi.fetchSummaryByCu
 export const fetchGroupMentoringMentors = groupMentoringApi.fetchMentors;
 export const fetchGroupMentoringMentorObservations = groupMentoringApi.fetchMentorObservations;
 export const fetchGroupMentoringComments = groupMentoringApi.fetchComments;
+
+// ── Admin usage analytics ────────────────────────────────────────────────────
+// GET /api/admin/availability → { status, available }
+export async function fetchAdminAvailability() {
+  return request('/api/admin/availability');
+}
+
+// GET /api/admin/analytics-summary?days=30 → { status, page_views_by_tab,
+// active_users, total_sessions, avg_session_seconds }
+export async function fetchAdminAnalytics(days = 30) {
+  return request(`/api/admin/analytics-summary?days=${encodeURIComponent(days)}`);
+}
+
+// POST /api/analytics/event — fire-and-forget usage tracking. Never throws:
+// a tracking hiccup shouldn't surface as a user-visible error or block
+// navigation, so failures are swallowed here rather than left to callers.
+export async function trackEvent(payload) {
+  try {
+    await request('/api/analytics/event', { method: 'POST', body: payload });
+  } catch {
+    /* best-effort */
+  }
+}
+
+// Same as trackEvent, but with `keepalive: true` so the request survives page
+// unload/tab-hide (a plain fetch started in beforeunload/visibilitychange can
+// be cancelled by the browser before it completes). Not navigator.sendBeacon:
+// that can't carry the Authorization header, and putting the JWT in the URL
+// instead would leak it into server access logs.
+export function trackEventBeacon(payload) {
+  try {
+    const token = getToken();
+    if (!token) return;
+    fetch(`${BASE}/api/analytics/event`, {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Exp-Client': CLIENT_HEADER,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  } catch {
+    /* best-effort */
+  }
+}
