@@ -358,7 +358,9 @@ export async function updateTaskStatus(payload) {
 // ── E-Lab completion (mentor digital-lesson activity) ───────────────────────
 // GET /api/elab/summary-by-cu?term=term3 → { status, term, expected_sessions,
 // data: [{ region, cu, active_mentors, sessions_completed, sessions_in_progress,
-// overall_completion_pct, sessions: [...], breakdowns: [...] }] }
+// session_completion_pct (session-instance rate), mentors_fully_completed,
+// mentor_completion_pct (mentors who finished ALL sessions — a different,
+// stricter metric than session_completion_pct), sessions: [...], breakdowns: [...] }] }
 export async function fetchElabSummaryByCu(term = 'term3') {
   return request(`/api/elab/summary-by-cu?term=${encodeURIComponent(term)}`);
 }
