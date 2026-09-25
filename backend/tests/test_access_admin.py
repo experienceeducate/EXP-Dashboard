@@ -8,6 +8,31 @@ call may have already populated it with an empty result).
 from app.core import access, database
 
 
+def test_load_dynamic_mapping_passes_a_timeout():
+    """Regression: this call runs on EVERY request via current_user(). An
+    earlier incident (see docs/CONTEXT.md) came from a lifespan startup hook
+    awaiting this with no bound — the query itself must always carry an
+    explicit timeout, independent of any caller-side fix, so it can never
+    hang unbounded again."""
+    access._DYNAMIC_MAPPING_CACHE.clear()
+    seen_kwargs = {}
+
+    def fake_query(sql, params=None, timeout=None):
+        seen_kwargs["timeout"] = timeout
+        return []
+
+    import app.core.database as database_mod
+    orig = database_mod.query_rows_ignore_missing_table
+    database_mod.query_rows_ignore_missing_table = fake_query
+    try:
+        access._load_dynamic_mapping(use_cache=False)
+    finally:
+        database_mod.query_rows_ignore_missing_table = orig
+
+    assert seen_kwargs["timeout"] == access._LIVE_LOOKUP_TIMEOUT_SECONDS
+    assert seen_kwargs["timeout"] is not None
+
+
 def test_load_dynamic_mapping_ignores_malformed_rows():
     """Regression: current_user() calls this on EVERY request, including
     ones whose tests mock database.run_query with a totally different row
@@ -15,7 +40,7 @@ def test_load_dynamic_mapping_ignores_malformed_rows():
     all). It must skip those rows rather than KeyError."""
     access._DYNAMIC_MAPPING_CACHE.clear()
 
-    def fake_query(sql, params=None):
+    def fake_query(sql, params=None, timeout=None):
         return [{"region": "Central", "cu": "Mpigi", "overall_quality_index": 2.5}]
 
     import app.core.database as database_mod
@@ -31,7 +56,7 @@ def test_load_dynamic_mapping_ignores_malformed_rows():
 def test_get_live_config_merges_dynamic_over_static_for_touched_keys_only():
     access._DYNAMIC_MAPPING_CACHE.clear()
 
-    def fake_query(sql, params=None):
+    def fake_query(sql, params=None, timeout=None):
         return [{"scope_type": "cu", "scope_key": "mpigi", "user_email": "new.foa@experienceeducate.org", "action": "add"}]
 
     import app.core.database as database_mod
@@ -51,7 +76,7 @@ def test_get_live_config_merges_dynamic_over_static_for_touched_keys_only():
 def test_get_live_config_reconstructs_latest_action_wins():
     access._DYNAMIC_MAPPING_CACHE.clear()
 
-    def fake_query(sql, params=None):
+    def fake_query(sql, params=None, timeout=None):
         # Ascending by event_timestamp, as the real query orders — a switch:
         # remove the old FOA, add a new one.
         return [

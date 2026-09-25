@@ -39,18 +39,28 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          # timeoutSeconds/failureThreshold set explicitly (k8s defaults are
+          # 1s/3) — a transient slow /health response should never be able
+          # to cascade into a kill on its own. See docs/CONTEXT.md incident
+          # note: a startup hook that briefly made /health slow to respond
+          # once combined with the 1s-default timeout to fail every
+          # liveness check and put the pod in a kill-restart loop.
           readinessProbe:
             httpGet:
               path: /health
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
       volumes:
         - name: gcp-key
           secret:

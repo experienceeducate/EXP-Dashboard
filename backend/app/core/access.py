@@ -194,6 +194,11 @@ ACCESS_CONFIG: dict = _load_access_config()
 # bound for everyone else.
 _DYNAMIC_MAPPING_CACHE: TTLCache = TTLCache(maxsize=1, ttl=30)
 _DYNAMIC_MAPPING_CACHE_KEY = "mapping"
+# Bounds every live lookup below — this runs on EVERY request via
+# current_user(), so an unbounded call here is an availability risk, not
+# just a slow request. A missed deadline degrades to "no overrides" (see
+# _load_dynamic_mapping's docstring), same as any other failure.
+_LIVE_LOOKUP_TIMEOUT_SECONDS = 5.0
 
 
 def invalidate_dynamic_mapping_cache() -> None:
@@ -221,7 +226,7 @@ def _load_dynamic_mapping(use_cache: bool = True) -> dict:
             FROM `{settings.access_mapping_table}`
             ORDER BY event_timestamp ASC
         """
-        rows = database.query_rows_ignore_missing_table(sql)
+        rows = database.query_rows_ignore_missing_table(sql, timeout=_LIVE_LOOKUP_TIMEOUT_SECONDS)
         latest: dict[tuple, str] = {}
         for r in rows:
             scope_type = r.get("scope_type")

@@ -4,6 +4,7 @@ New routes go in ``app/routers/<domain>.py`` and are included below.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -20,16 +21,41 @@ from app.routers import access_admin, admin, analytics, cu, elab, ensight, healt
 logger = logging.getLogger(__name__)
 
 
+async def _warm_access_cache() -> None:
+    """Best-effort: warms the BigQuery client + the access-mapping cache
+    shortly after boot, in the background, so the first real request's
+    current_user() call is more likely to find it already warm. Scheduled
+    as a fire-and-forget task (never awaited by the lifespan handler below)
+    — regardless of how long this takes or whether it fails, it must never
+    delay "startup complete".
+
+    Incident note: an earlier version of this ran synchronously, awaited,
+    inside the lifespan handler. Starlette/uvicorn won't serve ANY request —
+    including /health — until lifespan startup completes, and the
+    underlying BigQuery call had no timeout at the time. With a single k8s
+    replica and default-timeout (1s) liveness probes, one slow call was
+    enough to fail every liveness check before startup ever finished,
+    causing kubelet to kill and restart the pod — which reran the same slow
+    call, in a loop. That's what actually produced a ~60s "the page just
+    hangs" symptom in production. get_live_config()'s underlying query now
+    also carries an explicit timeout (see core/access.py,
+    core/database.py's run_query) as a second, independent bound — but
+    lifespan startup must never again be the thing that awaits it.
+    """
+    try:
+        # get_live_config() is a blocking sync call (the BigQuery client has
+        # no async API) — run it in a thread so it can never block the event
+        # loop (and therefore every concurrent request, including /health)
+        # for however long it takes, timeout or not.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, access.get_live_config)
+    except Exception:  # noqa: BLE001 — best-effort; the request path already degrades gracefully on its own.
+        logger.warning("Background cache warm-up failed; will retry lazily on first request", exc_info=True)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # Warms the BigQuery client + the access-mapping cache once at boot
-    # (~seconds) so the first real login/request of the pod's life doesn't
-    # pay that cost interactively — current_user()/resolve_access() call
-    # this same live-config lookup on every request (see core/access.py).
-    try:
-        access.get_live_config()
-    except Exception:  # noqa: BLE001 — best-effort warm-up, never block startup on it.
-        logger.warning("Startup cache warm-up failed; will retry lazily on first request", exc_info=True)
+    asyncio.create_task(_warm_access_cache())
     yield
 
 # Paths that bypass the custom client-header guard. Browsers don't attach custom
