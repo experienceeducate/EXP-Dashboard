@@ -124,6 +124,21 @@ def summary_by_cu(
       FROM elab_sessions
       GROUP BY region, cu
     ),
+    -- Session completion (above) counts individual mentor x session
+    -- instances — it can exceed active_mentors once mentors have done more
+    -- than one session each. Mentor completion (below) is a distinct
+    -- metric: how many mentors finished ALL of the term's expected
+    -- sessions, capped at active_mentors. Keep both, never conflate them.
+    mentor_totals AS (
+      SELECT region, cu, mentor_id, COUNTIF(finished_at IS NOT NULL) AS mentor_sessions_completed
+      FROM elab_sessions
+      GROUP BY region, cu, mentor_id
+    ),
+    mentor_completion AS (
+      SELECT region, cu, COUNTIF(mentor_sessions_completed = {len(lec_nums)}) AS mentors_fully_completed
+      FROM mentor_totals
+      GROUP BY region, cu
+    ),
     per_session AS (
       SELECT region, cu, lec_num, ANY_VALUE(lesson_name) AS lesson_name,
         COUNTIF(finished_at IS NOT NULL) AS completed_mentors
@@ -171,11 +186,14 @@ def summary_by_cu(
       COALESCE(t.mentors_with_activity, 0) AS mentors_with_activity,
       COALESCE(t.sessions_completed, 0) AS sessions_completed,
       COALESCE(t.sessions_in_progress, 0) AS sessions_in_progress,
-      ROUND(SAFE_DIVIDE(COALESCE(t.sessions_completed, 0), r.active_mentors * {len(lec_nums)}) * 100, 1) AS overall_completion_pct,
+      ROUND(SAFE_DIVIDE(COALESCE(t.sessions_completed, 0), r.active_mentors * {len(lec_nums)}) * 100, 1) AS session_completion_pct,
+      COALESCE(mc.mentors_fully_completed, 0) AS mentors_fully_completed,
+      ROUND(SAFE_DIVIDE(COALESCE(mc.mentors_fully_completed, 0), r.active_mentors) * 100, 1) AS mentor_completion_pct,
       COALESCE(ps.sessions, []) AS sessions,
       COALESCE(bs.breakdowns, []) AS breakdowns
     FROM cu_roster r
     LEFT JOIN cu_totals t ON t.region = r.region AND t.cu = r.cu
+    LEFT JOIN mentor_completion mc ON mc.region = r.region AND mc.cu = r.cu
     LEFT JOIN per_session_agg ps ON ps.region = r.region AND ps.cu = r.cu
     LEFT JOIN by_slice_agg bs ON bs.region = r.region AND bs.cu = r.cu
     ORDER BY r.region, r.cu
