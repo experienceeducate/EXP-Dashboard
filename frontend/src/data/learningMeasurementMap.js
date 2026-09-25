@@ -461,7 +461,7 @@ export const LMM_METRICS = [
     "status": "monitor",
     "liveStatus": "live",
     "jumpTab": "lec",
-    "liveNote": "Avg Scholars/LEC — LEC Delivery tab; per-school >60-scholar buckets computable from school-level data."
+    "liveNote": "Avg Scholars/LEC — LEC Delivery tab; Large Class Size Analysis below (scholars vs. non-scholars vs. total learners per session, Term 1 vs. Term 2) computed from school-level data."
   },
   {
     "pillar": "Product Health Metrics",
