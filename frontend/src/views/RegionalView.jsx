@@ -3,7 +3,8 @@ import * as api from '../lib/api.js';
 import { getLECsForTerm, C } from '../lib/config.js';
 import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, mergeRowsAcrossTerms, sum } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
-import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap } from '../components/ui.jsx';
+import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap, ElabSliceTable } from '../components/ui.jsx';
+import { ELAB_LEC_NUMS, aggregateElabBreakdown, aggregateElabPerSession } from '../lib/elab.js';
 import { getIssueKey, getIssueStatus, loadIssueTracker, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend, HeatmapInsights } from './NationalView.jsx';
 
@@ -174,73 +175,8 @@ function ObservationByCU({ data }) {
 // v1 is Term 3 only (the term the completion-rate denominator was scoped to
 // — see docs/DECISION.md). Fetched once per mount, scoped server-side, then
 // filtered to this region client-side — same pattern Mentor Quality uses in
-// NationalView.jsx.
-const ELAB_LEC_NUMS = [15, 16, 17, 18, 19, 20];
-
-function aggregateElabBreakdown(regionRows, dimension) {
-  const totals = {};
-  for (const cu of regionRows) {
-    for (const b of cu.breakdowns || []) {
-      if (b.dimension !== dimension) continue;
-      const key = b.slice_value;
-      if (!totals[key]) totals[key] = { slice_value: key, mentors_with_activity: 0, sessions_completed: 0, sessions_in_progress: 0 };
-      totals[key].mentors_with_activity += N(b.mentors_with_activity);
-      totals[key].sessions_completed += N(b.sessions_completed);
-      totals[key].sessions_in_progress += N(b.sessions_in_progress);
-    }
-  }
-  return Object.values(totals).sort((a, b) => String(a.slice_value).localeCompare(String(b.slice_value)));
-}
-
-function aggregateElabPerSession(regionRows) {
-  const totals = {};
-  for (const cu of regionRows) {
-    for (const s of cu.sessions || []) {
-      if (!totals[s.lec_num]) totals[s.lec_num] = { lec_num: s.lec_num, lesson_name: s.lesson_name, completed_mentors: 0 };
-      totals[s.lec_num].completed_mentors += N(s.completed_mentors);
-    }
-  }
-  return Object.values(totals).sort((a, b) => a.lec_num - b.lec_num);
-}
-
-const ELAB_SLICE_LABELS = { mentor: 'Mentor', co_mentor: 'Co-Mentor', female: 'Female', male: 'Male', unknown: 'Unknown' };
-
-function ElabSliceTable({ title, rows }) {
-  if (rows.length === 0) return null;
-  return (
-    <div style={{ marginTop: '1rem' }}>
-      <div style={{ fontWeight: 700, fontSize: '.85rem', marginBottom: '.4rem', color: '#555' }}>{title}</div>
-      <div className="table-wrap">
-        <table className="breakdown-table">
-          <thead>
-            <tr>
-              <th>Slice</th>
-              <th className="center">Mentors w/ Activity</th>
-              <th className="center">Sessions Completed</th>
-              <th className="center">In Progress</th>
-              <th className="center">% of Attempted Sessions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const expected = r.mentors_with_activity * ELAB_LEC_NUMS.length;
-              const pct = expected > 0 ? formatPercentage1(r.sessions_completed, expected) : 0;
-              return (
-                <tr key={r.slice_value}>
-                  <td className="item-name">{ELAB_SLICE_LABELS[r.slice_value] || r.slice_value}</td>
-                  <td className="center">{r.mentors_with_activity}</td>
-                  <td className="center">{r.sessions_completed}</td>
-                  <td className="center">{r.sessions_in_progress}</td>
-                  <td className="center">{pct}%</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+// NationalView.jsx. Aggregation helpers live in lib/elab.js (shared with
+// NationalView's Mentor Quality > E-Lab sub-tab); ElabSliceTable in ui.jsx.
 
 function ElabCompletion({ region }) {
   const [rows, setRows] = useState(null); // null = loading

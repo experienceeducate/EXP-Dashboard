@@ -1,6 +1,7 @@
 // Small reusable presentational components shared across views.
-import { ragColor } from '../lib/format.js';
+import { ragColor, formatPercentage1 } from '../lib/format.js';
 import { C } from '../lib/config.js';
+import { ELAB_LEC_NUMS, ELAB_SLICE_LABELS } from '../lib/elab.js';
 
 // LEC × Week delivery heatmap (#schools per cell). Shared by National + Regional.
 // `matrix` = { lecN: { 'Wk n': count } } (see metrics.buildLecWeekMatrix).
@@ -194,4 +195,44 @@ export function Tag({ tag }) {
 
 export function Placeholder({ label }) {
   return <div className="placeholder">{label || 'Coming soon'}</div>;
+}
+
+// E-Lab role/gender breakdown table — shared by RegionalView and NationalView's
+// Mentor Quality > E-Lab sub-tab (see lib/elab.js for the aggregation helpers
+// that produce `rows`).
+export function ElabSliceTable({ title, rows }) {
+  if (rows.length === 0) return null;
+  return (
+    <div style={{ marginTop: '1rem' }}>
+      <div style={{ fontWeight: 700, fontSize: '.85rem', marginBottom: '.4rem', color: '#555' }}>{title}</div>
+      <div className="table-wrap">
+        <table className="breakdown-table">
+          <thead>
+            <tr>
+              <th>Slice</th>
+              <th className="center">Mentors w/ Activity</th>
+              <th className="center">Sessions Completed</th>
+              <th className="center">In Progress</th>
+              <th className="center">% of Attempted Sessions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const expected = r.mentors_with_activity * ELAB_LEC_NUMS.length;
+              const pct = expected > 0 ? formatPercentage1(r.sessions_completed, expected) : 0;
+              return (
+                <tr key={r.slice_value}>
+                  <td className="item-name">{ELAB_SLICE_LABELS[r.slice_value] || r.slice_value}</td>
+                  <td className="center">{r.mentors_with_activity}</td>
+                  <td className="center">{r.sessions_completed}</td>
+                  <td className="center">{r.sessions_in_progress}</td>
+                  <td className="center">{pct}%</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }

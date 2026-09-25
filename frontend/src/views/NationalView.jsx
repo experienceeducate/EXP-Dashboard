@@ -23,7 +23,8 @@ import {
   sum,
 } from '../lib/metrics.js';
 import { ragColor, ragKpiClass, delta, num, getGMLabel, formatPercentage1 } from '../lib/format.js';
-import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, ScoreCard, Placeholder } from '../components/ui.jsx';
+import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, ScoreCard, Placeholder, ElabSliceTable } from '../components/ui.jsx';
+import { ELAB_LEC_NUMS, aggregateElabBreakdown, aggregateElabPerSession } from '../lib/elab.js';
 
 const REGIONS = ['Central', 'East', 'North', 'South', 'West'];
 
@@ -2412,6 +2413,7 @@ const MQ_SUBTABS = [
   { id: 'lec', label: '📋 LEC Observation' },
   { id: 'group-mentoring', label: '👥 Group Mentoring' },
   { id: 'skills-day', label: '🧴 Skills Day' },
+  { id: 'elab', label: '📱 E-Lab' },
 ];
 
 function MentorQualityTab({ term, year, summaryData }) {
@@ -2552,7 +2554,149 @@ function MentorQualityTab({ term, year, summaryData }) {
           }}
         />
       ) : null}
+      {subTab === 'elab' ? <ElabNationalSubTab /> : null}
     </div>
+  );
+}
+
+// ── E-Lab (mentor digital-lesson activity — 3rd BigQuery source) ───────────
+// v1 is Term 3 only — see docs/DECISION.md. Server already scopes rows to
+// what this caller may see; national users get every region/CU.
+function ElabNationalSubTab() {
+  const [rows, setRows] = useState(null); // null = loading
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    api
+      .fetchElabSummaryByCu('term3')
+      .then((res) => {
+        if (active) setRows(res.data || []);
+      })
+      .catch((e) => {
+        if (active) {
+          setRows([]);
+          setError(e.message || 'Failed to load e-lab data.');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (rows === null) return <Placeholder label="Loading e-lab data…" />;
+  if (error) return <Placeholder label={error} />;
+  if (rows.length === 0) return <Placeholder label="No e-lab activity recorded for Term 3 yet." />;
+
+  const totalActive = rows.reduce((s, d) => s + (Number(d.active_mentors) || 0), 0);
+  const totalCompleted = rows.reduce((s, d) => s + (Number(d.sessions_completed) || 0), 0);
+  const totalInProgress = rows.reduce((s, d) => s + (Number(d.sessions_in_progress) || 0), 0);
+  const overallPct = formatPercentage1(totalCompleted, totalActive * ELAB_LEC_NUMS.length);
+
+  const byRegion = new Map();
+  rows.forEach((cu) => {
+    const key = cu.region || 'Unknown';
+    if (!byRegion.has(key)) byRegion.set(key, { region: key, active_mentors: 0, sessions_completed: 0, sessions_in_progress: 0 });
+    const r = byRegion.get(key);
+    r.active_mentors += Number(cu.active_mentors) || 0;
+    r.sessions_completed += Number(cu.sessions_completed) || 0;
+    r.sessions_in_progress += Number(cu.sessions_in_progress) || 0;
+  });
+  const regionRows = [...byRegion.values()].sort((a, b) => a.region.localeCompare(b.region));
+  const cuRanked = [...rows].sort((a, b) => (Number(b.overall_completion_pct) || 0) - (Number(a.overall_completion_pct) || 0));
+  const perSession = aggregateElabPerSession(rows);
+  const byRole = aggregateElabBreakdown(rows, 'role');
+  const byGender = aggregateElabBreakdown(rows, 'gender');
+
+  return (
+    <>
+      <div className="score-cards" style={{ marginBottom: '1.25rem' }}>
+        <ScoreCard tone="blue" label="Active Mentors" value={totalActive} subtext="term 3 (gold model)" />
+        <ScoreCard tone="green" label="Sessions Completed" value={totalCompleted} subtext={`of ${totalActive * ELAB_LEC_NUMS.length} expected`} />
+        <ScoreCard tone="yellow" label="Sessions In Progress" value={totalInProgress} subtext="started, not finished" />
+        <ScoreCard tone={overallPct >= 60 ? 'green' : overallPct >= 40 ? 'yellow' : 'red'} label="Overall Completion" value={`${overallPct}%`} subtext="6 LEC-linked sessions" />
+      </div>
+      <Section title="🗺️ Regional Breakdown" subtitle="Active mentors, completed and in-progress sessions by region">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr><th>Region</th><th className="center">Active Mentors</th><th className="center">Completed</th><th className="center">In Progress</th><th className="center">Completion %</th></tr>
+            </thead>
+            <tbody>
+              {regionRows.map((r) => {
+                const pct = formatPercentage1(r.sessions_completed, r.active_mentors * ELAB_LEC_NUMS.length);
+                const col = ragColor(pct, 75, 50);
+                return (
+                  <tr key={r.region}>
+                    <td className="item-name">{r.region}</td>
+                    <td className="center">{r.active_mentors}</td>
+                    <td className="center">{r.sessions_completed}</td>
+                    <td className="center">{r.sessions_in_progress}</td>
+                    <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr style={{ fontWeight: 700, background: '#f8f9fa' }}>
+                <td><strong>NATIONAL TOTAL</strong></td>
+                <td className="center">{totalActive}</td>
+                <td className="center">{totalCompleted}</td>
+                <td className="center">{totalInProgress}</td>
+                <td className="center">{overallPct}%</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </Section>
+      <Section title="📊 CU Rankings" subtitle="All CUs, ranked by e-lab completion %">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr><th>CU</th><th>Region</th><th className="center">Active Mentors</th><th className="center">Completed</th><th className="center">In Progress</th><th className="center">Completion %</th></tr>
+            </thead>
+            <tbody>
+              {cuRanked.map((cu) => {
+                const pct = Number(cu.overall_completion_pct) || 0;
+                const col = ragColor(pct, 75, 50);
+                return (
+                  <tr key={`${cu.region}-${cu.cu}`}>
+                    <td className="item-name">{cu.cu}</td>
+                    <td>{cu.region}</td>
+                    <td className="center">{Number(cu.active_mentors) || 0}</td>
+                    <td className="center">{Number(cu.sessions_completed) || 0}</td>
+                    <td className="center">{Number(cu.sessions_in_progress) || 0}</td>
+                    <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+      <Section title="📋 Per Session" subtitle="Share of active mentors nationally who completed each session">
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr><th>Session</th><th className="center">Completed</th><th className="center">% of Active Mentors</th></tr>
+            </thead>
+            <tbody>
+              {perSession.map((s) => (
+                <tr key={s.lec_num}>
+                  <td className="item-name">{s.lesson_name || `LEC ${s.lec_num}`}</td>
+                  <td className="center">{s.completed_mentors}</td>
+                  <td className="center">{formatPercentage1(s.completed_mentors, totalActive)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+      <Section title="👤 Mentor vs Co-Mentor & Gender" subtitle="National breakdown — against mentors with any e-lab activity, not the full active roster">
+        <ElabSliceTable title="Mentor vs Co-Mentor" rows={byRole} />
+        <ElabSliceTable title="Gender" rows={byGender} />
+      </Section>
+    </>
   );
 }
 
