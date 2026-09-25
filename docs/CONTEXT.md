@@ -111,6 +111,26 @@ Single replica per service; **pod restart is the recovery path.**
   E!nsight's national-only-excluded gate depends on this field surviving
   every request, not just the first — regression-tested in
   `test_auth_and_access.py::test_national_only_survives_the_jwt_round_trip`.
+- **Never `await` an unbounded external call inside the FastAPI `lifespan`
+  startup hook (`main.py`).** Starlette/uvicorn serve NO request — not even
+  `/health` — until lifespan startup completes. Incident: a startup hook
+  once synchronously warmed `access.get_live_config()` (a BigQuery call with
+  no timeout at the time). With a single k8s replica and default-timeout
+  (1s) liveness probes, one slow call was enough to fail every liveness
+  check before startup ever finished, so kubelet killed and restarted the
+  pod — which reran the same slow call, in a loop. Looked like "the page
+  just hangs for ~60s" from a user's perspective (3 failed checks × 20s
+  `periodSeconds` ≈ the delay). Fixed by (1) making the warm-up a
+  fire-and-forget background task run in a thread executor (never awaited
+  by the lifespan handler, never blocks the event loop when it does run —
+  see `main.py::_warm_access_cache`), and (2) giving the underlying query an
+  explicit timeout regardless (`core/access.py`'s `_LIVE_LOOKUP_TIMEOUT_SECONDS`,
+  `core/database.py::run_query`'s `timeout` param) so it's bounded even
+  outside the startup path. Also bumped both probes' `timeoutSeconds`/
+  `failureThreshold` off the 1s/3 default as a second, independent guard —
+  see the note in `k8s/backend/deployment.yaml` (requires a manual
+  `kubectl apply`, see Deployment notes below — merging to `main` alone
+  won't apply it).
 
 ## Deployment notes
 - **CI does NOT reconcile k8s manifests.** `deploy.yml` only does

@@ -52,6 +52,7 @@ def run_query(
     *,
     scope_key: str = "public",
     use_cache: bool = True,
+    timeout: float | None = None,
 ) -> list[dict[str, Any]]:
     """Execute a parameterised query and return rows as dicts.
 
@@ -59,6 +60,18 @@ def run_query(
     (scope_key, sql, params). ``scope_key`` MUST encode anything that changes
     which rows a caller may see (e.g. their access scope) so two users with
     different scopes never share a cache entry.
+
+    ``timeout`` (seconds) bounds ``.result()``'s wait for the query job —
+    raises ``concurrent.futures.TimeoutError`` past that, instead of
+    inheriting the client library's own default retry/poll deadline. Give
+    every caller on a hot, unconditional path (e.g. something current_user()
+    calls on every request) an explicit short timeout — an unbounded call
+    there is a production-availability risk, not just a slow request. See
+    core/access.py's get_live_config()/_load_dynamic_mapping() for why: a
+    lifespan startup hook once awaited this with no timeout, blocking
+    uvicorn from serving even /health until it finished — with a single
+    k8s replica and default 1s-timeout liveness probes, one slow call was
+    enough to fail every liveness check and trigger a kill-restart loop.
     """
     params = list(params or [])
     key = make_key(scope_key, sql, [(_param_repr(p)) for p in params])
@@ -67,7 +80,7 @@ def run_query(
         return query_cache[key]
 
     job_config = bigquery.QueryJobConfig(query_parameters=params)
-    rows = [dict(row) for row in get_client().query(sql, job_config=job_config).result()]
+    rows = [dict(row) for row in get_client().query(sql, job_config=job_config).result(timeout=timeout)]
 
     if use_cache:
         query_cache[key] = rows
@@ -96,7 +109,7 @@ def insert_rows(table_ref: str, rows: list[dict]) -> list[dict]:
         return [{"error": f"Table {table_ref} not accessible: {exc}"}]
 
 
-def query_rows_ignore_missing_table(sql: str, params=None) -> list[dict[str, Any]]:
+def query_rows_ignore_missing_table(sql: str, params=None, *, timeout: float | None = None) -> list[dict[str, Any]]:
     """Like run_query, but returns [] instead of raising if the target table
     doesn't exist yet — used for app-owned tables data engineering hasn't
     created yet. See insert_rows' docstring for why both NotFound and
@@ -104,7 +117,7 @@ def query_rows_ignore_missing_table(sql: str, params=None) -> list[dict[str, Any
     from google.api_core.exceptions import Forbidden, NotFound
 
     try:
-        return run_query(sql, params, use_cache=False)
+        return run_query(sql, params, use_cache=False, timeout=timeout)
     except (NotFound, Forbidden):
         return []
 
