@@ -10,9 +10,10 @@ import NationalView, { NATIONAL_TABS } from './views/NationalView.jsx';
 import RegionalView from './views/RegionalView.jsx';
 import CuView from './views/CuView.jsx';
 import GuideView from './views/GuideView.jsx';
+import EnsightView from './views/EnsightView.jsx';
 import AdminView from './views/AdminView.jsx';
 
-const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide', admin: 'Admin' };
+const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide', ensight: 'E!nsight', admin: 'Admin' };
 const TERM_ORDER = ['term1', 'term2', 'term3'];
 
 const SSO_ERRORS = {
@@ -110,6 +111,7 @@ export default function App() {
   const [summaryData, setSummaryData] = useState([]);
   const [schoolData, setSchoolData] = useState([]);
   const [access, setAccess] = useState(null);
+  const [ensightAvailable, setEnsightAvailable] = useState(false);
   const [adminAvailable, setAdminAvailable] = useState(false);
   const [dataSource, setDataSource] = useState('bigquery');
   const [loadedAt, setLoadedAt] = useState(null);
@@ -192,6 +194,26 @@ export default function App() {
       active = false;
     };
   }, [authed, user]);
+
+  // E!nsight is gated tighter than the rest of the app (listed national users
+  // only, and only once OPENROUTER_API_KEY is configured) — ask the backend
+  // rather than inferring it from the access object, so the tab doesn't
+  // appear only to 403 when clicked. See docs/ENSIGHT.md.
+  useEffect(() => {
+    if (!authed) return;
+    let active = true;
+    api
+      .fetchEnsightAvailability()
+      .then((res) => {
+        if (active) setEnsightAvailable(!!res.available);
+      })
+      .catch(() => {
+        if (active) setEnsightAvailable(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authed]);
 
   // Admin usage analytics is gated to ACCESS_CONFIG["admin"] — ask the
   // backend rather than inferring it, so the tab doesn't appear only to
@@ -292,6 +314,7 @@ export default function App() {
     setSummaryData([]);
     setSchoolData([]);
     setAccess(null);
+    setEnsightAvailable(false);
     setAdminAvailable(false);
   };
 
@@ -331,8 +354,11 @@ export default function App() {
   const cuOptions = useMemo(() => (access ? scopedCUs(access, summaryData, view === 'cu' ? '' : region) : []), [access, summaryData, region, view]);
   const tabs = useMemo(() => {
     const base = access ? visibleViewTabs(access) : [];
-    return adminAvailable ? [...base, 'admin'] : base;
-  }, [access, adminAvailable]);
+    let result = base;
+    if (ensightAvailable) result = [...result, 'ensight'];
+    if (adminAvailable) result = [...result, 'admin'];
+    return result;
+  }, [access, ensightAvailable, adminAvailable]);
 
   // School/Mentor filter options — every distinct name on record for the
   // selected CU/year (not term-scoped, so switching term doesn't make the
@@ -369,7 +395,9 @@ export default function App() {
   }
 
   const headerSubtitle =
-    view === 'admin' ? VIEW_LABELS.admin : `${VIEW_LABELS[view] || ''} · ${year} ${getTermLabelShort(term)}`;
+    view === 'ensight' ? VIEW_LABELS.ensight :
+    view === 'admin' ? VIEW_LABELS.admin :
+    `${VIEW_LABELS[view] || ''} · ${year} ${getTermLabelShort(term)}`;
 
   return (
     <div>
@@ -381,7 +409,7 @@ export default function App() {
             <p>{headerSubtitle}</p>
           </div>
           <div className="header-right">
-            {view !== 'cu' && view !== 'guide' && view !== 'admin' ? (
+            {view !== 'cu' && view !== 'guide' && view !== 'ensight' && view !== 'admin' ? (
               <select className="header-select" value={year} onChange={(e) => setYear(e.target.value)} aria-label="Year">
                 {years.map((y) => (
                   <option key={y} value={y}>{y}</option>
@@ -494,6 +522,7 @@ export default function App() {
           />
         ) : null}
         {view === 'guide' ? <GuideView /> : null}
+        {view === 'ensight' ? <EnsightView term={term} /> : null}
         {view === 'admin' ? <AdminView /> : null}
       </main>
 

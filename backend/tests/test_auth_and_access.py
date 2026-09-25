@@ -78,6 +78,19 @@ def test_login_no_access_email_403(client, client_headers):
     assert r.status_code == 403
 
 
+def test_national_only_survives_the_jwt_round_trip(client, client_headers, make_token):
+    # Regression: current_user() must reconstruct nationalOnly from the JWT
+    # payload, not just hasNational/regions/cus — E!nsight's access gate
+    # (core/access.py via routers/ensight.py) depends on this distinction
+    # surviving every request, not just the initial login response.
+    token = make_token("nobody.special@experienceeducate.org")
+    r = client.get("/api/auth/me", headers={**client_headers, "Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    user = r.json()["user"]
+    assert user["hasNational"] is True
+    assert user["nationalOnly"] is True
+
+
 def test_resolve_admin_is_orthogonal_to_national():
     a = resolve_access("analytics-admin@experienceeducate.org")
     assert a.is_admin is True

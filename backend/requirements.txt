@@ -9,3 +9,8 @@ cachetools==5.5.2
 pydantic-settings==2.11.0
 python-dotenv==1.1.1
 itsdangerous==2.2.0
+openai==1.59.6
+# E!nsight's export (app/core/ensight_export.py): a PowerPoint deck or Word
+# report built from selected answers, house-styled per docs/DECISION.md.
+python-pptx==1.0.2
+python-docx==1.2.0
