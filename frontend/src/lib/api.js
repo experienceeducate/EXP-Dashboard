@@ -279,3 +279,14 @@ export function trackEventBeacon(payload) {
     /* best-effort */
   }
 }
+
+// ── Issue tracking (Regional Issues / CU Priority Alerts follow-up) ─────────
+// GET /api/tasks → { status, tasks: { [issue_key]: { status, timeline } } }
+export async function fetchTaskStatuses() {
+  return request('/api/tasks');
+}
+
+// POST /api/tasks → { status, timestamp, user_email, notes }
+export async function updateTaskStatus(payload) {
+  return request('/api/tasks', { method: 'POST', body: payload });
+}
