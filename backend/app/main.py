@@ -4,14 +4,33 @@ New routes go in ``app/routers/<domain>.py`` and are included below.
 """
 from __future__ import annotations
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import auth
+from app.core import access
 from app.core.config import settings
-from app.routers import admin, analytics, cu, elab, ensight, health, mentor_quality, overview, tasks
+from app.routers import access_admin, admin, analytics, cu, elab, ensight, health, mentor_quality, overview, tasks
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Warms the BigQuery client + the access-mapping cache once at boot
+    # (~seconds) so the first real login/request of the pod's life doesn't
+    # pay that cost interactively — current_user()/resolve_access() call
+    # this same live-config lookup on every request (see core/access.py).
+    try:
+        access.get_live_config()
+    except Exception:  # noqa: BLE001 — best-effort warm-up, never block startup on it.
+        logger.warning("Startup cache warm-up failed; will retry lazily on first request", exc_info=True)
+    yield
 
 # Paths that bypass the custom client-header guard. Browsers don't attach custom
 # headers to cross-site OAuth redirects, and tooling needs the docs/health.
@@ -30,6 +49,7 @@ def create_app() -> FastAPI:
         title=f"{settings.PRODUCT_NAME} Dashboard API",
         version="1.0.0",
         description="Read-only dashboard API over BigQuery (gold_exp.exp_ai_dashboard_model).",
+        lifespan=_lifespan,
     )
 
     # CORS — locked to the app hostname + localhost dev origins.
@@ -66,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(ensight.router)
     app.include_router(analytics.router)
     app.include_router(admin.router)
+    app.include_router(access_admin.router)
     app.include_router(tasks.router)
     app.include_router(elab.router)
     return app

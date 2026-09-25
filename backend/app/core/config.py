@@ -65,11 +65,14 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = 300
 
     # ── App-owned BigQuery storage / shared LLM config ──────────────────────
-    # Dataset (separate from the read-only gold model) for tables this app
-    # writes to itself — digest snapshots, E!nsight audit log, etc. Features
-    # using it should degrade gracefully if data engineering hasn't created
-    # their table yet (see database.insert_rows / query_rows_ignore_missing_table).
-    DASHBOARD_APP_DATASET: str = "dashboard_app"
+    # Dataset for tables this app writes to itself — usage events, issue-
+    # tracking audit log, E!nsight audit log, access-mapping audit log. Was
+    # originally meant to be a dedicated "dashboard_app" dataset (see
+    # DATA_ENG_BIGQUERY_TABLES_REQUEST.md) but the service account only ever
+    # got write access to bronze_exp, so that's where these tables actually
+    # live. Features using it should degrade gracefully if a table doesn't
+    # exist yet (see database.insert_rows / query_rows_ignore_missing_table).
+    DASHBOARD_APP_DATASET: str = "bronze_exp"
     # OpenRouter (OpenAI-compatible API) so features can target Claude models
     # via the `openai` SDK's base_url override. Optional — each caller no-ops
     # without a key.
@@ -92,6 +95,10 @@ class Settings(BaseSettings):
     @property
     def dashboard_tasks_table(self) -> str:
         return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_exp_dashboard_tasks"
+
+    @property
+    def access_mapping_table(self) -> str:
+        return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_exp_access_mapping_events"
 
     @property
     def cors_origins(self) -> list[str]:

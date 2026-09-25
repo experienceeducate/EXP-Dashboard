@@ -11,15 +11,20 @@ ACCESS_CONFIG shape::
       "national": ["alice@experienceeducate.org", ...],
       "regional": {"Central": ["bob@...", ...], "Eastern": [...]},
       "cu":       {"mpigi": ["carol@...", ...], "entebbe": [...]},
-      "admin":    ["alice@experienceeducate.org", ...]
+      "admin":    ["alice@experienceeducate.org", ...],
+      "access_managers": ["alice@experienceeducate.org", ...]
     }
 
 ``admin`` is a separate, independent list — it grants the Admin usage-
 analytics tab and is orthogonal to national/regional/cu row-scoping (an
-admin with no other access still can't see programme rows).
+admin with no other access still can't see programme rows). ``access_managers``
+is narrower still: a subset of admins who may *edit* the CU/region mapping
+(routers/access_admin.py) — every admin can view it, only these can change it.
 
 Loaded from ``ACCESS_CONFIG_PATH`` (JSON) if set, else the fallback below (ported
-verbatim from the legacy ``buildFallbackAccessConfig()``).
+verbatim from the legacy ``buildFallbackAccessConfig()``). This static base is
+then layered with any admin-edited CU/region overrides — see
+``get_live_config()``.
 
 Resolution order (mirrors legacy ``checkUserAccess``):
   1. Email in ``national``            → full access (has_national, not national_only)
@@ -31,10 +36,16 @@ Resolution order (mirrors legacy ``checkUserAccess``):
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cachetools import TTLCache
+
+from app.core import database
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _build_fallback_access_config() -> dict:
@@ -127,24 +138,20 @@ def _build_fallback_access_config() -> dict:
             "lugazi": ["kasulejoshua52@gmail.com", "charity.chebet@experienceeducate.org"],
             "hoima": ["rose.kimuli@experienceeducate.org"],
         },
-        # Defaults to a copy of "national" — edit independently to narrow who
-        # gets the Admin usage-analytics tab.
+        # Narrowed from the earlier default (a copy of "national") to just the
+        # 4 people who should see the Admin usage-analytics tab.
         "admin": [
             "afra.nuwasiima@experienceeducate.org",
-            "hellen.namisi@experienceeducate.org",
-            "evelyne.naisanga@experienceeducate.org",
-            "franz.biije@experienceeducate.org",
-            "francis.kusiimwa@experienceeducate.org",
-            "janet.namugaya@experienceeducate.org",
-            "caroline.chandia@experienceeducate.org",
             "charlotte.aijuka@experienceeducate.org",
             "john.osikuku@experienceeducate.org",
-            "millicent.mwendwa@experienceeducate.org",
-            "maggie@experienceeducate.org",
-            "veronica@experienceeducate.org",
-            "michael.thiriku@experienceeducate.org",
-            "ovon.m@experienceeducate.org",
-            "aloysie.tumwesigire@experienceeducate.org",
+            "evelyne.naisanga@experienceeducate.org",
+        ],
+        # Subset of "admin" who may edit the CU/region mapping below (the
+        # other admins can still view it — see routers/access_admin.py).
+        "access_managers": [
+            "afra.nuwasiima@experienceeducate.org",
+            "charlotte.aijuka@experienceeducate.org",
+            "john.osikuku@experienceeducate.org",
         ],
     }
 
@@ -160,6 +167,7 @@ def _normalise(raw: dict) -> dict:
         "regional": {r: clean(v) for r, v in (raw.get("regional") or {}).items()},
         "cu": {c: clean(v) for c, v in (raw.get("cu") or {}).items()},
         "admin": clean(raw.get("admin")),
+        "access_managers": clean(raw.get("access_managers")),
     }
 
 
@@ -173,6 +181,80 @@ def _load_access_config() -> dict:
 
 ACCESS_CONFIG: dict = _load_access_config()
 
+# ── Live CU/region mapping overrides (Admin tab's Access Mapping editor) ────
+# Layered on top of the static ACCESS_CONFIG above: a scope_key (a region or
+# CU) with any row in the event log is fully controlled by that log for that
+# key; an untouched scope_key keeps using its static default. See
+# routers/access_admin.py for the write side.
+#
+# Cached briefly (not per-request) since this now runs on every authenticated
+# request via current_user() -> resolve_access() -> get_live_config(). The
+# write endpoint calls invalidate_dynamic_mapping_cache() so its own change is
+# visible on the very next request; the TTL is just the safety-net upper
+# bound for everyone else.
+_DYNAMIC_MAPPING_CACHE: TTLCache = TTLCache(maxsize=1, ttl=30)
+_DYNAMIC_MAPPING_CACHE_KEY = "mapping"
+
+
+def invalidate_dynamic_mapping_cache() -> None:
+    _DYNAMIC_MAPPING_CACHE.pop(_DYNAMIC_MAPPING_CACHE_KEY, None)
+
+
+def _load_dynamic_mapping(use_cache: bool = True) -> dict:
+    """Reconstructs {"regional": {...}, "cu": {...}} from the append-only
+    event log — only scope_keys with event history appear here.
+
+    This runs on EVERY request (via current_user()), including ones that
+    have nothing to do with access mapping and whose tests mock BigQuery
+    calls with differently-shaped rows — so this must never raise and must
+    never assume a row has the fields it expects. A live-lookup hiccup here
+    degrades to "no overrides" (the static ACCESS_CONFIG still applies),
+    never to a broken login.
+    """
+    if use_cache and _DYNAMIC_MAPPING_CACHE_KEY in _DYNAMIC_MAPPING_CACHE:
+        return _DYNAMIC_MAPPING_CACHE[_DYNAMIC_MAPPING_CACHE_KEY]
+
+    result: dict = {"regional": {}, "cu": {}}
+    try:
+        sql = f"""
+            SELECT scope_type, scope_key, user_email, action
+            FROM `{settings.access_mapping_table}`
+            ORDER BY event_timestamp ASC
+        """
+        rows = database.query_rows_ignore_missing_table(sql)
+        latest: dict[tuple, str] = {}
+        for r in rows:
+            scope_type = r.get("scope_type")
+            scope_key = r.get("scope_key")
+            email = r.get("user_email")
+            action = r.get("action")
+            if not (scope_type and scope_key and email and action):
+                continue
+            latest[(scope_type, scope_key, email)] = action
+        for (scope_type, scope_key, email), action in latest.items():
+            if action == "add" and scope_type in result:
+                result[scope_type].setdefault(scope_key, []).append(email)
+    except Exception:  # noqa: BLE001 — see docstring: must never break auth.
+        logger.warning("Access-mapping live lookup failed; using static config only", exc_info=True)
+
+    if use_cache:
+        _DYNAMIC_MAPPING_CACHE[_DYNAMIC_MAPPING_CACHE_KEY] = result
+    return result
+
+
+def get_live_config(use_cache: bool = True) -> dict:
+    """ACCESS_CONFIG with any admin-edited CU/region mapping layered on top.
+
+    Reads the module global ACCESS_CONFIG (not a captured parameter) so
+    tests that monkeypatch ``access.ACCESS_CONFIG`` still work unchanged.
+    """
+    dynamic = _load_dynamic_mapping(use_cache=use_cache)
+    return {
+        **ACCESS_CONFIG,
+        "regional": {**ACCESS_CONFIG.get("regional", {}), **dynamic["regional"]},
+        "cu": {**ACCESS_CONFIG.get("cu", {}), **dynamic["cu"]},
+    }
+
 
 @dataclass
 class UserAccess:
@@ -184,6 +266,7 @@ class UserAccess:
     regions: list[str] = field(default_factory=list)
     cus: list[str] = field(default_factory=list)
     is_admin: bool = False
+    can_manage_access: bool = False
 
     @property
     def has_any_access(self) -> bool:
@@ -211,17 +294,27 @@ class UserAccess:
             "regions": self.regions,
             "cus": self.cus,
             "isAdmin": self.is_admin,
+            "canManageAccess": self.can_manage_access,
         }
 
 
 def resolve_access(email: str, config: dict | None = None) -> UserAccess:
-    """Map an email to its access scope using ACCESS_CONFIG."""
-    config = config or ACCESS_CONFIG
+    """Map an email to its access scope.
+
+    Defaults to ``get_live_config()`` (static ACCESS_CONFIG + any admin-edited
+    CU/region overrides) rather than the frozen ``ACCESS_CONFIG`` — called
+    fresh on every request via ``current_user()``, so a remap or an
+    admin/access-manager list change takes effect immediately, no re-login
+    needed. Callers that pass an explicit ``config`` (e.g. tests) are
+    unaffected.
+    """
+    config = config if config is not None else get_live_config()
     email = (email or "").strip().lower()
 
     # Orthogonal to national/regional/cu row-scoping below — an admin with no
     # other access still can't see programme rows, and vice versa.
     is_admin = email in config.get("admin", [])
+    can_manage_access = email in config.get("access_managers", [])
 
     # 1. Explicitly listed national users → full access.
     if email in config.get("national", []):
@@ -232,21 +325,24 @@ def resolve_access(email: str, config: dict | None = None) -> UserAccess:
             regions=list(config.get("regional", {}).keys()),
             cus=[],
             is_admin=is_admin,
+            can_manage_access=can_manage_access,
         )
 
     # 2. Regional officers.
     regions = [r for r, emails in config.get("regional", {}).items() if email in emails]
     if regions:
-        return UserAccess(email=email, regions=regions, is_admin=is_admin)
+        return UserAccess(email=email, regions=regions, is_admin=is_admin, can_manage_access=can_manage_access)
 
     # 3. CU / FOA.
     cus = [c for c, emails in config.get("cu", {}).items() if email in emails]
     if cus:
-        return UserAccess(email=email, cus=cus, is_admin=is_admin)
+        return UserAccess(email=email, cus=cus, is_admin=is_admin, can_manage_access=can_manage_access)
 
     # 4. Any other email on the allowed domain → National view only.
     if email.endswith("@" + settings.OAUTH_ALLOWED_DOMAIN):
-        return UserAccess(email=email, has_national=True, national_only=True, is_admin=is_admin)
+        return UserAccess(
+            email=email, has_national=True, national_only=True, is_admin=is_admin, can_manage_access=can_manage_access
+        )
 
     # 5. Unknown → no access.
-    return UserAccess(email=email, is_admin=is_admin)
+    return UserAccess(email=email, is_admin=is_admin, can_manage_access=can_manage_access)

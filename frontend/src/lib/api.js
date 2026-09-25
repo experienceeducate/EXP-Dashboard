@@ -294,6 +294,21 @@ export async function fetchAdminAnalytics(days = 30) {
   return request(`/api/admin/analytics-summary?days=${encodeURIComponent(days)}`);
 }
 
+// GET /api/admin/access/mapping → { status, regional: {region: [emails]},
+// cu: {cu: [emails]}, canEdit }
+export async function fetchAccessMapping() {
+  return request('/api/admin/access/mapping');
+}
+
+// POST /api/admin/access/mapping — add, remove, or switch (both) an email
+// under a region/CU. { scopeType, scopeKey, addEmail?, removeEmail? }
+export async function updateAccessMapping({ scopeType, scopeKey, addEmail, removeEmail }) {
+  return request('/api/admin/access/mapping', {
+    method: 'POST',
+    body: { scope_type: scopeType, scope_key: scopeKey, add_email: addEmail || null, remove_email: removeEmail || null },
+  });
+}
+
 // POST /api/analytics/event — fire-and-forget usage tracking. Never throws:
 // a tracking hiccup shouldn't surface as a user-visible error or block
 // navigation, so failures are swallowed here rather than left to callers.
