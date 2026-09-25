@@ -127,24 +127,13 @@ def _build_fallback_access_config() -> dict:
             "lugazi": ["kasulejoshua52@gmail.com", "charity.chebet@experienceeducate.org"],
             "hoima": ["rose.kimuli@experienceeducate.org"],
         },
-        # Defaults to a copy of "national" — edit independently to narrow who
-        # gets the Admin usage-analytics tab.
+        # Narrowed from the earlier default (a copy of "national") to just the
+        # 4 people who should see the Admin usage-analytics tab.
         "admin": [
             "afra.nuwasiima@experienceeducate.org",
-            "hellen.namisi@experienceeducate.org",
-            "evelyne.naisanga@experienceeducate.org",
-            "franz.biije@experienceeducate.org",
-            "francis.kusiimwa@experienceeducate.org",
-            "janet.namugaya@experienceeducate.org",
-            "caroline.chandia@experienceeducate.org",
             "charlotte.aijuka@experienceeducate.org",
             "john.osikuku@experienceeducate.org",
-            "millicent.mwendwa@experienceeducate.org",
-            "maggie@experienceeducate.org",
-            "veronica@experienceeducate.org",
-            "michael.thiriku@experienceeducate.org",
-            "ovon.m@experienceeducate.org",
-            "aloysie.tumwesigire@experienceeducate.org",
+            "evelyne.naisanga@experienceeducate.org",
         ],
     }
 
