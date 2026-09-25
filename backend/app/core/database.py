@@ -74,6 +74,41 @@ def run_query(
     return rows
 
 
+def insert_rows(table_ref: str, rows: list[dict]) -> list[dict]:
+    """Streaming insert into a writable table (bare ``project.dataset.table``,
+    no backticks). Returns BigQuery's per-row error list (empty on success),
+    or a single synthetic entry if the table doesn't exist yet — callers
+    should log/raise on a non-empty result, this never raises itself so a
+    missing table (data engineering hasn't created it yet) or a bad row is
+    visible instead of crashing the caller.
+
+    Catches both NotFound and Forbidden: BigQuery returns 403 Forbidden (not
+    404) for a nonexistent table when the caller also lacks IAM permission on
+    it — verified live against dashboard_app before it existed — so a missing
+    table looks identical to a permissions problem from the client's side."""
+    from google.api_core.exceptions import Forbidden, NotFound
+
+    if not rows:
+        return []
+    try:
+        return get_client().insert_rows_json(table_ref, rows)
+    except (NotFound, Forbidden) as exc:
+        return [{"error": f"Table {table_ref} not accessible: {exc}"}]
+
+
+def query_rows_ignore_missing_table(sql: str, params=None) -> list[dict[str, Any]]:
+    """Like run_query, but returns [] instead of raising if the target table
+    doesn't exist yet — used for app-owned tables data engineering hasn't
+    created yet. See insert_rows' docstring for why both NotFound and
+    Forbidden are caught here."""
+    from google.api_core.exceptions import Forbidden, NotFound
+
+    try:
+        return run_query(sql, params, use_cache=False)
+    except (NotFound, Forbidden):
+        return []
+
+
 def get_table_columns(table_ref: str) -> set[str]:
     """Column names currently present on ``table_ref`` (backtick-quoted or bare).
 

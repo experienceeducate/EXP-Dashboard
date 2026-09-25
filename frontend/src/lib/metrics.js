@@ -723,6 +723,14 @@ export function computeRegionalIssues(data, summaryData, year, term, schoolData 
     }
   });
 
+  // Attach each issue's region (not set at push time above — every push site
+  // shares the same `cu` in scope, so this is one lookup instead of ten) —
+  // the BigQuery-backed issue tracker needs it for access-scoping writes/reads.
+  const regionByCu = new Map(data.map((d) => [String(d.cu || '').trim().toLowerCase(), d.region || '']));
+  issues.forEach((i) => {
+    i.region = regionByCu.get(String(i.cu || '').trim().toLowerCase()) || '';
+  });
+
   const bottom5 = [...data]
     .filter((d) => N(d.total_target_schools) > 0)
     .map((d) => {

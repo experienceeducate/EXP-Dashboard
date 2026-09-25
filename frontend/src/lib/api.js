@@ -232,3 +232,14 @@ export const fetchGroupMentoringSummaryByCu = groupMentoringApi.fetchSummaryByCu
 export const fetchGroupMentoringMentors = groupMentoringApi.fetchMentors;
 export const fetchGroupMentoringMentorObservations = groupMentoringApi.fetchMentorObservations;
 export const fetchGroupMentoringComments = groupMentoringApi.fetchComments;
+
+// ── Issue tracking (Regional Issues / CU Priority Alerts follow-up) ─────────
+// GET /api/tasks → { status, tasks: { [issue_key]: { status, timeline } } }
+export async function fetchTaskStatuses() {
+  return request('/api/tasks');
+}
+
+// POST /api/tasks → { status, timestamp, user_email, notes }
+export async function updateTaskStatus(payload) {
+  return request('/api/tasks', { method: 'POST', body: payload });
+}
