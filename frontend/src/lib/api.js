@@ -339,3 +339,19 @@ export async function fetchTaskStatuses() {
 export async function updateTaskStatus(payload) {
   return request('/api/tasks', { method: 'POST', body: payload });
 }
+
+// ── E-Lab completion (mentor digital-lesson activity) ───────────────────────
+// GET /api/elab/summary-by-cu?term=term3 → { status, term, expected_sessions,
+// data: [{ region, cu, active_mentors, sessions_completed, sessions_in_progress,
+// overall_completion_pct, sessions: [...], breakdowns: [...] }] }
+export async function fetchElabSummaryByCu(term = 'term3') {
+  return request(`/api/elab/summary-by-cu?term=${encodeURIComponent(term)}`);
+}
+
+// GET /api/elab/mentors?cu=NAME&term=term3 → { status, term, expected_sessions,
+// data: [{ mentor_id, mentor_name, gender, role, sessions_completed,
+// sessions_in_progress, completion_pct, sessions: [...] }] }
+export async function fetchElabMentors(cu, term = 'term3') {
+  const params = new URLSearchParams({ cu, term });
+  return request(`/api/elab/mentors?${params.toString()}`);
+}

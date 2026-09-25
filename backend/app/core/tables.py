@@ -30,3 +30,9 @@ MENTOR_ROSTER = f"`{settings.BQ_PROJECT_ID}.bronze_exp.mentor_2026`"
 # CU is resolved via a mentor_id join to MENTOR_ROSTER (see ADR-008 follow-up).
 SKILLS_DAY_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_skills_day_observation_form`"
 GROUP_MENTORING_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_group_mentoring__observation__form`"
+
+# ── E-Lab (mentor digital-lesson activity) ──────────────────────────────────
+# A third data source: one row per mentor x lesson attempt. No active/status
+# column of its own — "active mentors" comes from DASHBOARD_MODEL's
+# total_active_mentors (see routers/elab.py).
+ELAB_ACTIVITY = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_elab_mentor_activity_report`"

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import * as api from '../lib/api.js';
 import { getLECsForTerm, C } from '../lib/config.js';
 import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
@@ -372,6 +373,80 @@ function CuActivityCompletion({ data, year, term }) {
 }
 
 // ── Mentor performance ───────────────────────────────────────────────────────
+// ── E-Lab Completion (mentor digital-lesson activity — 3rd BigQuery source) ─
+// v1 is Term 3 only — see docs/DECISION.md. Per-mentor detail for this CU,
+// fetched fresh whenever the selected CU changes.
+const CU_ELAB_LEC_NUMS = [15, 16, 17, 18, 19, 20];
+const CU_ELAB_ROLE_LABELS = { mentor: 'Mentor', co_mentor: 'Co-Mentor', unknown: 'Unknown' };
+const CU_ELAB_GENDER_LABELS = { female: 'Female', male: 'Male', unknown: 'Unknown' };
+
+function CuElabCompletion({ cu }) {
+  const [rows, setRows] = useState(null); // null = loading
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!cu) return;
+    let active = true;
+    setRows(null);
+    setError('');
+    api
+      .fetchElabMentors(cu, 'term3')
+      .then((res) => {
+        if (active) setRows(res.data || []);
+      })
+      .catch((e) => {
+        if (active) {
+          setRows([]);
+          setError(e.message || 'Failed to load e-lab data.');
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [cu]);
+
+  if (!cu) return <Placeholder label="Select a CU to view e-lab completion." />;
+  if (rows === null) return <div style={{ padding: '1.25rem', color: '#888' }}>Loading e-lab data…</div>;
+  if (error) return <div className="login-error">{error}</div>;
+  if (rows.length === 0) return <Placeholder label="No e-lab activity recorded for this CU in Term 3 yet." />;
+
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>Mentor</th>
+            <th>Role</th>
+            <th>Gender</th>
+            {CU_ELAB_LEC_NUMS.map((n) => <th key={n} className="center">LEC {n}</th>)}
+            <th className="center">Completion %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => {
+            const byLec = new Map((m.sessions || []).map((s) => [s.lec_num, s.status]));
+            const pct = N(m.completion_pct);
+            const col = ragColor(pct, 75, 50);
+            return (
+              <tr key={m.mentor_id}>
+                <td className="item-name">{m.mentor_name || '—'}</td>
+                <td>{CU_ELAB_ROLE_LABELS[m.role] || m.role}</td>
+                <td>{CU_ELAB_GENDER_LABELS[m.gender] || m.gender}</td>
+                {CU_ELAB_LEC_NUMS.map((n) => {
+                  const status = byLec.get(n) || 'not_started';
+                  const icon = status === 'completed' ? '✅' : status === 'in_progress' ? '⏳' : '—';
+                  return <td key={n} className="center">{icon}</td>;
+                })}
+                <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function CuMentorPerformance({ schoolData, data, year, term, cu }) {
   const lecNums = getLECsForTerm(year, term);
   const cuName = String(cu || '').trim().toLowerCase();
@@ -1164,6 +1239,9 @@ export default function CuView({ schoolData, cuData, year, term, cu, allowedCUs,
         {isFiltered && filteredRows.length === 0 ? <Placeholder label="No mentors match this filter." /> : (
           <CuMentorPerformance schoolData={schoolData} data={filteredRows} year={year} term={term} cu={cu} />
         )}
+      </Section>
+      <Section title="📱 E-Lab Completion" subtitle="Term 3 digital-lesson completion by mentor">
+        <CuElabCompletion cu={cu} />
       </Section>
       <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by school">
         {isFiltered && filteredRows.length === 0 ? <Placeholder label="No schools match this filter." /> : (
