@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DASHBOARD_VERSION, getTermLabel } from './lib/config.js';
 import * as api from './lib/api.js';
 import { normalizeAccess, visibleViewTabs, defaultView, scopedRegions, scopedCUs } from './lib/access.js';
@@ -10,8 +10,9 @@ import NationalView, { NATIONAL_TABS } from './views/NationalView.jsx';
 import RegionalView from './views/RegionalView.jsx';
 import CuView from './views/CuView.jsx';
 import GuideView from './views/GuideView.jsx';
+import AdminView from './views/AdminView.jsx';
 
-const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide' };
+const VIEW_LABELS = { national: 'National View', regional: 'Regional View', cu: 'CU View', guide: 'Dashboard Guide', admin: 'Admin' };
 const TERM_ORDER = ['term1', 'term2', 'term3'];
 
 const SSO_ERRORS = {
@@ -109,6 +110,7 @@ export default function App() {
   const [summaryData, setSummaryData] = useState([]);
   const [schoolData, setSchoolData] = useState([]);
   const [access, setAccess] = useState(null);
+  const [adminAvailable, setAdminAvailable] = useState(false);
   const [dataSource, setDataSource] = useState('bigquery');
   const [loadedAt, setLoadedAt] = useState(null);
 
@@ -191,6 +193,62 @@ export default function App() {
     };
   }, [authed, user]);
 
+  // Admin usage analytics is gated to ACCESS_CONFIG["admin"] — ask the
+  // backend rather than inferring it, so the tab doesn't appear only to
+  // 403 when clicked (same pattern as E!nsight's own availability check).
+  useEffect(() => {
+    if (!authed) return;
+    let active = true;
+    api
+      .fetchAdminAvailability()
+      .then((res) => {
+        if (active) setAdminAvailable(!!res.available);
+      })
+      .catch(() => {
+        if (active) setAdminAvailable(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [authed]);
+
+  // ── Usage tracking ───────────────────────────────────────────────────────
+  // One id per page load (not per view — a tab switch is a page_view within
+  // the same session, not a new session).
+  const [sessionId] = useState(() => `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const sessionStartRef = useRef(Date.now());
+  const sessionEndSentRef = useRef(false);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  // A tab switch is a page_view of the newly-selected tab.
+  useEffect(() => {
+    if (!authed || !access) return;
+    api.trackEvent({ event: 'page_view', view, session_id: sessionId });
+  }, [authed, access, view, sessionId]);
+
+  // Session length: simplest thing that captures "how long was the tab
+  // open" — fire once, on whichever of hidden/unload happens first. No
+  // periodic heartbeat for v1; revisit only if this proves misleading.
+  useEffect(() => {
+    if (!authed) return;
+    const sendSessionEnd = () => {
+      if (sessionEndSentRef.current) return;
+      sessionEndSentRef.current = true;
+      const duration_seconds = Math.round((Date.now() - sessionStartRef.current) / 1000);
+      api.trackEventBeacon({ event: 'session_end', view: viewRef.current, session_id: sessionId, duration_seconds });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') sendSessionEnd();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('beforeunload', sendSessionEnd);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('beforeunload', sendSessionEnd);
+    };
+  }, [authed, sessionId]);
+
   // Fetch CU school rows when a CU is selected in CU view.
   useEffect(() => {
     let active = true;
@@ -234,6 +292,7 @@ export default function App() {
     setSummaryData([]);
     setSchoolData([]);
     setAccess(null);
+    setAdminAvailable(false);
   };
 
   const handleRefresh = () => loadData();
@@ -270,7 +329,10 @@ export default function App() {
   );
   const regionOptions = useMemo(() => (access ? scopedRegions(access, summaryData) : []), [access, summaryData]);
   const cuOptions = useMemo(() => (access ? scopedCUs(access, summaryData, view === 'cu' ? '' : region) : []), [access, summaryData, region, view]);
-  const tabs = useMemo(() => (access ? visibleViewTabs(access) : []), [access]);
+  const tabs = useMemo(() => {
+    const base = access ? visibleViewTabs(access) : [];
+    return adminAvailable ? [...base, 'admin'] : base;
+  }, [access, adminAvailable]);
 
   // School/Mentor filter options — every distinct name on record for the
   // selected CU/year (not term-scoped, so switching term doesn't make the
@@ -306,7 +368,8 @@ export default function App() {
     return <LoadingOverlay progress={loadPct} message={loadMsg} />;
   }
 
-  const headerSubtitle = `${VIEW_LABELS[view] || ''} · ${year} ${getTermLabelShort(term)}`;
+  const headerSubtitle =
+    view === 'admin' ? VIEW_LABELS.admin : `${VIEW_LABELS[view] || ''} · ${year} ${getTermLabelShort(term)}`;
 
   return (
     <div>
@@ -318,14 +381,14 @@ export default function App() {
             <p>{headerSubtitle}</p>
           </div>
           <div className="header-right">
-            {view !== 'cu' && view !== 'guide' ? (
+            {view !== 'cu' && view !== 'guide' && view !== 'admin' ? (
               <select className="header-select" value={year} onChange={(e) => setYear(e.target.value)} aria-label="Year">
                 {years.map((y) => (
                   <option key={y} value={y}>{y}</option>
                 ))}
               </select>
             ) : null}
-            {view !== 'guide' ? (
+            {view !== 'guide' && view !== 'admin' ? (
               <select className="header-select" value={term} onChange={(e) => setTerm(e.target.value)} aria-label="Term">
                 {terms.map((t) => (
                   <option key={t} value={t}>{getTermLabel(t)}</option>
@@ -431,6 +494,7 @@ export default function App() {
           />
         ) : null}
         {view === 'guide' ? <GuideView /> : null}
+        {view === 'admin' ? <AdminView /> : null}
       </main>
 
       {drill ? (

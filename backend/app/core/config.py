@@ -82,6 +82,10 @@ class Settings(BaseSettings):
         return f"`{self.BQ_PROJECT_ID}.{self.BQ_DATASET}.{self.BQ_TABLE}`"
 
     @property
+    def dashboard_events_table(self) -> str:
+        return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_dashboard_events"
+
+    @property
     def dashboard_tasks_table(self) -> str:
         return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_exp_dashboard_tasks"
 
