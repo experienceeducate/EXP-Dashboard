@@ -48,6 +48,52 @@ function PageViewsTable({ rows }) {
   );
 }
 
+function formatMinutes(seconds) {
+  return Math.round(((seconds || 0) / 60) * 10) / 10;
+}
+
+function formatTimestamp(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+function ByUserTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <Placeholder label="No per-user activity recorded yet for this window." />;
+  }
+  return (
+    <div className="table-wrap">
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th className="center">Page Views</th>
+            <th className="center">Sessions</th>
+            <th className="center">Tabs Viewed</th>
+            <th className="center">Active (min)</th>
+            <th>First Seen</th>
+            <th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.user_email}>
+              <td className="item-name">{r.user_email}</td>
+              <td className="center">{r.page_views}</td>
+              <td className="center">{r.sessions}</td>
+              <td className="center">{r.distinct_tabs}</td>
+              <td className="center"><strong>{formatMinutes(r.active_seconds)}</strong></td>
+              <td>{formatTimestamp(r.first_seen)}</td>
+              <td>{formatTimestamp(r.last_seen)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function UsageAnalyticsSubTab() {
   const [days, setDays] = useState(30);
   const [summary, setSummary] = useState(null);
@@ -100,6 +146,10 @@ function UsageAnalyticsSubTab() {
 
           <Section title="Page Views by Tab">
             <PageViewsTable rows={summary ? summary.page_views_by_tab : []} />
+          </Section>
+
+          <Section title="By User" subtitle="Sorted by active minutes">
+            <ByUserTable rows={summary ? summary.by_user : []} />
           </Section>
         </>
       )}

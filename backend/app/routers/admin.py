@@ -29,7 +29,7 @@ def availability(user: UserAccess = Depends(current_user)):
 def _summary(days: int) -> dict:
     since = datetime.now(timezone.utc) - timedelta(days=days)
     sql = f"""
-        SELECT event_type, view, user_email, duration_seconds
+        SELECT event_type, view, user_email, session_id, duration_seconds, event_timestamp
         FROM `{settings.dashboard_events_table}`
         WHERE event_timestamp >= @since
     """
@@ -39,14 +39,53 @@ def _summary(days: int) -> dict:
     page_views: dict[str, int] = {}
     active_users: set[str] = set()
     durations: list[int] = []
+    # Per-user breakdown, built from this same row set (no second query) —
+    # active_seconds sums the real duration_seconds column rather than
+    # counting heartbeat pings, since this table (unlike some other
+    # dashboards') already captures actual elapsed time per session.
+    by_user: dict[str, dict] = {}
     for r in rows:
-        if r.get("user_email"):
-            active_users.add(r["user_email"])
+        email = r.get("user_email")
+        ts = r.get("event_timestamp")
+        if email:
+            active_users.add(email)
+            u = by_user.setdefault(email, {
+                "page_views": 0, "sessions": set(), "views": set(),
+                "active_seconds": 0, "first_seen": None, "last_seen": None,
+            })
+            if r.get("session_id"):
+                u["sessions"].add(r["session_id"])
+            if ts is not None:
+                if u["first_seen"] is None or ts < u["first_seen"]:
+                    u["first_seen"] = ts
+                if u["last_seen"] is None or ts > u["last_seen"]:
+                    u["last_seen"] = ts
         if r.get("event_type") == "page_view":
             v = r.get("view") or "unknown"
             page_views[v] = page_views.get(v, 0) + 1
+            if email:
+                by_user[email]["page_views"] += 1
+                by_user[email]["views"].add(v)
         elif r.get("event_type") == "session_end" and r.get("duration_seconds") is not None:
             durations.append(r["duration_seconds"])
+            if email:
+                by_user[email]["active_seconds"] += r["duration_seconds"]
+
+    by_user_rows = sorted(
+        (
+            {
+                "user_email": email,
+                "page_views": u["page_views"],
+                "sessions": len(u["sessions"]),
+                "distinct_tabs": len(u["views"]),
+                "active_seconds": u["active_seconds"],
+                "first_seen": u["first_seen"],
+                "last_seen": u["last_seen"],
+            }
+            for email, u in by_user.items()
+        ),
+        key=lambda row: -row["active_seconds"],
+    )
 
     return {
         "page_views_by_tab": sorted(
@@ -56,6 +95,7 @@ def _summary(days: int) -> dict:
         "active_users": len(active_users),
         "total_sessions": len(durations),
         "avg_session_seconds": round(sum(durations) / len(durations), 1) if durations else 0,
+        "by_user": by_user_rows,
     }
 
 
