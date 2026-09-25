@@ -24,18 +24,23 @@ def level_clause(level: str) -> tuple[str, list]:
     return "level = @level", [bigquery.ScalarQueryParameter("level", "STRING", level)]
 
 
-def term_clause(term: str | None) -> tuple[str, list]:
+def term_clause(term: str | None, param_name: str = "term") -> tuple[str, list]:
     """Filter by term. ``None`` / 'all' means no term filter.
 
     Note: term is a tri-state-ish string column. We test ``= @term`` for a
     concrete term and skip the clause entirely for 'all'.
+
+    ``param_name`` must be unique within a query — give each call site its own
+    name (like ``cu_clause_fuzzy``'s ``param_name``) when a single combined
+    query calls this more than once (e.g. scoping two different CTEs), to
+    avoid a BigQuery "duplicate query parameter" error.
     """
     if not term or term == "all":
         return "", []
     if term not in VALID_TERMS:
         # Caller should have validated; be defensive rather than build bad SQL.
         raise ValueError(f"Unknown term: {term!r}")
-    return "term = @term", [bigquery.ScalarQueryParameter("term", "STRING", term)]
+    return f"term = @{param_name}", [bigquery.ScalarQueryParameter(param_name, "STRING", term)]
 
 
 def region_clause(regions: Iterable[str]) -> tuple[str, list]:
