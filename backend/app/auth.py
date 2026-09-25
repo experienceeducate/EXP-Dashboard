@@ -71,17 +71,19 @@ def _decode(token: str) -> dict:
 def current_user(
     creds: HTTPAuthorizationCredentials = Depends(bearer),
 ) -> UserAccess:
-    """FastAPI dependency injected on every /api/* data route."""
+    """FastAPI dependency injected on every /api/* data route.
+
+    Re-resolves access fresh from ``resolve_access()`` on every call rather
+    than trusting the snapshot embedded in the JWT at login — so an access
+    change (a CU/region reassignment via the Admin tab's mapping editor, or
+    an admin/access-manager list change) takes effect immediately for an
+    already-logged-in session, not just on next login. Only the token's
+    ``sub`` (email) is trusted; the embedded ``access`` claim is otherwise
+    unused here (kept in the payload for `/api/auth/me`'s own response
+    shape immediately after login).
+    """
     payload = _decode(creds.credentials)
-    acc = payload.get("access", {})
-    user = UserAccess(
-        email=payload.get("sub", ""),
-        has_national=bool(acc.get("hasNational")),
-        national_only=bool(acc.get("nationalOnly")),
-        regions=list(acc.get("regions", [])),
-        cus=list(acc.get("cus", [])),
-        is_admin=bool(acc.get("isAdmin")),
-    )
+    user = resolve_access(payload.get("sub", ""))
     if not user.has_any_access:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

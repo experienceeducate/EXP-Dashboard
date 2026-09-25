@@ -1,14 +1,19 @@
 # BigQuery table request — EXP Programme Dashboard
 
-For the Data Engineering team. The EXP Dashboard app currently only has
-**read** access to `bronze_exp` / `silver_exp` / `gold_exp` in
-`educate-data-warehouse-test` (verified: the service account can
-`get_dataset` on all three, but every `create_table` attempt returns
-`403 Permission bigquery.tables.create denied`). Four small features need
-the dashboard's backend to **write** rows — this doc specs all four tables so
-they can be created and access granted in one pass.
+**Status: resolved.** This originally requested a dedicated `dashboard_app`
+dataset (kept below for context), since the service account had zero create
+rights on `bronze_exp` / `silver_exp` / `gold_exp` at the time. That's since
+changed — the service account now has `bigquery.tables.create` on
+`bronze_exp` specifically (still no `bigquery.datasets.create` at the project
+level, so it still can't create a brand-new dataset itself). Given that, all
+five tables below were created directly in `bronze_exp` rather than waiting
+on a separate dataset — see `app/core/config.py`'s `DASHBOARD_APP_DATASET`
+(`"bronze_exp"`) and the individual `*_table` properties for the exact
+`project.dataset.table` paths the app actually uses. No further action
+needed from Data Engineering; kept here as a record of the original ask and
+the table schemas.
 
-## What we need from you
+## Original ask (superseded — see Status above)
 
 1. Create the dataset + four tables below (DDL provided — adjust names/location
    to match your conventions if needed).
@@ -20,9 +25,9 @@ they can be created and access granted in one pass.
 3. Reply with the exact `project.dataset.table` paths if they differ from the
    suggested names below — the app's config just needs those four strings.
 
-Recommended dataset name: **`dashboard_app`** (new, dedicated — keeps this
-app's operational data separate from the ETL-managed bronze/silver/gold
-datasets it only ever reads).
+Originally recommended dataset name: `dashboard_app` (new, dedicated — keeps
+this app's operational data separate from the ETL-managed bronze/silver/gold
+datasets it only ever reads). Superseded — see Status above.
 
 ---
 
@@ -224,7 +229,41 @@ user's history, or how often the `sql` fallback fires).
 
 ---
 
-*All four tables are written to exclusively by the dashboard's FastAPI backend
+## Table 5 — `raw_exp_access_mapping_events` (added after the above was
+already resolved — see Status note at the top)
+
+**Purpose**: audit log for the Admin tab's CU→FOA / Region→PO mapping editor.
+One row per add/remove action (not per current assignment) — the current
+state for a `(scope_type, scope_key)` is every `user_email` whose latest row
+for that pair is `action = 'add'`. A "switch" (reassign) is a `'remove'` row
+for the old email plus an `'add'` row for the new one, written together.
+
+| Column | Type | Description |
+|---|---|---|
+| `event_id` | `STRING` | UUID, generated per event |
+| `event_timestamp` | `TIMESTAMP` | Server-side capture time |
+| `action` | `STRING` | `'add'` \| `'remove'` |
+| `scope_type` | `STRING` | `'regional'` \| `'cu'` |
+| `scope_key` | `STRING` | Region name or CU name |
+| `user_email` | `STRING` | The FOA/PO email being added or removed |
+| `changed_by` | `STRING` | The admin who made the change |
+
+```sql
+CREATE TABLE `educate-data-warehouse-test.bronze_exp.raw_exp_access_mapping_events` (
+  event_id        STRING,
+  event_timestamp TIMESTAMP,
+  action          STRING,
+  scope_type      STRING,
+  scope_key       STRING,
+  user_email      STRING,
+  changed_by      STRING
+)
+PARTITION BY DATE(event_timestamp)
+CLUSTER BY scope_type, scope_key;
+```
+
+---
+
+*All five tables are written to exclusively by the dashboard's FastAPI backend
 via the same service account it already uses for reads — no other write
-path. Happy to hop on a call if any of the above needs adjusting to fit your
-existing dataset/table conventions.*
+path.*
