@@ -1,9 +1,9 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { getLECsForTerm, C } from '../lib/config.js';
 import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, mergeRowsAcrossTerms, sum } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap } from '../components/ui.jsx';
-import { getIssueKey, getIssueStatus, updateIssueStatus } from '../lib/issueTracker.js';
+import { getIssueKey, getIssueStatus, loadIssueTracker, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend, HeatmapInsights } from './NationalView.jsx';
 
 const N = (v) => Number(v) || 0;
@@ -224,12 +224,12 @@ function ReportTimeliness({ data }) {
 }
 
 // ── Issue Summary (legacy renderRegionalIssueSummary) ────────────────────────
-// Follow-up state per issue lives in the same localStorage tracker CU View's
-// Priority Alerts already use (lib/issueTracker.js) — keyed by (cu, type,
-// value), not just (cu, type), so a followed-up issue stays hidden only for
-// that exact instance. If the underlying count/detail changes later (e.g. a
-// CU's clustering count goes from 4 schools to 6), that's a new key and it
-// reappears — "unless it is a new one," per the request.
+// Follow-up state per issue lives in the same BigQuery-backed tracker CU
+// View's Priority Alerts already use (lib/issueTracker.js) — keyed by (cu,
+// type, value), not just (cu, type), so a followed-up issue stays hidden
+// only for that exact instance. If the underlying count/detail changes
+// later (e.g. a CU's clustering count goes from 4 schools to 6), that's a
+// new key and it reappears — "unless it is a new one," per the request.
 const FOLLOWUP_REASONS = [
   'Mentor on leave / unavailable',
   'School closed or inaccessible',
@@ -275,11 +275,33 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
   const { issues: allIssues, bottom5, achievements } = useMemo(() => computeRegionalIssues(data, summaryData, year, term, schoolData), [data, summaryData, year, term, schoolData]);
   const [tick, setTick] = useState(0);
   const [openIssueKey, setOpenIssueKey] = useState(null);
+
+  // Issue status/timeline is fetched once per mount (access-scoped server
+  // side, covers every region/CU the caller can see) — bump `tick` once it
+  // resolves so the synchronous getIssueStatus() reads below reflect it.
+  useEffect(() => {
+    let active = true;
+    loadIssueTracker().then(() => {
+      if (active) setTick((t) => t + 1);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const issuesWithKeys = allIssues.map((i) => ({ ...i, issueKey: getIssueKey(i.cu, i.type, i.value) }));
   const followedUp = issuesWithKeys.filter((i) => getIssueStatus(i.issueKey).status === 'resolved');
   const issues = issuesWithKeys.filter((i) => getIssueStatus(i.issueKey).status !== 'resolved');
-  const confirmFollowUp = (issueKey, reason, notes) => {
-    updateIssueStatus(issueKey, 'resolved', notes.trim() ? `${reason} — ${notes.trim()}` : reason, 'Dashboard User');
+  const confirmFollowUp = async (issue, reason, notes) => {
+    await updateIssueStatus(issue.issueKey, 'resolved', {
+      region: issue.region,
+      cu: issue.cu,
+      issueType: issue.type,
+      issueDetail: issue.value,
+      severity: issue.severity,
+      reason,
+      notes: notes.trim(),
+    });
     setOpenIssueKey(null);
     setTick((t) => t + 1);
   };
@@ -320,7 +342,7 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
                       <FollowUpForm
                         issue={i}
                         onCancel={() => setOpenIssueKey(null)}
-                        onConfirm={(reason, notes) => confirmFollowUp(i.issueKey, reason, notes)}
+                        onConfirm={(reason, notes) => confirmFollowUp(i, reason, notes)}
                       />
                     ) : null}
                   </Fragment>
