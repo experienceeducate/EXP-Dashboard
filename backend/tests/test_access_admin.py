@@ -53,7 +53,13 @@ def test_load_dynamic_mapping_ignores_malformed_rows():
     assert result == {"regional": {}, "cu": {}}
 
 
-def test_get_live_config_merges_dynamic_over_static_for_touched_keys_only():
+def test_get_live_config_adds_alongside_static_default_not_instead_of_it():
+    """Regression for a real incident: adding one new PO to a region that
+    already had 3 people (from the static default, never individually
+    "added" via this system) once silently dropped all 3 of the others'
+    access — touching a key replaced its entire membership with only its
+    own dynamic "add" events. An add must land ALONGSIDE the static
+    default's existing members, never replace them."""
     access._DYNAMIC_MAPPING_CACHE.clear()
 
     def fake_query(sql, params=None, timeout=None):
@@ -67,10 +73,31 @@ def test_get_live_config_merges_dynamic_over_static_for_touched_keys_only():
     finally:
         database_mod.query_rows_ignore_missing_table = orig
 
-    # Touched key: static default fully replaced.
-    assert merged["cu"]["mpigi"] == ["new.foa@experienceeducate.org"]
+    # Touched key: static default member ("cu@...", from conftest's
+    # ACCESS_CONFIG) is still present, PLUS the newly added one.
+    assert merged["cu"]["mpigi"] == ["cu@experienceeducate.org", "new.foa@experienceeducate.org"]
     # Untouched region key: static default preserved.
     assert merged["regional"]["Central"] == ["central@experienceeducate.org"]
+
+
+def test_get_live_config_can_remove_a_static_default_member():
+    """A remove event must be able to actually remove someone who was only
+    ever in the static default (never previously "added" through this
+    system) — not just someone who was themselves dynamically added."""
+    access._DYNAMIC_MAPPING_CACHE.clear()
+
+    def fake_query(sql, params=None, timeout=None):
+        return [{"scope_type": "cu", "scope_key": "mpigi", "user_email": "cu@experienceeducate.org", "action": "remove"}]
+
+    import app.core.database as database_mod
+    orig = database_mod.query_rows_ignore_missing_table
+    database_mod.query_rows_ignore_missing_table = fake_query
+    try:
+        merged = access.get_live_config(use_cache=False)
+    finally:
+        database_mod.query_rows_ignore_missing_table = orig
+
+    assert merged["cu"]["mpigi"] == []
 
 
 def test_get_live_config_reconstructs_latest_action_wins():
@@ -78,7 +105,7 @@ def test_get_live_config_reconstructs_latest_action_wins():
 
     def fake_query(sql, params=None, timeout=None):
         # Ascending by event_timestamp, as the real query orders — a switch:
-        # remove the old FOA, add a new one.
+        # remove the old (static-default) FOA, add a new one.
         return [
             {"scope_type": "cu", "scope_key": "mpigi", "user_email": "cu@experienceeducate.org", "action": "add"},
             {"scope_type": "cu", "scope_key": "mpigi", "user_email": "cu@experienceeducate.org", "action": "remove"},

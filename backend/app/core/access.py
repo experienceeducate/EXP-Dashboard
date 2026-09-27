@@ -206,8 +206,13 @@ def invalidate_dynamic_mapping_cache() -> None:
 
 
 def _load_dynamic_mapping(use_cache: bool = True) -> dict:
-    """Reconstructs {"regional": {...}, "cu": {...}} from the append-only
-    event log — only scope_keys with event history appear here.
+    """Reconstructs {"regional": {scope_key: {"add": {emails}, "remove": {emails}}}, "cu": {...}}
+    from the append-only event log — the latest action per (scope_type,
+    scope_key, email) decides whether that email is currently added or
+    removed *for that key specifically*. Only scope_keys with event history
+    appear here; get_live_config() applies these on top of the static
+    default for that key (never replaces it wholesale — see that function's
+    docstring for why that distinction matters).
 
     This runs on EVERY request (via current_user()), including ones that
     have nothing to do with access mapping and whose tests mock BigQuery
@@ -237,8 +242,13 @@ def _load_dynamic_mapping(use_cache: bool = True) -> dict:
                 continue
             latest[(scope_type, scope_key, email)] = action
         for (scope_type, scope_key, email), action in latest.items():
-            if action == "add" and scope_type in result:
-                result[scope_type].setdefault(scope_key, []).append(email)
+            if scope_type not in result:
+                continue
+            bucket = result[scope_type].setdefault(scope_key, {"add": set(), "remove": set()})
+            if action == "add":
+                bucket["add"].add(email)
+            elif action == "remove":
+                bucket["remove"].add(email)
     except Exception:  # noqa: BLE001 — see docstring: must never break auth.
         logger.warning("Access-mapping live lookup failed; using static config only", exc_info=True)
 
@@ -250,15 +260,30 @@ def _load_dynamic_mapping(use_cache: bool = True) -> dict:
 def get_live_config(use_cache: bool = True) -> dict:
     """ACCESS_CONFIG with any admin-edited CU/region mapping layered on top.
 
+    Per touched scope_key: start from that key's STATIC default members,
+    add whoever the event log says was added, remove whoever it says was
+    removed. Never discard the static members wholesale just because the
+    key was touched at all — incident: an earlier version replaced a key's
+    entire membership with only its dynamic "add" events the moment ANY
+    event existed for it, so adding one new PO to a region that already had
+    3 people (from the static default, never individually re-"added" via
+    this system) silently dropped all 3 of the others' access. Fixed by
+    treating dynamic events as add/remove deltas ON TOP OF the static base,
+    not a replacement for it — an untouched key is unaffected either way.
+
     Reads the module global ACCESS_CONFIG (not a captured parameter) so
     tests that monkeypatch ``access.ACCESS_CONFIG`` still work unchanged.
     """
     dynamic = _load_dynamic_mapping(use_cache=use_cache)
-    return {
-        **ACCESS_CONFIG,
-        "regional": {**ACCESS_CONFIG.get("regional", {}), **dynamic["regional"]},
-        "cu": {**ACCESS_CONFIG.get("cu", {}), **dynamic["cu"]},
-    }
+    result = dict(ACCESS_CONFIG)
+    for scope_type in ("regional", "cu"):
+        base = ACCESS_CONFIG.get(scope_type, {})
+        merged = dict(base)
+        for scope_key, changes in dynamic.get(scope_type, {}).items():
+            current = set(base.get(scope_key, [])) - changes["remove"] | changes["add"]
+            merged[scope_key] = sorted(current)
+        result[scope_type] = merged
+    return result
 
 
 @dataclass
