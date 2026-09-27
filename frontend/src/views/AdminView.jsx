@@ -4,7 +4,8 @@
 // the Access Mapping sub-tab is viewable by every admin but only editable by
 // ACCESS_CONFIG["access_managers"] (GET /api/admin/access/mapping's
 // `canEdit` field) — narrower than plain admin.
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import * as api from '../lib/api.js';
 import { Section, ScoreCard, Placeholder } from '../components/ui.jsx';
 
@@ -18,6 +19,17 @@ const WINDOW_OPTIONS = [
   { value: 30, label: 'Last 30 days' },
   { value: 90, label: 'Last 90 days' },
 ];
+
+// "other" = a domain-fallback National-view login (any @experienceeducate.org
+// email not explicitly listed anywhere) — has no fixed roster to divide by,
+// so it's excluded from the 3 rostered categories' usability rates, but still
+// shown here so it's filterable/visible in the per-user table.
+const ROLE_LABELS = { national: 'National', regional: 'Regional (PO)', cu: 'CU (FOA)', other: 'Other' };
+// Categorical palette — validated (dataviz skill): first 3 slots (blue/orange/
+// aqua) clear every CVD/contrast gate together. Never used for the "other"
+// bucket, which isn't part of the 3-category usability comparison.
+const ROLE_COLORS = { national: '#2a78d6', regional: '#eb6834', cu: '#1baf7a' };
+const ROLE_FILTER_OPTIONS = [{ value: 'all', label: 'All roles' }, ...Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }))];
 
 function PageViewsTable({ rows }) {
   if (!rows || rows.length === 0) {
@@ -58,38 +70,115 @@ function formatTimestamp(iso) {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
-function ByUserTable({ rows }) {
-  if (!rows || rows.length === 0) {
-    return <Placeholder label="No per-user activity recorded yet for this window." />;
+function ByUserTable({ rows, roleFilter, onRoleFilterChange }) {
+  const filtered = roleFilter === 'all' ? (rows || []) : (rows || []).filter((r) => r.role === roleFilter);
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '.75rem' }}>
+        <select className="header-select" value={roleFilter} onChange={(e) => onRoleFilterChange(e.target.value)} aria-label="Filter by role">
+          {ROLE_FILTER_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+      {filtered.length === 0 ? (
+        <Placeholder label="No per-user activity recorded yet for this window / role filter." />
+      ) : (
+        <div className="table-wrap">
+          <table className="breakdown-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th className="center">Page Views</th>
+                <th className="center">Sessions</th>
+                <th className="center">Tabs Viewed</th>
+                <th className="center">Active (min)</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r) => (
+                <tr key={r.user_email}>
+                  <td className="item-name">{r.user_email}</td>
+                  <td>{ROLE_LABELS[r.role] || r.role}</td>
+                  <td className="center">{r.page_views}</td>
+                  <td className="center">{r.sessions}</td>
+                  <td className="center">{r.distinct_tabs}</td>
+                  <td className="center"><strong>{formatMinutes(r.active_seconds)}</strong></td>
+                  <td>{formatTimestamp(r.first_seen)}</td>
+                  <td>{formatTimestamp(r.last_seen)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+function RoleUsabilityStrip({ roleTotals, byWeekRole }) {
+  const latest = byWeekRole && byWeekRole.length > 0 ? byWeekRole[byWeekRole.length - 1] : null;
+  return (
+    <div className="score-cards">
+      {['national', 'regional', 'cu'].map((role) => {
+        const week = latest ? latest[role] : null;
+        const pct = week ? week.usability_pct : 0;
+        return (
+          <ScoreCard
+            key={role}
+            tone={pct >= 60 ? 'green' : pct >= 30 ? 'yellow' : 'red'}
+            label={`${ROLE_LABELS[role]} Usability (this week)`}
+            value={`${pct}%`}
+            subtext={`${week ? week.active_users : 0} of ${roleTotals ? roleTotals[role] : 0} logged in`}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function formatWeekLabel(weekStart) {
+  const d = new Date(`${weekStart}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? weekStart : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function WeeklyUsabilityChart({ byWeekRole }) {
+  const chartData = useMemo(
+    () => (byWeekRole || []).map((w) => ({
+      week: formatWeekLabel(w.week_start),
+      national: w.national.usability_pct,
+      regional: w.regional.usability_pct,
+      cu: w.cu.usability_pct,
+    })),
+    [byWeekRole],
+  );
+  if (chartData.length === 0) {
+    return <Placeholder label="No weekly usage data yet — widen the time window to see a trend." />;
   }
   return (
-    <div className="table-wrap">
-      <table className="breakdown-table">
-        <thead>
-          <tr>
-            <th>Email</th>
-            <th className="center">Page Views</th>
-            <th className="center">Sessions</th>
-            <th className="center">Tabs Viewed</th>
-            <th className="center">Active (min)</th>
-            <th>First Seen</th>
-            <th>Last Seen</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.user_email}>
-              <td className="item-name">{r.user_email}</td>
-              <td className="center">{r.page_views}</td>
-              <td className="center">{r.sessions}</td>
-              <td className="center">{r.distinct_tabs}</td>
-              <td className="center"><strong>{formatMinutes(r.active_seconds)}</strong></td>
-              <td>{formatTimestamp(r.first_seen)}</td>
-              <td>{formatTimestamp(r.last_seen)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div style={{ width: '100%', height: 280 }}>
+      <ResponsiveContainer>
+        <LineChart data={chartData} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+          <CartesianGrid stroke="#e1e0d9" vertical={false} />
+          <XAxis dataKey="week" tick={{ fontSize: 12, fill: '#898781' }} axisLine={{ stroke: '#c3c2b7' }} tickLine={false} />
+          <YAxis
+            tick={{ fontSize: 12, fill: '#898781' }}
+            axisLine={false}
+            tickLine={false}
+            width={44}
+            domain={[0, 100]}
+            tickFormatter={(v) => `${v}%`}
+          />
+          <Tooltip formatter={(value, name) => [`${value}%`, ROLE_LABELS[name] || name]} />
+          <Legend formatter={(value) => ROLE_LABELS[value] || value} />
+          <Line type="monotone" dataKey="national" name="national" stroke={ROLE_COLORS.national} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+          <Line type="monotone" dataKey="regional" name="regional" stroke={ROLE_COLORS.regional} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+          <Line type="monotone" dataKey="cu" name="cu" stroke={ROLE_COLORS.cu} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }
@@ -99,6 +188,7 @@ function UsageAnalyticsSubTab() {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [roleFilter, setRoleFilter] = useState('all');
 
   useEffect(() => {
     let active = true;
@@ -148,8 +238,13 @@ function UsageAnalyticsSubTab() {
             <PageViewsTable rows={summary ? summary.page_views_by_tab : []} />
           </Section>
 
+          <Section title="Weekly Usability by Role" subtitle="Active users this week / total users in that role's roster — National, Regional (PO), CU (FOA)">
+            <RoleUsabilityStrip roleTotals={summary ? summary.role_totals : null} byWeekRole={summary ? summary.by_week_role : []} />
+            <WeeklyUsabilityChart byWeekRole={summary ? summary.by_week_role : []} />
+          </Section>
+
           <Section title="By User" subtitle="Sorted by active minutes">
-            <ByUserTable rows={summary ? summary.by_user : []} />
+            <ByUserTable rows={summary ? summary.by_user : []} roleFilter={roleFilter} onRoleFilterChange={setRoleFilter} />
           </Section>
         </>
       )}

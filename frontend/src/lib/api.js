@@ -289,7 +289,10 @@ export async function fetchAdminAvailability() {
 }
 
 // GET /api/admin/analytics-summary?days=30 → { status, page_views_by_tab,
-// active_users, total_sessions, avg_session_seconds }
+// active_users, total_sessions, avg_session_seconds,
+// by_user: [{ user_email, role: 'national'|'regional'|'cu'|'other', ... }],
+// role_totals: { national, regional, cu } (fixed roster sizes),
+// by_week_role: [{ week_start, national: {active_users,total_users,usability_pct}, regional: {...}, cu: {...} }] }
 export async function fetchAdminAnalytics(days = 30) {
   return request(`/api/admin/analytics-summary?days=${encodeURIComponent(days)}`);
 }
