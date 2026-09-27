@@ -2563,8 +2563,9 @@ function MentorQualityTab({ term, year, summaryData }) {
 // v1 is Term 3 only — see docs/DECISION.md. Server already scopes rows to
 // what this caller may see; national users get every region/CU.
 function ElabCuRow({ cu }) {
-  const pct = Number(cu.overall_completion_pct) || 0;
-  const col = ragColor(pct, 75, 50);
+  const sPct = Number(cu.session_completion_pct) || 0;
+  const mPct = Number(cu.mentor_completion_pct) || 0;
+  const col = ragColor(mPct, 75, 50);
   return (
     <tr>
       <td className="item-name">{cu.cu}</td>
@@ -2572,7 +2573,9 @@ function ElabCuRow({ cu }) {
       <td className="center">{Number(cu.active_mentors) || 0}</td>
       <td className="center">{Number(cu.sessions_completed) || 0}</td>
       <td className="center">{Number(cu.sessions_in_progress) || 0}</td>
-      <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
+      <td className="center">{sPct}%</td>
+      <td className="center">{Number(cu.mentors_fully_completed) || 0}</td>
+      <td className="center" style={{ color: col, fontWeight: 700 }}>{mPct}%</td>
     </tr>
   );
 }
@@ -2607,19 +2610,25 @@ function ElabNationalSubTab() {
   const totalActive = rows.reduce((s, d) => s + (Number(d.active_mentors) || 0), 0);
   const totalCompleted = rows.reduce((s, d) => s + (Number(d.sessions_completed) || 0), 0);
   const totalInProgress = rows.reduce((s, d) => s + (Number(d.sessions_in_progress) || 0), 0);
-  const overallPct = formatPercentage1(totalCompleted, totalActive * ELAB_LEC_NUMS.length);
+  const totalMentorsDone = rows.reduce((s, d) => s + (Number(d.mentors_fully_completed) || 0), 0);
+  const sessionPct = formatPercentage1(totalCompleted, totalActive * ELAB_LEC_NUMS.length);
+  const mentorPct = formatPercentage1(totalMentorsDone, totalActive);
 
   const byRegion = new Map();
   rows.forEach((cu) => {
     const key = cu.region || 'Unknown';
-    if (!byRegion.has(key)) byRegion.set(key, { region: key, active_mentors: 0, sessions_completed: 0, sessions_in_progress: 0 });
+    if (!byRegion.has(key)) byRegion.set(key, { region: key, active_mentors: 0, sessions_completed: 0, sessions_in_progress: 0, mentors_fully_completed: 0 });
     const r = byRegion.get(key);
     r.active_mentors += Number(cu.active_mentors) || 0;
     r.sessions_completed += Number(cu.sessions_completed) || 0;
     r.sessions_in_progress += Number(cu.sessions_in_progress) || 0;
+    r.mentors_fully_completed += Number(cu.mentors_fully_completed) || 0;
   });
   const regionRows = [...byRegion.values()].sort((a, b) => a.region.localeCompare(b.region));
-  const cuRanked = [...rows].sort((a, b) => (Number(b.overall_completion_pct) || 0) - (Number(a.overall_completion_pct) || 0));
+  // Ranked by mentor completion (how many mentors are actually fully done),
+  // not session completion — a CU with lots of partial activity but zero
+  // fully-done mentors shouldn't rank above one with several mentors done.
+  const cuRanked = [...rows].sort((a, b) => (Number(b.mentor_completion_pct) || 0) - (Number(a.mentor_completion_pct) || 0));
   const top10 = cuRanked.slice(0, 10);
   const bottom10 = cuRanked.length > 10 ? [...cuRanked].slice(-10).reverse() : [];
   const perSession = aggregateElabPerSession(rows);
@@ -2630,27 +2639,35 @@ function ElabNationalSubTab() {
     <>
       <div className="score-cards" style={{ marginBottom: '1.25rem' }}>
         <ScoreCard tone="blue" label="Active Mentors" value={totalActive} subtext="term 3 (gold model)" />
-        <ScoreCard tone="green" label="Sessions Completed" value={totalCompleted} subtext={`of ${totalActive * ELAB_LEC_NUMS.length} expected`} />
+        <ScoreCard tone="green" label="Sessions Completed" value={totalCompleted} subtext={`of ${totalActive * ELAB_LEC_NUMS.length} expected — mentor x session instances`} />
         <ScoreCard tone="yellow" label="Sessions In Progress" value={totalInProgress} subtext="started, not finished" />
-        <ScoreCard tone={overallPct >= 60 ? 'green' : overallPct >= 40 ? 'yellow' : 'red'} label="Overall Completion" value={`${overallPct}%`} subtext="6 LEC-linked sessions" />
+        <ScoreCard tone={sessionPct >= 60 ? 'green' : sessionPct >= 40 ? 'yellow' : 'red'} label="Session Completion %" value={`${sessionPct}%`} subtext="6 LEC-linked sessions" />
+        <ScoreCard tone={mentorPct >= 60 ? 'green' : mentorPct >= 40 ? 'yellow' : 'red'} label="Mentors Fully Done (6/6)" value={totalMentorsDone} subtext={`${mentorPct}% of active mentors`} />
       </div>
-      <Section title="🗺️ Regional Breakdown" subtitle="Active mentors, completed and in-progress sessions by region — click a region to drill into its CUs">
+      <Section title="🗺️ Regional Breakdown" subtitle="Sessions completed ≠ mentors done — click a region to drill into its CUs">
         <div className="table-wrap">
           <table className="breakdown-table">
             <thead>
-              <tr><th>Region</th><th className="center">Active Mentors</th><th className="center">Completed</th><th className="center">In Progress</th><th className="center">Completion %</th></tr>
+              <tr>
+                <th>Region</th><th className="center">Active Mentors</th>
+                <th className="center">Sessions Completed</th><th className="center">In Progress</th><th className="center">Session %</th>
+                <th className="center">Mentors Done (6/6)</th><th className="center">Mentor %</th>
+              </tr>
             </thead>
             <tbody>
               {regionRows.map((r) => {
-                const pct = formatPercentage1(r.sessions_completed, r.active_mentors * ELAB_LEC_NUMS.length);
-                const col = ragColor(pct, 75, 50);
+                const sPct = formatPercentage1(r.sessions_completed, r.active_mentors * ELAB_LEC_NUMS.length);
+                const mPct = formatPercentage1(r.mentors_fully_completed, r.active_mentors);
+                const col = ragColor(mPct, 75, 50);
                 return (
                   <tr key={r.region} className="clickable" onClick={() => setDrillRegion(r.region)}>
                     <td className="item-name">{r.region}<DrillTag /></td>
                     <td className="center">{r.active_mentors}</td>
                     <td className="center">{r.sessions_completed}</td>
                     <td className="center">{r.sessions_in_progress}</td>
-                    <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
+                    <td className="center">{sPct}%</td>
+                    <td className="center">{r.mentors_fully_completed}</td>
+                    <td className="center" style={{ color: col, fontWeight: 700 }}>{mPct}%</td>
                   </tr>
                 );
               })}
@@ -2661,27 +2678,33 @@ function ElabNationalSubTab() {
                 <td className="center">{totalActive}</td>
                 <td className="center">{totalCompleted}</td>
                 <td className="center">{totalInProgress}</td>
-                <td className="center">{overallPct}%</td>
+                <td className="center">{sessionPct}%</td>
+                <td className="center">{totalMentorsDone}</td>
+                <td className="center">{mentorPct}%</td>
               </tr>
             </tfoot>
           </table>
         </div>
       </Section>
-      <Section title="📊 CU Rankings" subtitle="Top 10 and bottom 10 CUs by e-lab completion %">
+      <Section title="📊 CU Rankings" subtitle="Top 10 and bottom 10 CUs by mentor completion % (mentors who finished all 6 sessions)">
         <div className="table-wrap">
           <table className="breakdown-table">
             <thead>
-              <tr><th>CU</th><th>Region</th><th className="center">Active Mentors</th><th className="center">Completed</th><th className="center">In Progress</th><th className="center">Completion %</th></tr>
+              <tr>
+                <th>CU</th><th>Region</th><th className="center">Active Mentors</th>
+                <th className="center">Sessions Completed</th><th className="center">In Progress</th><th className="center">Session %</th>
+                <th className="center">Mentors Done (6/6)</th><th className="center">Mentor %</th>
+              </tr>
             </thead>
             <tbody>
               <tr style={{ background: '#f0fff4' }}>
-                <td colSpan={6} style={{ fontWeight: 700, color: C.green }}>🔼 Top 10</td>
+                <td colSpan={8} style={{ fontWeight: 700, color: C.green }}>🔼 Top 10</td>
               </tr>
               {top10.map((cu) => <ElabCuRow key={`top-${cu.region}-${cu.cu}`} cu={cu} />)}
               {bottom10.length > 0 ? (
                 <>
                   <tr style={{ background: '#fff0f0' }}>
-                    <td colSpan={6} style={{ fontWeight: 700, color: C.red }}>🔽 Bottom 10</td>
+                    <td colSpan={8} style={{ fontWeight: 700, color: C.red }}>🔽 Bottom 10</td>
                   </tr>
                   {bottom10.map((cu) => <ElabCuRow key={`bottom-${cu.region}-${cu.cu}`} cu={cu} />)}
                 </>
@@ -2725,22 +2748,29 @@ function ElabNationalSubTab() {
               <div className="table-wrap">
                 <table className="breakdown-table">
                   <thead>
-                    <tr><th>CU</th><th className="center">Active Mentors</th><th className="center">Completed</th><th className="center">In Progress</th><th className="center">Completion %</th></tr>
+                    <tr>
+                      <th>CU</th><th className="center">Active Mentors</th>
+                      <th className="center">Sessions Completed</th><th className="center">In Progress</th><th className="center">Session %</th>
+                      <th className="center">Mentors Done (6/6)</th><th className="center">Mentor %</th>
+                    </tr>
                   </thead>
                   <tbody>
                     {rows
                       .filter((r) => r.region === drillRegion)
-                      .sort((a, b) => (Number(b.overall_completion_pct) || 0) - (Number(a.overall_completion_pct) || 0))
+                      .sort((a, b) => (Number(b.mentor_completion_pct) || 0) - (Number(a.mentor_completion_pct) || 0))
                       .map((cu) => {
-                        const pct = Number(cu.overall_completion_pct) || 0;
-                        const col = ragColor(pct, 75, 50);
+                        const sPct = Number(cu.session_completion_pct) || 0;
+                        const mPct = Number(cu.mentor_completion_pct) || 0;
+                        const col = ragColor(mPct, 75, 50);
                         return (
                           <tr key={cu.cu}>
                             <td className="item-name">{cu.cu}</td>
                             <td className="center">{Number(cu.active_mentors) || 0}</td>
                             <td className="center">{Number(cu.sessions_completed) || 0}</td>
                             <td className="center">{Number(cu.sessions_in_progress) || 0}</td>
-                            <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
+                            <td className="center">{sPct}%</td>
+                            <td className="center">{Number(cu.mentors_fully_completed) || 0}</td>
+                            <td className="center" style={{ color: col, fontWeight: 700 }}>{mPct}%</td>
                           </tr>
                         );
                       })}

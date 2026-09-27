@@ -212,13 +212,19 @@ function ElabCompletion({ region }) {
   const totalActive = sum(regionRows, (d) => N(d.active_mentors));
   const totalCompleted = sum(regionRows, (d) => N(d.sessions_completed));
   const totalInProgress = sum(regionRows, (d) => N(d.sessions_in_progress));
-  const overallPct = formatPercentage1(totalCompleted, totalActive * ELAB_LEC_NUMS.length);
+  const totalMentorsDone = sum(regionRows, (d) => N(d.mentors_fully_completed));
+  const sessionPct = formatPercentage1(totalCompleted, totalActive * ELAB_LEC_NUMS.length);
+  const mentorPct = formatPercentage1(totalMentorsDone, totalActive);
   const perSession = aggregateElabPerSession(regionRows);
   const byRole = aggregateElabBreakdown(regionRows, 'role');
   const byGender = aggregateElabBreakdown(regionRows, 'gender');
 
   return (
     <>
+      <p style={{ color: '#666', fontSize: '.8rem', maxWidth: 700, marginTop: 0 }}>
+        "Sessions Completed" counts individual mentor × session instances (one mentor can complete several) —
+        different from "Mentors Done (6/6)", which counts mentors who finished every expected session.
+      </p>
       <div className="table-wrap">
         <table className="breakdown-table">
           <thead>
@@ -227,22 +233,27 @@ function ElabCompletion({ region }) {
               <th className="center">Active Mentors</th>
               <th className="center">Sessions Completed</th>
               <th className="center">In Progress</th>
-              <th className="center">Completion %</th>
-              <th>Progress</th>
+              <th className="center">Session Completion %</th>
+              <th className="center">Mentors Done (6/6)</th>
+              <th className="center">Mentor Completion %</th>
+              <th>Progress (mentors)</th>
             </tr>
           </thead>
           <tbody>
             {regionRows.map((cu) => {
-              const pct = N(cu.overall_completion_pct);
-              const col = ragColor(pct, 75, 50);
+              const sPct = N(cu.session_completion_pct);
+              const mPct = N(cu.mentor_completion_pct);
+              const col = ragColor(mPct, 75, 50);
               return (
                 <tr key={cu.cu}>
                   <td className="item-name">{cu.cu}</td>
                   <td className="center">{N(cu.active_mentors)}</td>
                   <td className="center">{N(cu.sessions_completed)}</td>
                   <td className="center">{N(cu.sessions_in_progress)}</td>
-                  <td className="center" style={{ color: col, fontWeight: 700 }}>{pct}%</td>
-                  <td style={{ minWidth: 120 }}><ProgressCell pct={pct} color={col} /></td>
+                  <td className="center">{sPct}%</td>
+                  <td className="center">{N(cu.mentors_fully_completed)}</td>
+                  <td className="center" style={{ color: col, fontWeight: 700 }}>{mPct}%</td>
+                  <td style={{ minWidth: 120 }}><ProgressCell pct={mPct} color={col} /></td>
                 </tr>
               );
             })}
@@ -253,7 +264,9 @@ function ElabCompletion({ region }) {
               <td className="center">{totalActive}</td>
               <td className="center">{totalCompleted}</td>
               <td className="center">{totalInProgress}</td>
-              <td className="center">{overallPct}%</td>
+              <td className="center">{sessionPct}%</td>
+              <td className="center">{totalMentorsDone}</td>
+              <td className="center">{mentorPct}%</td>
               <td />
             </tr>
           </tfoot>
