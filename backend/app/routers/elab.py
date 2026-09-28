@@ -18,7 +18,11 @@ e-lab record in that slice (labelled accordingly, not as "active mentors").
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+import logging
+from concurrent.futures import TimeoutError as QueryTimeoutError
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from google.api_core import exceptions as gcloud_exceptions
 from google.cloud import bigquery
 
 from app.auth import current_user
@@ -28,15 +32,66 @@ from app.core.metric_rollup import lecs_for_term
 from app.core.sql import access_clause, access_clause_fuzzy_cu, build_where, level_clause, term_clause
 from app.core.tables import DASHBOARD_MODEL, ELAB_ACTIVITY
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/elab", tags=["elab"])
 
 _TERM_PATTERN = "^(term1|term2|term3)$"
+
+# Bounds every e-lab query. These are the heaviest reads in the app (a
+# regex-filtered scan of a mentor x lesson-attempt table), and an unbounded
+# one is an availability risk on a single-replica deployment, not just a slow
+# request — same reasoning as core/access.py's get_live_config().
+#
+# Keep this BELOW the ingress's proxy-read-timeout (k8s/backend/ingress.yaml)
+# so FastAPI, not nginx, is what answers a stuck query. See _run_elab_query.
+_QUERY_TIMEOUT_SECONDS = 60.0
 
 # Normalizes CU spelling drift between this source and gold_exp (e.g.
 # "Busia-Namayingo" vs "busia - namayingo") into one canonical hyphenated
 # form so the two can be joined — same expression already used for this in
 # routers/mentor_quality.py.
 _CU_NORMALIZE_EXPR = "TRIM(INITCAP(TRIM(REGEXP_REPLACE(REGEXP_REPLACE({col}, r'\\s+', ' '), r'\\s*-\\s*|\\s+', '-'))), '-')"
+
+
+def _run_elab_query(sql: str, params: list, *, scope_key: str) -> list[dict]:
+    """``database.run_query`` with an explicit bound and errors mapped to
+    ``HTTPException``.
+
+    Why the failures are translated here rather than left to propagate:
+    Starlette's ServerErrorMiddleware sits OUTSIDE CORSMiddleware, so the 500
+    it generates for an unhandled exception carries no ``Access-Control-Allow-
+    Origin`` header. The browser then discards the response and ``fetch``
+    rejects, so the dashboard shows an opaque "Network error: Failed to fetch"
+    with no status code instead of the real cause. An ``HTTPException`` raised
+    here is handled inside the CORS layer, so its detail reaches the UI.
+
+    The final catch-all is deliberate and matches that reasoning: on a
+    read-only dashboard route, ANY escaping exception (a credentials error, a
+    driver bug) costs the user the same opaque network error, so every failure
+    is logged in full server-side and reported to the browser as a status the
+    UI can actually render.
+    """
+    try:
+        return database.run_query(sql, params, scope_key=scope_key, timeout=_QUERY_TIMEOUT_SECONDS)
+    except QueryTimeoutError as exc:
+        logger.warning("E-Lab query exceeded %.0fs timeout (scope_key=%s)", _QUERY_TIMEOUT_SECONDS, scope_key)
+        raise HTTPException(
+            status_code=504,
+            detail="E-Lab data took too long to load. Please try again in a moment.",
+        ) from exc
+    except gcloud_exceptions.GoogleAPIError as exc:
+        logger.exception("E-Lab BigQuery query failed (scope_key=%s)", scope_key)
+        raise HTTPException(
+            status_code=502,
+            detail="The E-Lab data source is unavailable right now.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — see docstring: never leak a CORS-less 500 to the UI.
+        logger.exception("E-Lab query failed unexpectedly (scope_key=%s)", scope_key)
+        raise HTTPException(
+            status_code=502,
+            detail="The E-Lab data source is unavailable right now.",
+        ) from exc
 
 
 def _elab_sessions_cte(user: UserAccess, term: str, lec_nums: list[int]) -> tuple[str, list]:
@@ -115,13 +170,26 @@ def summary_by_cu(
     WITH
     {roster_sql},
     {sessions_sql},
+    -- BigQuery does NOT materialise a WITH clause: every extra reference to
+    -- elab_sessions re-executes its whole regex-filtered base scan. This one
+    -- intermediate is therefore read once and every rollup below that does
+    -- not need per-lesson grain is derived from it instead, taking the scans
+    -- of the base table from 5 down to 2 (here and per_session).
+    mentor_slice_totals AS (
+      SELECT
+        region, cu, mentor_id, gender, role,
+        COUNTIF(finished_at IS NOT NULL) AS sessions_completed,
+        COUNTIF(started_at IS NOT NULL AND finished_at IS NULL) AS sessions_in_progress
+      FROM elab_sessions
+      GROUP BY region, cu, mentor_id, gender, role
+    ),
     cu_totals AS (
       SELECT
         region, cu,
         COUNT(DISTINCT mentor_id) AS mentors_with_activity,
-        COUNTIF(finished_at IS NOT NULL) AS sessions_completed,
-        COUNTIF(started_at IS NOT NULL AND finished_at IS NULL) AS sessions_in_progress
-      FROM elab_sessions
+        SUM(sessions_completed) AS sessions_completed,
+        SUM(sessions_in_progress) AS sessions_in_progress
+      FROM mentor_slice_totals
       GROUP BY region, cu
     ),
     -- Session completion (above) counts individual mentor x session
@@ -129,9 +197,14 @@ def summary_by_cu(
     -- than one session each. Mentor completion (below) is a distinct
     -- metric: how many mentors finished ALL of the term's expected
     -- sessions, capped at active_mentors. Keep both, never conflate them.
+    --
+    -- Rolled up WITHOUT the gender/role split: a mentor whose rows carry more
+    -- than one spelling of position/gender splits into several slice rows,
+    -- and must still be judged on their total completions rather than on a
+    -- per-slice partial count.
     mentor_totals AS (
-      SELECT region, cu, mentor_id, COUNTIF(finished_at IS NOT NULL) AS mentor_sessions_completed
-      FROM elab_sessions
+      SELECT region, cu, mentor_id, SUM(sessions_completed) AS mentor_sessions_completed
+      FROM mentor_slice_totals
       GROUP BY region, cu, mentor_id
     ),
     mentor_completion AS (
@@ -160,16 +233,16 @@ def summary_by_cu(
     by_slice AS (
       SELECT region, cu, 'role' AS dimension, role AS slice_value,
         COUNT(DISTINCT mentor_id) AS mentors_with_activity,
-        COUNTIF(finished_at IS NOT NULL) AS sessions_completed,
-        COUNTIF(started_at IS NOT NULL AND finished_at IS NULL) AS sessions_in_progress
-      FROM elab_sessions
+        SUM(sessions_completed) AS sessions_completed,
+        SUM(sessions_in_progress) AS sessions_in_progress
+      FROM mentor_slice_totals
       GROUP BY region, cu, role
       UNION ALL
       SELECT region, cu, 'gender' AS dimension, gender AS slice_value,
         COUNT(DISTINCT mentor_id) AS mentors_with_activity,
-        COUNTIF(finished_at IS NOT NULL) AS sessions_completed,
-        COUNTIF(started_at IS NOT NULL AND finished_at IS NULL) AS sessions_in_progress
-      FROM elab_sessions
+        SUM(sessions_completed) AS sessions_completed,
+        SUM(sessions_in_progress) AS sessions_in_progress
+      FROM mentor_slice_totals
       GROUP BY region, cu, gender
     ),
     by_slice_agg AS (
@@ -199,7 +272,7 @@ def summary_by_cu(
     ORDER BY r.region, r.cu
     """
     params = roster_params + sessions_params
-    rows = database.run_query(sql, params, scope_key=f"{user.scope_key}|elab-summary-by-cu|{term}")
+    rows = _run_elab_query(sql, params, scope_key=f"{user.scope_key}|elab-summary-by-cu|{term}")
     return {"status": "ok", "term": term, "expected_sessions": lec_nums, "data": rows}
 
 
@@ -242,5 +315,5 @@ def mentors(
     ORDER BY mentor_name
     """
     params = sessions_params + [bigquery.ScalarQueryParameter("cu", "STRING", cu)]
-    rows = database.run_query(sql, params, scope_key=f"{user.scope_key}|elab-mentors|{cu}|{term}")
+    rows = _run_elab_query(sql, params, scope_key=f"{user.scope_key}|elab-mentors|{cu}|{term}")
     return {"status": "ok", "term": term, "expected_sessions": lec_nums, "data": rows}
