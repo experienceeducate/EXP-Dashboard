@@ -31,17 +31,50 @@ _client: bigquery.Client | None = None
 _schema_cache: TTLCache = TTLCache(maxsize=32, ttl=600)
 
 
+def _load_credentials():
+    """Service-account key when one is configured, otherwise Application
+    Default Credentials.
+
+    Prod (and any deploy) sets ``GOOGLE_SERVICE_ACCOUNT_KEY`` — k8s mounts the
+    key at /var/secrets/gcp/key.json — so that path is unchanged and still the
+    only one used in the cluster.
+
+    Leaving it unset selects ADC, which is for local development: a developer
+    runs ``gcloud auth application-default login`` and BigQuery is reached as
+    their own Google identity, under their own IAM grants. That keeps a
+    long-lived service-account key off developer laptops entirely, which is
+    what docs/CONTEXT.md asks for — the SA key is meant to exist only in the
+    k8s Secret.
+    """
+    key_path = (settings.GOOGLE_SERVICE_ACCOUNT_KEY or "").strip()
+    if key_path:
+        return service_account.Credentials.from_service_account_file(key_path, scopes=_SCOPES)
+
+    # Imported here, not at module scope: ADC is the local-dev path, and this
+    # keeps the import off the deployed hot path.
+    import google.auth
+    from google.auth.exceptions import DefaultCredentialsError
+
+    try:
+        credentials, _ = google.auth.default(scopes=_SCOPES)
+    except DefaultCredentialsError as exc:
+        raise RuntimeError(
+            "No BigQuery credentials. Either set GOOGLE_SERVICE_ACCOUNT_KEY to a "
+            "service-account JSON path (how the cluster runs — see "
+            "k8s/backend/deployment.yaml), or, for local development, run "
+            "`gcloud auth application-default login` to use your own Google "
+            f"identity and leave GOOGLE_SERVICE_ACCOUNT_KEY empty. Original error: {exc}"
+        ) from exc
+    return credentials
+
+
 def get_client() -> bigquery.Client:
     """Lazily build and memoise a single BigQuery client."""
     global _client
     if _client is None:
-        credentials = service_account.Credentials.from_service_account_file(
-            settings.GOOGLE_SERVICE_ACCOUNT_KEY,
-            scopes=_SCOPES,
-        )
         _client = bigquery.Client(
             project=settings.BQ_PROJECT_ID,
-            credentials=credentials,
+            credentials=_load_credentials(),
         )
     return _client
 

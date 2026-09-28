@@ -39,7 +39,8 @@ React 19 + Vite SPA (nginx)  → single replica
 cd backend
 python -m venv venv; venv\Scripts\Activate.ps1
 pip install -r requirements-dev.txt
-copy .env.example .env    # then fill secrets + BQ config + place service-account.json
+copy .env.example .env    # then fill secrets + BQ config
+gcloud auth application-default login   # BigQuery as your own Google identity
 uvicorn app.main:app --port 8000
 
 # Terminal 2 — frontend
@@ -57,10 +58,24 @@ API docs at `http://localhost:8000/docs`.
 
 Generate secrets: `python -c "import secrets; print(secrets.token_hex(32))"`.
 
+### BigQuery credentials locally
+Leave `GOOGLE_SERVICE_ACCOUNT_KEY` **empty** and run:
+
+```powershell
+gcloud auth application-default login
+gcloud auth application-default set-quota-project educate-data-warehouse-test
+```
+
+The backend then reaches BigQuery as *you*, under your own IAM grants, and no
+service-account key ever lands on the laptop — the SA key is meant to live only
+in the k8s Secret (`docs/CONTEXT.md`). You need BigQuery Data Viewer + Job User
+on `educate-data-warehouse-test`. Setting `GOOGLE_SERVICE_ACCOUNT_KEY` to a JSON
+path still works and still takes precedence; that is how the cluster runs.
+
 ### Required `backend/.env`
-`GOOGLE_SERVICE_ACCOUNT_KEY` (path to SA JSON), `BQ_PROJECT_ID` / `BQ_DATASET` /
-`BQ_TABLE`, `JWT_SECRET`, `DASHBOARD_PASSWORD`, the client-header token, and
-`FRONTEND_URL`. Google OAuth vars are optional locally (email+password works
+`BQ_PROJECT_ID` / `BQ_DATASET` / `BQ_TABLE`, `JWT_SECRET`, `DASHBOARD_PASSWORD`,
+the client-header token, and `FRONTEND_URL`
+(`GOOGLE_SERVICE_ACCOUNT_KEY` is optional — see above). Google OAuth vars are optional locally (email+password works
 without them). See `backend/.env.example`.
 
 ## Auth & access model
