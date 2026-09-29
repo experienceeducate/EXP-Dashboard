@@ -383,16 +383,21 @@ const CU_ELAB_GENDER_LABELS = { female: 'Female', male: 'Male', unknown: 'Unknow
 function CuElabCompletion({ cu }) {
   const [rows, setRows] = useState(null); // null = loading
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
     if (!cu) return;
     let active = true;
     setRows(null);
     setError('');
+    setUnavailable(false);
     api
       .fetchElabMentors(cu, 'term3')
       .then((res) => {
-        if (active) setRows(res.data || []);
+        if (active) {
+          setRows(res.data || []);
+          setUnavailable(res.available === false);
+        }
       })
       .catch((e) => {
         if (active) {
@@ -408,6 +413,7 @@ function CuElabCompletion({ cu }) {
   if (!cu) return <Placeholder label="Select a CU to view e-lab completion." />;
   if (rows === null) return <div style={{ padding: '1.25rem', color: '#888' }}>Loading e-lab data…</div>;
   if (error) return <div className="login-error">{error}</div>;
+  if (unavailable) return <Placeholder label="E-Lab data is temporarily unavailable — the source data changed upstream and Data Engineering has been notified." />;
   if (rows.length === 0) return <Placeholder label="No e-lab activity recorded for this CU in Term 3 yet." />;
 
   return (
