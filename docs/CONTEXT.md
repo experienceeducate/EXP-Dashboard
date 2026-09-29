@@ -131,6 +131,34 @@ Single replica per service; **pod restart is the recovery path.**
   see the note in `k8s/backend/deployment.yaml` (requires a manual
   `kubectl apply`, see Deployment notes below — merging to `main` alone
   won't apply it).
+- **An unhandled exception reaches the browser as an opaque "Failed to
+  fetch", not as its real status.** Starlette's `ServerErrorMiddleware` sits
+  OUTSIDE `CORSMiddleware`, so the 500 it generates carries no
+  `Access-Control-Allow-Origin`; the browser discards the response and
+  `fetch` rejects, leaving the UI with a bare network error
+  (`lib/api.js` wraps it as `Network error: …`, status 0). nginx-generated
+  errors (502/504) are CORS-less for the same reason. **Consequence: any
+  router that lets an exception escape can only ever show the user a
+  content-free error.** `routers/elab.py`'s `_run_elab_query` is the pattern
+  to copy — catch, log server-side, re-raise as `HTTPException` so the
+  detail passes through the CORS layer. The other routers still lack this.
+- **E-Lab's source table was swapped underneath us (2026-09-27).** The
+  sub-tab shipped 2026-09-25 reading
+  `silver_exp.exp_elab_mentor_activity_report`; two days later that table
+  was dropped and rebuilt with a completely different schema — mentor
+  *activity report* columns (school visits, passbooks, recruitment), none
+  of the lesson-level ones (`lesson_name`, `date_started`, `date_finished`,
+  `gender`, `position`). Every E-Lab query failed instantly with
+  `400 Unrecognized name: lesson_name`, surfacing as "Failed to fetch" per
+  the note above. `ELAB_ACTIVITY` now points at
+  `bronze_exp.raw_exp_elab_mentor_learning_progress_2026` (bronze because
+  no silver model over it exists yet), pinned by
+  `test_elab.py::test_elab_source_is_the_lesson_level_table`. Two standing
+  lessons: silver/bronze tables here are **not** owned by this repo and can
+  be rebuilt with different schemas without notice — ADR-008 already says
+  this about column drift, and whole-table drift is the same hazard one
+  level up; and the table reference is year-suffixed, so a new programme
+  year needs it bumped.
 
 ## Deployment notes
 - **CI does NOT reconcile k8s manifests.** `deploy.yml` only does

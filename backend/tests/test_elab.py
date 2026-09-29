@@ -1,5 +1,21 @@
 """E-Lab router tests — third BigQuery source (mentor digital-lesson activity)."""
 from app.core import database
+from app.core.tables import ELAB_ACTIVITY
+
+
+def test_elab_source_is_the_lesson_level_table():
+    """Regression: ELAB_ACTIVITY pointed at
+    silver_exp.exp_elab_mentor_activity_report until that table was dropped
+    and rebuilt (2026-09-27) carrying mentor *activity report* columns
+    instead of lesson-level ones. It has no lesson_name/date_started/
+    date_finished/gender/position, so every E-Lab query died on
+    `400 Unrecognized name: lesson_name` — and because an unhandled 500 is
+    raised outside CORSMiddleware, the UI could only show "Failed to fetch".
+
+    Pinned so that repointing this source is always a deliberate edit with a
+    test to update, never something an upstream rebuild can do silently."""
+    assert "raw_exp_elab_mentor_learning_progress" in ELAB_ACTIVITY
+    assert "exp_elab_mentor_activity_report" not in ELAB_ACTIVITY
 
 
 def test_summary_by_cu_requires_auth(client, client_headers):
