@@ -35,4 +35,16 @@ GROUP_MENTORING_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_g
 # A third data source: one row per mentor x lesson attempt. No active/status
 # column of its own — "active mentors" comes from DASHBOARD_MODEL's
 # total_active_mentors (see routers/elab.py).
-ELAB_ACTIVITY = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_elab_mentor_activity_report`"
+#
+# This pointed at `silver_exp.exp_elab_mentor_activity_report` until that table
+# was dropped and rebuilt on 2026-09-27 with an entirely different schema — it
+# now carries mentor *activity report* columns (school visits, passbooks,
+# recruitment) and none of the lesson-level ones this feature needs, so every
+# E-Lab query failed with `400 Unrecognized name: lesson_name`. The
+# lesson-level data lives here instead. Bronze rather than silver because
+# there is currently no silver model over it; if data engineering builds one,
+# move this back and drop the year suffix handling below.
+#
+# NOTE: year-suffixed. A new programme year needs this bumped (or generalised)
+# — the 2024/2025 equivalents still exist alongside it.
+ELAB_ACTIVITY = f"`{settings.BQ_PROJECT_ID}.bronze_exp.raw_exp_elab_mentor_learning_progress_2026`"
