@@ -181,13 +181,17 @@ function ObservationByCU({ data }) {
 function ElabCompletion({ region }) {
   const [rows, setRows] = useState(null); // null = loading
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
     let active = true;
     api
       .fetchElabSummaryByCu('term3')
       .then((res) => {
-        if (active) setRows(res.data || []);
+        if (active) {
+          setRows(res.data || []);
+          setUnavailable(res.available === false);
+        }
       })
       .catch((e) => {
         if (active) {
@@ -207,6 +211,7 @@ function ElabCompletion({ region }) {
 
   if (rows === null) return <div style={{ padding: '1.25rem', color: '#888' }}>Loading e-lab data…</div>;
   if (error) return <div className="login-error">{error}</div>;
+  if (unavailable) return <Placeholder label="E-Lab data is temporarily unavailable — the source data changed upstream and Data Engineering has been notified." />;
   if (regionRows.length === 0) return <Placeholder label="No e-lab activity recorded for this region in Term 3 yet." />;
 
   const totalActive = sum(regionRows, (d) => N(d.active_mentors));

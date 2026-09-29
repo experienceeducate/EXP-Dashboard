@@ -360,6 +360,8 @@ export async function updateTaskStatus(payload) {
 
 // ── E-Lab completion (mentor digital-lesson activity) ───────────────────────
 // GET /api/elab/summary-by-cu?term=term3 → { status, term, expected_sessions,
+// available (false if the source table's schema changed upstream — see
+// backend/app/routers/elab.py's incident note; data is [] when false),
 // data: [{ region, cu, active_mentors, sessions_completed, sessions_in_progress,
 // session_completion_pct (session-instance rate), mentors_fully_completed,
 // mentor_completion_pct (mentors who finished ALL sessions — a different,
@@ -369,6 +371,7 @@ export async function fetchElabSummaryByCu(term = 'term3') {
 }
 
 // GET /api/elab/mentors?cu=NAME&term=term3 → { status, term, expected_sessions,
+// available (see fetchElabSummaryByCu),
 // data: [{ mentor_id, mentor_name, gender, role, sessions_completed,
 // sessions_in_progress, completion_pct, sessions: [...] }] }
 export async function fetchElabMentors(cu, term = 'term3') {
