@@ -1,0 +1,78 @@
+name: Gitleaks Secret Scan
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gitleaks:
+    name: Scan for leaked secrets
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      # Full history so Gitleaks can scan every commit, not just the working tree.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Install Gitleaks ───────────────────────────────────────────────
+      # Pinned CLI binary (MIT licensed). Avoids gitleaks/gitleaks-action@v2,
+      # which requires a paid GITLEAKS_LICENSE for org-owned repos.
+      - name: Install Gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # ── 3. Run scan ────────────────────────────────────────────────────────
+      # Findings are redacted so the JSON report is safe to share/upload.
+      # The step is allowed to "fail" (leaks found) so we can still notify
+      # Slack before failing the job for real in step 5.
+      - name: Run Gitleaks
+        id: gitleaks
+        continue-on-error: true
+        run: |
+          gitleaks detect \
+            --source . \
+            --report-format json \
+            --report-path gitleaks-report.json \
+            --redact \
+            --verbose
+
+      # ── 4. Deliver findings to Slack ─────────────────────────────────────
+      # Requires a Slack app bot token with chat:write and files:write scopes,
+      # invited into the target channel, stored as the SLACK_BOT_TOKEN secret.
+      # GITLEAKS_CHANNEL_ID is the target channel's ID (not its #name).
+      - name: Deliver findings to Slack
+        if: steps.gitleaks.outcome == 'failure'
+        uses: slackapi/slack-github-action@v2.1.1
+        with:
+          method: files.uploadV2
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel_id: "${{ secrets.GITLEAKS_CHANNEL_ID }}"
+            file: "gitleaks-report.json"
+            filename: "gitleaks-report-${{ github.run_id }}.json"
+            initial_comment: >-
+              :rotating_light: *Gitleaks found potential secrets*
+              • Repo: `${{ github.repository }}`
+              • Branch/ref: `${{ github.ref_name }}`
+              • Event: `${{ github.event_name }}` by `${{ github.actor }}`
+              • Commit: `${{ github.sha }}`
+              • Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+              • Findings are redacted in the attached report — check the flagged
+              files/commits and rotate anything real.
+
+      # ── 5. Fail the job if leaks were found ──────────────────────────────
+      - name: Fail if leaks were found
+        if: steps.gitleaks.outcome == 'failure'
+        run: |
+          echo "Gitleaks detected potential secrets. See gitleaks-report.json / the Slack alert."
+          exit 1
