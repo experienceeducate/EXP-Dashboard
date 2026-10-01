@@ -131,6 +131,31 @@ Single replica per service; **pod restart is the recovery path.**
   see the note in `k8s/backend/deployment.yaml` (requires a manual
   `kubectl apply`, see Deployment notes below — merging to `main` alone
   won't apply it).
+- **Error responses must stay inside `CORSMiddleware`, or the UI can only
+  ever show "Failed to fetch".** Starlette wraps the entire stack in
+  `ServerErrorMiddleware`, outside every user middleware, so a 500 generated
+  *there* carries no `Access-Control-Allow-Origin`. A browser discards such a
+  response and `fetch()` rejects, so `lib/api.js` reports
+  `Network error: Failed to fetch` with **status 0 and no detail** — the real
+  status never reaches the client. nginx-generated errors (502/504, and a
+  `limit-rps` 503) are CORS-less for the same reason, which is why
+  `k8s/backend/ingress.yaml`'s `proxy-read-timeout` must stay above any
+  route's own query timeout: FastAPI, not nginx, should answer a slow request.
+
+  Incident: an upstream rebuild of `silver_exp.exp_elab_mentor_activity_report`
+  dropped the columns `routers/elab.py` reads. BigQuery returned a perfectly
+  clear `400 Unrecognized name: lesson_name`, but every trace of it was lost
+  on the way to the browser — the tab just said "Failed to fetch", and
+  diagnosing it needed server-side logs. Note `query_rows_ignore_missing_table`
+  does **not** help here: it catches a table that doesn't exist, not an
+  existing table whose columns changed.
+
+  Guarded by `main.py`'s middleware ordering — `CORSMiddleware` is registered
+  **last** so it ends up outermost, with a `cors_safe_errors` catch-all just
+  inside it — and pinned by `tests/test_cors_safe_errors.py`. **Don't reorder
+  the middleware in `create_app()` without reading the note there**, and
+  prefer raising `HTTPException` in a router over letting an exception escape,
+  so the client gets a real status and message rather than a generic 500.
 
 ## Deployment notes
 - **CI does NOT reconcile k8s manifests.** `deploy.yml` only does
