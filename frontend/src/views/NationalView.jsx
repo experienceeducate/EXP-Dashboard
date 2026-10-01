@@ -3,7 +3,7 @@ import * as api from '../lib/api.js';
 import { LMM_METRICS } from '../data/learningMeasurementMap.js';
 import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
 import { resolveLiveMetric, resolveProgress } from '../lib/lmmLiveMetrics.js';
-import { getLECsForTerm, C, TERM_CONFIG } from '../lib/config.js';
+import { getLECsForTerm, getLECsInScope, getTermBoundaryLecs, getTermForLec, getTermShortLabel, C, TERM_CONFIG } from '../lib/config.js';
 import {
   computeNationalKpis,
   computeScholarFunnel,
@@ -812,24 +812,73 @@ function LecKeyInsights({ onDrill, insights }) {
 }
 
 function LecTabInsights({ data, year, term, onDrill }) {
-  const lecNums = getLECsForTerm(year, term);
-  const totalS = sum(data, (d) => N(d.total_target_schools));
-  const delivered = sum(data, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
-  const expected = totalS * lecNums.length;
+  // ── One basis for every card on this tab ───────────────────────────────────
+  // `data` holds one row per (CU, term), so under 'All Terms' each CU appears
+  // three times. Summing it naively counted the same 825 target schools once
+  // per term (reporting 2,475 schools, 138 "CUs in view", and every rate
+  // divided by 3x too much), so the figures are rolled up per CU first.
+  //
+  // A LEC number also belongs to exactly one term, so each LEC is counted only
+  // from the rows of the term that owns it. That matters twice over: it keeps
+  // the single-LEC cards off stray cross-term rows (term2 rows report 9
+  // schools at LEC 1), and it's what lets 'All Terms' span LEC 1–20 honestly.
+  //
+  // For a single selected term every one of these collapses to the previous
+  // behaviour — one row per CU, one owning term — so those views are unchanged.
+  const lecNums = getLECsInScope(term);
+
+  const cuStats = useMemo(() => {
+    const byCu = new Map();
+    data.forEach((d) => {
+      const key = `${d.region}|${d.cu}`;
+      if (!byCu.has(key)) byCu.set(key, []);
+      byCu.get(key).push(d);
+    });
+    return [...byCu.values()].map((rows) => {
+      // Target schools are a property of the CU, not of the term, so take one
+      // value rather than adding the terms together.
+      const schools = rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0);
+      const perLec = {};
+      lecNums.forEach((n) => {
+        const owning = getTermForLec(n);
+        const scoped = owning ? rows.filter((d) => d.term === owning) : rows;
+        perLec[n] = sum(scoped, (d) => N(d[`schools_with_lec${n}`]));
+      });
+      const delivered = lecNums.reduce((s, n) => s + perLec[n], 0);
+      return { schools, perLec, delivered, expected: schools * lecNums.length };
+    });
+  }, [data, lecNums.join(',')]);
+
+  const totalS = sum(cuStats, (c) => c.schools);
+  const cuCount = cuStats.length;
+  const delivered = sum(cuStats, (c) => c.delivered);
+  const expected = sum(cuStats, (c) => c.expected);
   const lecPct = formatPercentage1(delivered, expected);
   const durVals = data.map((d) => N(d.avg_lec_session_duration)).filter((v) => v > 0);
   const avgDur = durVals.length > 0 ? Math.round(durVals.reduce((s, v) => s + v, 0) / durVals.length) : 0;
-  const lec6 = sum(data, (d) => N(d.schools_with_lec6));
-  const lec6Pct = formatPercentage1(lec6, totalS);
-  const lec14 = sum(data, (d) => N(d.schools_with_lec14));
-  const lec14Pct = formatPercentage1(lec14, totalS);
+  // A ratio of scholars to schools-delivered, both drawn from the same rows,
+  // so the per-term duplication cancels and only `lecNums` matters here.
   const avgSch = avgScholarsPerLec(data, lecNums);
 
-  const lagging = data.filter((d) => {
-    const n = N(d.total_target_schools) || 1;
-    const dl = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0);
-    return n > 0 && Math.round((dl / (n * lecNums.length)) * 100) < 60;
-  }).length;
+  // The two term-boundary scorecards: first and last LEC of the selection
+  // (previously hardcoded to Term 2's LEC 6 and LEC 14). Denominator is the
+  // shared `totalS` so all six cards on the tab agree.
+  const { firstLec, lastLec } = getTermBoundaryLecs(term);
+  const boundaryCard = (lecNum) => {
+    const del = sum(cuStats, (c) => c.perLec[lecNum] || 0);
+    return { lecNum, delivered: del, pct: formatPercentage1(del, totalS) };
+  };
+  const startCard = firstLec === null ? null : boundaryCard(firstLec);
+  const finalCard = lastLec === null ? null : boundaryCard(lastLec);
+  // Matches the other KPI cards' thresholds, but stays blank rather than red
+  // at 0% — an undelivered LEC is "no data yet", not a failure.
+  const boundaryClass = (p) => (p >= 80 ? 'kpi-green' : p >= 60 ? 'kpi-amber' : p > 0 ? 'kpi-red' : '');
+
+  // Counts CUs, not CU-terms — under 'All Terms' the old version counted the
+  // same CU up to three times.
+  const lagging = cuStats.filter(
+    (c) => c.expected > 0 && Math.round((c.delivered / c.expected) * 100) < 60,
+  ).length;
   const lecInsight = lecPct >= 80
     ? `✅ Strong delivery at ${lecPct}% — programme on track across all regions.`
     : lecPct >= 60
@@ -849,11 +898,15 @@ function LecTabInsights({ data, year, term, onDrill }) {
       </div>
       <div className="kpi-hero-strip">
         <KpiHeroCard label="LEC Delivery" valueClass={ragKpiClass(lecPct)} value={lecPct} unit="%" sub={`${num(delivered)} / ${num(expected)} sessions`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'lec_delivery' })} />
-        <KpiHeroCard label="Total Schools" valueClass="kpi-blue" value={totalS} sub={`${data.length} CUs in view`} drill="⌕ Schools by region" onClick={() => onDrill({ metric: 'total_schools' })} />
+        <KpiHeroCard label="Total Schools" valueClass="kpi-blue" value={totalS} sub={`${cuCount} CUs in view`} drill="⌕ Schools by region" onClick={() => onDrill({ metric: 'total_schools' })} />
         <KpiHeroCard label="Avg Scholars/LEC" valueClass={ragKpiClass(avgSch, 45, 35)} value={avgSch} sub="across delivered sessions" drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'avg_scholars' })} />
         <KpiHeroCard label="Avg Session Duration" valueClass={avgDur >= 70 && avgDur <= 90 ? 'kpi-green' : avgDur > 0 ? 'kpi-amber' : ''} value={avgDur > 0 ? avgDur : '—'} unit={avgDur > 0 ? ' min' : ''} sub="Target: 70–90 min" drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'lec_duration' })} />
-        <KpiHeroCard label="LEC 6 (T2 Start)" valueClass={lec6Pct >= 80 ? 'kpi-green' : lec6Pct >= 60 ? 'kpi-amber' : lec6Pct > 0 ? 'kpi-red' : ''} value={lec6Pct} unit="%" sub={`${lec6} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: 6 })} />
-        <KpiHeroCard label="LEC 14 (Final)" valueClass={lec14Pct >= 80 ? 'kpi-green' : lec14Pct >= 60 ? 'kpi-amber' : lec14Pct > 0 ? 'kpi-red' : ''} value={lec14Pct} unit="%" sub={`${lec14} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: 14 })} />
+        {startCard ? (
+          <KpiHeroCard label={`LEC ${startCard.lecNum} (${getTermShortLabel(term)} Start)`} valueClass={boundaryClass(startCard.pct)} value={startCard.pct} unit="%" sub={`${startCard.delivered} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: startCard.lecNum })} />
+        ) : null}
+        {finalCard ? (
+          <KpiHeroCard label={`LEC ${finalCard.lecNum} (Final)`} valueClass={boundaryClass(finalCard.pct)} value={finalCard.pct} unit="%" sub={`${finalCard.delivered} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: finalCard.lecNum })} />
+        ) : null}
       </div>
     </div>
   );
