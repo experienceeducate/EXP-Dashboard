@@ -157,6 +157,40 @@ export function getLECLabels(lecNums) {
   return lecNums.map((n) => 'LEC ' + n);
 }
 
+// First and last LEC of a term — the two endpoints the LEC Delivery tab
+// reports as its own scorecards. 'all' spans the whole year: the first LEC of
+// the earliest term through the last of the latest.
+export function getTermBoundaryLecs(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  const lecs = keys.flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].lecs : []));
+  if (lecs.length === 0) return { firstLec: null, lastLec: null };
+  return { firstLec: Math.min(...lecs), lastLec: Math.max(...lecs) };
+}
+
+// Which term a given LEC number belongs to. Every LEC belongs to exactly one
+// term, so a single-LEC metric has to be measured against that term's rows
+// rather than whatever happens to be in view — see NationalView's
+// LecTabInsights for why that matters under 'All Terms'.
+export function getTermForLec(lecNum) {
+  return Object.keys(TERM_CONFIG).find((t) => TERM_CONFIG[t].lecs.includes(lecNum)) || null;
+}
+
+// 'term2' → 'T2'. Short form for compact scorecard labels.
+export function getTermShortLabel(term) {
+  return term === 'all' ? 'Year' : String(term).replace('term', 'T');
+}
+
+// Every LEC a selection covers. Deliberately separate from getLECsForTerm():
+// that one falls back to Term 1 for 'all', which several callers rely on, so
+// widening it there would change the drill panel and term comparisons too.
+// This spans the whole year instead.
+export function getLECsInScope(term) {
+  if (term !== 'all') return getLECsForTerm(null, term);
+  return Object.keys(TERM_CONFIG)
+    .flatMap((t) => TERM_CONFIG[t].lecs)
+    .sort((a, b) => a - b);
+}
+
 export function getMilestonesForTerm(term) {
   const cfg = TERM_CONFIG[term];
   return cfg && cfg.milestones ? cfg.milestones : [1, 2];
