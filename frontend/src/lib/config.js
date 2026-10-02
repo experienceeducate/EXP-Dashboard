@@ -58,10 +58,14 @@ export const C = {
 };
 
 // term → LEC numbers & milestones (legacy TERM_CONFIG line 2108)
+// `gms` are the Group Mentoring sessions each term runs. GM 4 (Term 3) has no
+// `schools_with_gm4` column in the gold model yet — it is listed here anyway so
+// the tile renders and starts showing real numbers the moment the column lands,
+// with no code change. See getGMsInScope / NationalView's LecTab.
 export const TERM_CONFIG = {
-  term1: { lecs: [1, 2, 3, 4, 5], milestones: [1, 2], label: 'Term 1' },
-  term2: { lecs: [6, 7, 8, 9, 10, 11, 12, 13, 14], milestones: [3, 4], label: 'Term 2' },
-  term3: { lecs: [15, 16, 17, 18, 19, 20], milestones: [5, 6], label: 'Term 3' },
+  term1: { lecs: [1, 2, 3, 4, 5], milestones: [1, 2], gms: [1], label: 'Term 1' },
+  term2: { lecs: [6, 7, 8, 9, 10, 11, 12, 13, 14], milestones: [3, 4], gms: [2, 3], label: 'Term 2' },
+  term3: { lecs: [15, 16, 17, 18, 19, 20], milestones: [5, 6], gms: [4], label: 'Term 3' },
 };
 
 // METRIC_DEFINITIONS (legacy line 3835) — authoritative labels/formulas/thresholds
@@ -189,6 +193,21 @@ export function getLECsInScope(term) {
   return Object.keys(TERM_CONFIG)
     .flatMap((t) => TERM_CONFIG[t].lecs)
     .sort((a, b) => a - b);
+}
+
+// Group Mentoring sessions a selection covers — GM 1 for Term 1, GM 2 and 3 for
+// Term 2, GM 4 for Term 3, all four under 'all'.
+export function getGMsInScope(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  return keys
+    .flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].gms || [] : []))
+    .sort((a, b) => a - b);
+}
+
+// Which term runs a given GM session. Same purpose as getTermForLec: a session
+// belongs to one term, so it must be counted from that term's rows only.
+export function getTermForGM(gmNum) {
+  return Object.keys(TERM_CONFIG).find((t) => (TERM_CONFIG[t].gms || []).includes(gmNum)) || null;
 }
 
 export function getMilestonesForTerm(term) {
