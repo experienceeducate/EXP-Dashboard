@@ -267,11 +267,13 @@ function ExecTab({ summaryData, data, year, term, onDrill, onJumpTab }) {
           <FunnelStat title="Recruited" value={num(funnel.recruited)} note={`${funnel.recTarget > 0 ? ((funnel.recruited / funnel.recTarget) * 100).toFixed(0) : 0}% of ${num(funnel.recTarget)} target`} border={C.blue} bg="#f0f4ff" onClick={() => onDrill({ metric: 'recruitment' })} />
           <FunnelStat title="Activated (LEC 2)" value={num(funnel.activated)} note={`${funnel.activationPct}% of recruited`} border={C.yellow} bg="#fffbeb" onClick={() => onDrill({ metric: 'recruitment' })} />
           {funnel.isT2plus ? <FunnelStat title="T1 Completed (LEC 5)" value={num(funnel.t1Complete)} note={`${funnel.t1RetPct}% of recruited`} border={C.green} bg="#f0fdf4" onClick={() => onDrill({ metric: 'retention' })} /> : null}
+          {funnel.isT3plus ? <FunnelStat title="T2 Completed (LEC 14)" value={num(funnel.t2Complete)} note={`${funnel.t2RetPct}% of recruited`} border={C.green} bg="#f0fdf4" onClick={() => onDrill({ metric: 'retention' })} /> : null}
           <FunnelStat title={`${funnel.retProjected ? '📈 Projected ' : ''}Retention (LEC ${funnel.lastLec})`} value={`${funnel.retentionPct}%`} note={`${funnel.retProjected ? '~' : ''}${num(funnel.lastLecScholars)} of ${num(funnel.retBase)} activated`} border={funnel.retentionPct >= 85 ? C.green : funnel.retentionPct >= 70 ? C.yellow : C.red} bg="#f0fdf4" onClick={() => onDrill({ metric: 'retention' })} />
         </div>
         <FunnelBar label={`Recruited (target: ${num(funnel.recTarget)})`} val={funnel.recruited} denom={funnel.recTarget} color={C.blue} onClick={() => onDrill({ metric: 'recruitment' })} />
         <FunnelBar label="Activated — attended LEC 2" val={funnel.activated} denom={funnel.recruited} color={C.yellow} onClick={() => onDrill({ metric: 'retention' })} />
-        {funnel.isT2plus ? <FunnelBar label="T1 Completed — attended LEC 5" val={funnel.t1Complete} denom={funnel.activated} color={C.green} onClick={() => onDrill({ metric: 'retention' })} /> : null}
+        {funnel.isT2plus ? <FunnelBar label="T1 Completed — attended LEC 5" val={funnel.t1Complete} denom={funnel.recruited} color={C.green} onClick={() => onDrill({ metric: 'retention' })} /> : null}
+        {funnel.isT3plus ? <FunnelBar label="T2 Completed — attended LEC 14" val={funnel.t2Complete} denom={funnel.recruited} color={C.green} onClick={() => onDrill({ metric: 'retention' })} /> : null}
         <FunnelBar label={`${funnel.retProjected ? '📈 Projected ' : ''}Retention — LEC ${funnel.lastLec}`} val={funnel.lastLecScholars} denom={funnel.retBase} color={funnel.retentionPct >= 85 ? C.green : funnel.retentionPct >= 70 ? C.yellow : C.red} onClick={() => onDrill({ metric: 'retention' })} />
       </Section>
     </>
