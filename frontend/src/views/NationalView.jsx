@@ -3,7 +3,10 @@ import * as api from '../lib/api.js';
 import { LMM_METRICS } from '../data/learningMeasurementMap.js';
 import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
 import { resolveLiveMetric, resolveProgress } from '../lib/lmmLiveMetrics.js';
-import { getLECsForTerm, getLECsInScope, getTermBoundaryLecs, getTermForLec, getTermShortLabel, C, TERM_CONFIG } from '../lib/config.js';
+import {
+  getLECsInScope, getGMsInScope, getTermBoundaryLecs, getTermForLec, getTermForGM,
+  getTermShortLabel, C,
+} from '../lib/config.js';
 import {
   computeNationalKpis,
   computeScholarFunnel,
@@ -435,20 +438,95 @@ function FunnelBar({ label, val, denom, color, onClick }) {
 
 // ── LEC Delivery tab ─────────────────────────────────────────────────────────
 function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
-  const lecNums = term === 'all'
-    ? [...(TERM_CONFIG.term1?.lecs || []), ...(TERM_CONFIG.term2?.lecs || [])]
-    : getLECsForTerm(year, term);
-  const uniqueCURows = term === 'all' ? [...new Map(data.map((d) => [d.cu, d])).values()] : data;
-  const totalSchools = sum(uniqueCURows, (d) => N(d.total_target_schools));
+  // LECs and GM sessions follow the term filter. Under 'All Terms' that is the
+  // whole year: LEC 1-20 and GM 1-4 (previously LEC 1-14 only — Term 3 was
+  // silently dropped — and GM 2/3 hardcoded regardless of term).
+  const lecNums = getLECsInScope(term);
+  const gmNums = getGMsInScope(term);
 
-  const lecRows = lecNums.map((n) => {
-    const schoolsWith = sum(data, (d) => N(d[`schools_with_lec${n}`]));
-    const scholars = sum(data, (d) => N(d[`lec${n}_scholars`]));
-    const nonScholars = sum(data, (d) => N(d[`lec${n}_non_scholars`]));
-    const compPct = formatPercentage1(schoolsWith, totalSchools);
-    const avgS = schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—';
-    return { label: `LEC ${n}`, lecNum: n, schoolsWith, scholars, nonScholars, compPct, avgS };
-  });
+  // `data` holds one row per (CU, term), so under 'All Terms' each CU appears
+  // three times. Everything below is rolled up per CU first, and each LEC or GM
+  // session is read only from the rows of the term that runs it.
+  //
+  // Both halves matter. Target schools are a property of the CU, not the term,
+  // so adding the terms together counted the same 825 schools three times. And
+  // a single LEC summed across every term's rows double-counts, because a few
+  // rows carry stray counts for another term's sessions — LEC 1 came to 832
+  // against a 825 denominator, i.e. 100.8%.
+  //
+  // For a single selected term every CU has one row and one owning term, so all
+  // of this collapses to the previous behaviour.
+  const rollup = useMemo(() => {
+    const byCu = new Map();
+    data.forEach((d) => {
+      const key = `${d.region}|${d.cu}`;
+      if (!byCu.has(key)) byCu.set(key, []);
+      byCu.get(key).push(d);
+    });
+    const cuGroups = [...byCu.values()];
+    const scoped = (rows, owning) => (owning ? rows.filter((d) => d.term === owning) : rows);
+    const totalSchools = cuGroups.reduce(
+      (s, rows) => s + rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0),
+      0,
+    );
+
+    const lecs = lecNums.map((n) => {
+      const owning = getTermForLec(n);
+      let schoolsWith = 0;
+      let scholars = 0;
+      let nonScholars = 0;
+      cuGroups.forEach((rows) => {
+        const rs = scoped(rows, owning);
+        schoolsWith += sum(rs, (d) => N(d[`schools_with_lec${n}`]));
+        scholars += sum(rs, (d) => N(d[`lec${n}_scholars`]));
+        nonScholars += sum(rs, (d) => N(d[`lec${n}_non_scholars`]));
+      });
+      return {
+        label: `LEC ${n}`,
+        lecNum: n,
+        schoolsWith,
+        scholars,
+        nonScholars,
+        compPct: formatPercentage1(schoolsWith, totalSchools),
+        avgS: schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—',
+      };
+    });
+
+    const gms = gmNums.map((n) => {
+      const owning = getTermForGM(n);
+      const field = `schools_with_gm${n}`;
+      let schoolsWith = 0;
+      let scholars = 0;
+      // `reported` asks whether the field EXISTS on any row in scope, not
+      // whether it is non-zero. GM 4 has no column in the gold model yet, so
+      // it arrives as undefined, which N() would flatten to 0 and render as a
+      // delivery failure. Distinguishing the two keeps "not conducted yet"
+      // visually separate from "conducted and missed" — and once the column
+      // lands with real values this flips on its own, so a genuine 0% after
+      // reporting starts still shows as Behind.
+      let reported = false;
+      cuGroups.forEach((rows) => {
+        const rs = scoped(rows, owning);
+        rs.forEach((d) => {
+          if (d[field] !== undefined && d[field] !== null) reported = true;
+        });
+        schoolsWith += sum(rs, (d) => N(d[field]));
+        scholars += sum(rs, (d) => N(d[`gm${n}_total_scholars`]));
+      });
+      return {
+        gmNum: n,
+        field,
+        schoolsWith,
+        scholars,
+        reported,
+        pct: formatPercentage1(schoolsWith, totalSchools),
+      };
+    });
+
+    return { totalSchools, lecs, gms };
+  }, [data, lecNums.join(','), gmNums.join(',')]);
+
+  const { totalSchools, lecs: lecRows, gms: gmRows } = rollup;
 
   // Skills Labs Total tile (legacy: totalLECSchoolDeliveries / lecDeliveryPct).
   const totalLECSchoolDeliveries = lecRows.reduce((s, r) => s + r.schoolsWith, 0);
@@ -457,16 +535,14 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const lecDeliveryPct = formatPercentage1(totalLECSchoolDeliveries, lecsExpected);
   const avgLECScholars = totalLECSchoolDeliveries > 0 ? (totalLECScholars / totalLECSchoolDeliveries).toFixed(1) : '—';
 
-  // GM 2 / GM 3 / GM Total tiles — fixed 825-school denominator per session (legacy).
-  const GM2_TARGET = 825;
-  const GM3_TARGET = 825;
-  const GM_TOTAL_TARGET = GM2_TARGET + GM3_TARGET;
-  const gm2Schools = sum(uniqueCURows, (d) => N(d.schools_with_gm2));
-  const gm3Schools = sum(uniqueCURows, (d) => N(d.schools_with_gm3));
-  const gm2Pct = formatPercentage1(gm2Schools, GM2_TARGET);
-  const gm3Pct = formatPercentage1(gm3Schools, GM3_TARGET);
-  const gmTotalSchools = gm2Schools + gm3Schools;
-  const gmTotalPct = formatPercentage1(gmTotalSchools, GM_TOTAL_TARGET);
+  // GM Total spans every session the selection covers — 825 x 1 for Term 1,
+  // x 2 for Term 2, x 1 for Term 3, x 4 for All Terms. An unreported session
+  // still counts toward the denominator (so All Terms is out of 825 x 4), but
+  // if NOTHING in scope has reported the total reads as pending rather than 0%.
+  const gmTotalSchools = gmRows.reduce((s, g) => s + g.schoolsWith, 0);
+  const gmTotalTarget = totalSchools * gmNums.length;
+  const gmTotalPct = formatPercentage1(gmTotalSchools, gmTotalTarget);
+  const gmAnyReported = gmRows.some((g) => g.reported);
 
   const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term), [summaryData, data, year, term]);
   const clusters = useMemo(() => computeLecClusters(schoolData, year, term), [schoolData, year, term]);
@@ -481,7 +557,8 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const activityHeader = (() => {
     const gmSchTotal = sum(data, (d) => N(d.schools_with_gm));
     const gmSchPct = formatPercentage1(gmSchTotal, totalSchools);
-    const termLbl = term === 'term2' ? 'T2' : term === 'term1' ? 'T1' : 'all terms';
+    // Was a term1/term2 ternary, so Term 3 fell through to "all terms".
+    const termLbl = term === 'all' ? 'all terms' : getTermShortLabel(term);
     const leading = lecRows.reduce((best, r) => (r.compPct > (best?.pct || 0) ? { lecNum: r.lecNum, pct: r.compPct } : best), null);
     const leadingStr = leading ? `LEC ${leading.lecNum} leads at ${leading.pct}%` : null;
     const title = lecDeliveryPct >= 80
@@ -530,37 +607,31 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
             dark
             onClick={() => onDrill({ metric: 'lec_delivery' })}
           />
-          <MetricTile
-            label="GM 2"
-            value={gm2Schools}
-            valueSuffix={`/ ${GM2_TARGET}`}
-            status={gm2Pct >= 80 ? 'on' : gm2Pct >= 60 ? 'near' : 'off'}
-            statusLabel={gm2Pct >= 80 ? 'On Track' : gm2Pct >= 60 ? 'Near' : 'Behind'}
-            pct={gm2Pct}
-            fill={gm2Pct >= 80 ? '#2e7d5a' : gm2Pct >= 60 ? '#C38A1F' : '#C9554A'}
-            diag="GM Session 2 delivered"
-            onClick={() => onDrill({ metric: 'gm', gmField: 'schools_with_gm2', gmLabel: 'GM 2' })}
-          />
-          <MetricTile
-            label="GM 3"
-            value={gm3Schools}
-            valueSuffix={`/ ${GM3_TARGET}`}
-            status={gm3Pct >= 80 ? 'on' : gm3Pct >= 60 ? 'near' : 'off'}
-            statusLabel={gm3Pct >= 80 ? 'On Track' : gm3Pct >= 60 ? 'Near' : 'Behind'}
-            pct={gm3Pct}
-            fill={gm3Pct >= 80 ? '#2e7d5a' : gm3Pct >= 60 ? '#C38A1F' : '#C9554A'}
-            diag="GM Session 3 delivered"
-            onClick={() => onDrill({ metric: 'gm', gmField: 'schools_with_gm3', gmLabel: 'GM 3' })}
-          />
+          {gmRows.map((g) => (
+            <MetricTile
+              key={g.gmNum}
+              label={`GM ${g.gmNum}`}
+              value={g.schoolsWith}
+              valueSuffix={`/ ${totalSchools}`}
+              status={!g.reported ? 'pending' : g.pct >= 80 ? 'on' : g.pct >= 60 ? 'near' : 'off'}
+              statusLabel={!g.reported ? 'Not yet reported' : g.pct >= 80 ? 'On Track' : g.pct >= 60 ? 'Near' : 'Behind'}
+              pct={g.pct}
+              fill={!g.reported ? '#dee2e6' : g.pct >= 80 ? '#2e7d5a' : g.pct >= 60 ? '#C38A1F' : '#C9554A'}
+              diag={g.reported
+                ? `GM Session ${g.gmNum} delivered${g.scholars > 0 ? ` · ${num(g.scholars)} scholars` : ''}`
+                : `GM Session ${g.gmNum} not conducted yet — will populate automatically once reported`}
+              onClick={() => onDrill({ metric: 'gm', gmField: g.field, gmLabel: `GM ${g.gmNum}` })}
+            />
+          ))}
           <MetricTile
             label={`${getGMLabel()} Total`}
             value={gmTotalSchools}
-            valueSuffix={`/ ${GM_TOTAL_TARGET}`}
-            status={gmTotalPct >= 80 ? 'on' : gmTotalPct >= 60 ? 'near' : 'off'}
-            statusLabel={`${gmTotalPct}% delivery`}
+            valueSuffix={`/ ${gmTotalTarget}`}
+            status={!gmAnyReported ? 'pending' : gmTotalPct >= 80 ? 'on' : gmTotalPct >= 60 ? 'near' : 'off'}
+            statusLabel={!gmAnyReported ? 'Not yet reported' : `${gmTotalPct}% delivery`}
             pct={gmTotalPct}
-            fill={gmTotalPct >= 80 ? '#8FD48A' : gmTotalPct >= 60 ? '#E6C474' : '#F4A8A0'}
-            diag={`GM 2 (${gm2Schools}) + GM 3 (${gm3Schools}) combined`}
+            fill={!gmAnyReported ? 'rgba(255,255,255,.25)' : gmTotalPct >= 80 ? '#8FD48A' : gmTotalPct >= 60 ? '#E6C474' : '#F4A8A0'}
+            diag={gmRows.map((g) => `GM ${g.gmNum} (${g.reported ? g.schoolsWith : 'n/a'})`).join(' + ')}
             dark
             onClick={() => onDrill({ metric: 'gm' })}
           />
