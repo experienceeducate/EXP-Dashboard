@@ -259,16 +259,23 @@ export function computeScholarFunnel(summaryData, data, year, term) {
   const recTarget = sum(useT1, (d) => N(d.total_target_schools)) * 45;
   const activated = sum(useT1, (d) => N(d.lec2_scholars));
   const t1Complete = sum(useT1, (d) => N(d.lec5_scholars));
+  // T2 Completed (LEC 14) is a Term 2 event, so it is read from Term 2 rows
+  // only. Unlike T1 there is no fallback to `data`: under Term 3 / All Terms
+  // that would be other terms' rows, which carry stray LEC counts.
+  const isT3plus = term === 'term3' || term === 'all';
+  const t2Rows = summaryData.filter((d) => d.year == year && d.term === 'term2');
+  const t2Complete = sum(t2Rows, (d) => N(d.lec14_scholars));
 
   const { lastLec, lastLecScholars, isProjected: retProjected } = resolveLastLecScholars(data, lecNums);
   const retBase = activated > 0 ? activated : recruited;
   const retentionPct = retBase > 0 ? Math.round((lastLecScholars / retBase) * 100) : 0;
   const activationPct = recruited > 0 ? ((activated / recruited) * 100).toFixed(1) : 0;
   const t1RetPct = recruited > 0 ? ((t1Complete / recruited) * 100).toFixed(1) : 0;
+  const t2RetPct = recruited > 0 ? ((t2Complete / recruited) * 100).toFixed(1) : 0;
 
   return {
-    isT2plus, recruited, recTarget, activated, t1Complete,
-    lastLec, lastLecScholars, retProjected, retBase, retentionPct, activationPct, t1RetPct,
+    isT2plus, isT3plus, recruited, recTarget, activated, t1Complete, t2Complete,
+    lastLec, lastLecScholars, retProjected, retBase, retentionPct, activationPct, t1RetPct, t2RetPct,
   };
 }
 
