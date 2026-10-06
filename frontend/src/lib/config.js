@@ -210,6 +210,21 @@ export function getTermForGM(gmNum) {
   return Object.keys(TERM_CONFIG).find((t) => (TERM_CONFIG[t].gms || []).includes(gmNum)) || null;
 }
 
+// PB milestones a selection covers — M1-2 for Term 1, M3-4 for Term 2, M5-6 for
+// Term 3, all six under 'all'. Unlike getMilestonesForTerm there is no [1, 2]
+// fallback, so 'all' really means the whole year.
+export function getMilestonesInScope(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  return keys
+    .flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].milestones || [] : []))
+    .sort((a, b) => a - b);
+}
+
+// Which term a PB milestone belongs to — same purpose as getTermForGM.
+export function getTermForMilestone(mNum) {
+  return Object.keys(TERM_CONFIG).find((t) => (TERM_CONFIG[t].milestones || []).includes(mNum)) || null;
+}
+
 export function getMilestonesForTerm(term) {
   const cfg = TERM_CONFIG[term];
   return cfg && cfg.milestones ? cfg.milestones : [1, 2];
