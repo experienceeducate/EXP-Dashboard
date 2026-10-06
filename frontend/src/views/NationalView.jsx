@@ -4,8 +4,8 @@ import { LMM_METRICS } from '../data/learningMeasurementMap.js';
 import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
 import { resolveLiveMetric, resolveProgress } from '../lib/lmmLiveMetrics.js';
 import {
-  getLECsInScope, getGMsInScope, getTermBoundaryLecs, getTermForLec, getTermForGM,
-  getTermShortLabel, C,
+  getLECsInScope, getGMsInScope, getMilestonesInScope, getTermBoundaryLecs, getTermForLec,
+  getTermForGM, getTermForMilestone, getTermShortLabel, C,
 } from '../lib/config.js';
 import {
   computeNationalKpis,
@@ -701,12 +701,64 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
 }
 
 // ── Regional Comparison table (legacy renderNationalActivityCompletion) ──────
+// Term-aware like the LEC Delivery tiles: each column covers the sessions the
+// selection runs, out of regional schools x session count.
+//   Term 1: LEC x5, GM x1 (GM 1),   PB M1, M2
+//   Term 2: LEC x9, GM x2 (GM 2+3), PB M3, M4
+//   Term 3: LEC x6, GM x1 (GM 4),   PB M5, M6
+//   All:    LEC x20, GM x4,         PB M1-M6
+// As in LecTab, rows are grouped per CU and each session is read only from the
+// term that runs it, since a few rows carry stray counts for other terms.
+//
+// GM 4 and M5/M6 have no column in the gold model yet. A cell whose columns are
+// absent from every row in scope renders as "Not yet reported" rather than 0%,
+// and fills in on its own once the column lands. GM is one combined column, so
+// it is pending only if none of its sessions has reported; a partly reported
+// GM (All Terms, GM 4 missing) still counts every session in the denominator,
+// matching the GM Total tile.
 function RegionalComparisonTable({ data, lecNums, term }) {
   const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
   if (regions.length === 0) return null;
-  const gmKeys = term === 'term1' ? ['schools_with_gm1']
-    : term === 'term2' ? ['schools_with_gm2', 'schools_with_gm3']
-      : ['schools_with_gm1', 'schools_with_gm2', 'schools_with_gm3'];
+  const gmNums = getGMsInScope(term);
+  const msNums = getMilestonesInScope(term);
+  const pending = <span className="mt-badge pending">Not yet reported</span>;
+
+  const regionRows = regions.map((region) => {
+    const byCu = new Map();
+    data.filter((d) => d.region === region).forEach((d) => {
+      if (!byCu.has(d.cu)) byCu.set(d.cu, []);
+      byCu.get(d.cu).push(d);
+    });
+    const cuGroups = [...byCu.values()];
+    const n = cuGroups.reduce(
+      (s, rows) => s + rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0),
+      0,
+    );
+    // Sum `field` across the region, reading each CU only from `owning` term's rows.
+    const tally = (field, owning) => {
+      let total = 0;
+      let reported = false;
+      cuGroups.forEach((rows) => {
+        rows.filter((d) => !owning || d.term === owning).forEach((d) => {
+          if (d[field] !== undefined && d[field] !== null) reported = true;
+          total += N(d[field]);
+        });
+      });
+      return { total, reported };
+    };
+
+    const lDel = lecNums.reduce((s, ln) => s + tally(`schools_with_lec${ln}`, getTermForLec(ln)).total, 0);
+    const lExp = n * lecNums.length;
+    const gmTallies = gmNums.map((g) => tally(`schools_with_gm${g}`, getTermForGM(g)));
+    const gm = gmTallies.reduce((s, t) => s + t.total, 0);
+    const gmExp = n * gmNums.length;
+    const milestones = msNums.map((m) => ({ m, ...tally(`schools_completed_m${m}`, getTermForMilestone(m)) }));
+    return {
+      region, n, lDel, lExp, lPct: formatPercentage1(lDel, lExp),
+      gm, gmExp, gmPct: formatPercentage1(gm, gmExp), gmReported: gmTallies.some((t) => t.reported),
+      milestones,
+    };
+  });
 
   return (
     <div style={{ marginTop: '1.25rem' }}>
@@ -718,46 +770,22 @@ function RegionalComparisonTable({ data, lecNums, term }) {
               <th>Region</th>
               <th className="center">LEC Delivery</th>
               <th className="center">{getGMLabel()}</th>
-              {term === 'term2' ? (
-                <>
-                  <th className="center">PB Milestone M3</th>
-                  <th className="center">PB Milestone M4</th>
-                </>
-              ) : (
-                <th className="center">PB Milestone</th>
-              )}
+              {msNums.map((m) => <th key={m} className="center">PB Milestone M{m}</th>)}
             </tr>
           </thead>
           <tbody>
-            {regions.map((region) => {
-              const rd = data.filter((d) => d.region === region);
-              const rdUniq = term === 'all' ? [...new Map(rd.map((d) => [d.cu, d])).values()] : rd;
-              const n = sum(rdUniq, (d) => N(d.total_target_schools));
-              const lDel = sum(rd, (d) => lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0));
-              const lExp = n * lecNums.length;
-              const lPct = formatPercentage1(lDel, lExp);
-              const gm = sum(rdUniq, (d) => gmKeys.reduce((a, k) => a + N(d[k]), 0));
-              const gmExp = n * gmKeys.length;
-              const gmPct = formatPercentage1(gm, gmExp);
-              const pbM3 = sum(rd, (d) => N(d.schools_completed_m3));
-              const pbM4 = sum(rd, (d) => N(d.schools_completed_m4));
-              const pbM1 = sum(rdUniq, (d) => N(d.schools_completed_m1) || N(d.schools_with_pb_milestone));
-              return (
-                <tr key={region}>
-                  <td style={{ fontWeight: 700, padding: '.5rem .75rem' }}>{region}</td>
-                  <td className="center" style={{ color: ragColor(lPct), fontWeight: 700 }}>{lDel}/{lExp} ({lPct}%)</td>
-                  <td className="center">{gm}/{gmExp} ({gmPct}%)</td>
-                  {term === 'term2' ? (
-                    <>
-                      <td className="center">{pbM3}/{n} ({formatPercentage1(pbM3, n)}%)</td>
-                      <td className="center">{pbM4}/{n} ({formatPercentage1(pbM4, n)}%)</td>
-                    </>
-                  ) : (
-                    <td className="center">{pbM1}/{n} M1 ({formatPercentage1(pbM1, n)}%)</td>
-                  )}
-                </tr>
-              );
-            })}
+            {regionRows.map((r) => (
+              <tr key={r.region}>
+                <td style={{ fontWeight: 700, padding: '.5rem .75rem' }}>{r.region}</td>
+                <td className="center" style={{ color: ragColor(r.lPct), fontWeight: 700 }}>{r.lDel}/{r.lExp} ({r.lPct}%)</td>
+                <td className="center">{r.gmReported ? `${r.gm}/${r.gmExp} (${r.gmPct}%)` : pending}</td>
+                {r.milestones.map((ms) => (
+                  <td key={ms.m} className="center">
+                    {ms.reported ? `${ms.total}/${r.n} (${formatPercentage1(ms.total, r.n)}%)` : pending}
+                  </td>
+                ))}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
