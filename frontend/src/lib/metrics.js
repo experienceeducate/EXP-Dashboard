@@ -2,7 +2,10 @@
 // Business-logic metric formulas ported EXACTLY from the legacy dashboard (spec §6).
 // All functions are pure — they take data + year/term rather than reading the DOM.
 // ─────────────────────────────────────────────────────────────────────────────
-import { getLECsForTerm } from './config.js';
+import {
+  getLECsForTerm, getMilestonesForTerm, getObservationStartLec, getTermShortLabel,
+  PB_MILESTONE_DUE, TERM_CONFIG,
+} from './config.js';
 import { calculatePBQualityScore, formatPercentage1 } from './format.js';
 
 const N = (v) => Number(v) || 0;
@@ -404,9 +407,53 @@ export function computeLecClusters(schoolData, year, term, minLecs = 3) {
   return out.sort((a, b) => b.maxLecs - a.maxLecs);
 }
 
+// ── Activity windows: "not yet started / due" vs "behind" ──────────────────
+// Missing activity reads as 0 in the gold model whether it is too early or
+// genuinely late, so these decide from where the CU is in its term instead.
+
+// A CU has reached LEC n once at least half its target schools delivered it.
+const cuReachedLec = (row, n) => {
+  const schools = N(row.total_target_schools);
+  return schools > 0 && N(row[`schools_with_lec${n}`]) >= schools / 2;
+};
+
+const weekNum = (v) => parseInt(String(v || '').replace(/\D/g, ''), 10) || 0;
+
+// Term-relative week clock from school rows' lecN_max_week ("Week 4"):
+// `current` is the latest week any school has reported a LEC in that term, and
+// cuWeekReached(row, n) is the week by which half the CU's schools had LEC n.
+function buildTermClock(schoolData, year, term) {
+  const lecs = TERM_CONFIG[term] ? TERM_CONFIG[term].lecs : [];
+  const rows = schoolData.filter((d) => d.year == year && d.term === term);
+  let current = 0;
+  rows.forEach((d) => lecs.forEach((n) => { current = Math.max(current, weekNum(d[`lec${n}_max_week`])); }));
+  const cuWeekReached = (cuRow, n) => {
+    const weeks = rows
+      .filter((d) => d.region === cuRow.region && d.cu === cuRow.cu && N(d[`schools_with_lec${n}`]) > 0)
+      .map((d) => weekNum(d[`lec${n}_max_week`]))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
+    const half = Math.ceil(N(cuRow.total_target_schools) / 2);
+    return half > 0 && weeks.length >= half ? weeks[half - 1] : null;
+  };
+  return { current, cuWeekReached };
+}
+
+// A term is over once any later term has LEC delivery for the same year.
+function isTermOver(summaryData, year, term) {
+  const order = Object.keys(TERM_CONFIG);
+  return order.slice(order.indexOf(term) + 1).some((later) => summaryData.some((d) => d.year == year
+    && d.term === later && TERM_CONFIG[later].lecs.some((n) => N(d[`schools_with_lec${n}`]) > 0)));
+}
+
+// Fewest ratings a CU needs before its PB quality is judged.
+const PB_QUALITY_MIN_RATINGS = 50;
+
 // ── National Key Insights & Flags (legacy renderNationalKeyInsights) ─────────
 // CU-level threshold rollups. Returns [{ type, icon, title, metric, cus }].
-export function computeNationalInsights(summaryData, data, year, term) {
+// type 'pending' marks an activity whose window hasn't opened yet — shown as a
+// neutral line, not counted as an issue.
+export function computeNationalInsights(summaryData, data, year, term, schoolData = []) {
   const lecNums = getLECsForTerm(year, term);
   const isT1 = term === 'term1';
   const insights = [];
@@ -451,42 +498,111 @@ export function computeNationalInsights(summaryData, data, year, term) {
     }
   }
 
-  // 3. PB Milestones — no milestone reported, else low PB quality (<70%). Uses T1.
-  const t1pb = summaryData.filter((d) => d.year == year && d.term === 'term1');
-  const pbSrc = t1pb.length > 0 ? t1pb : data;
-  const noPB = pbSrc.filter((d) => N(d.total_target_schools) > 0 && (N(d.schools_completed_m1) + N(d.schools_completed_m2)) === 0);
+  // 3. PB Milestones — the selected term's milestones (M1-2 / M3-4 / M5-6),
+  // judged per CU only once each is due (see PB_MILESTONE_DUE). Due with none
+  // reported → flag; else quality below 70% on at least 50 ratings → flag.
+  // Before that the milestone is "not yet due". A milestone that is due but
+  // whose column isn't in the gold model yet (M5/M6 today) is "not yet
+  // reported" — a data gap, not a CU problem — and switches to real flags on
+  // its own once the column lands.
+  const msNums = getMilestonesForTerm(term);
+  const msLabel = `M${msNums[0]}–M${msNums[msNums.length - 1]}`;
+  const termPb = summaryData.filter((d) => d.year == year && d.term === term);
+  const pbSrc = termPb.length > 0 ? termPb : data;
+  const termOver = isTermOver(summaryData, year, term);
+  const clock = buildTermClock(schoolData, year, term);
+  const hasColumn = (m) => pbSrc.some((d) => d[`schools_completed_m${m}`] !== undefined && d[`schools_completed_m${m}`] !== null);
+  const isDue = (d, m) => {
+    if (termOver) return true;
+    const { afterLec, graceWeeks } = PB_MILESTONE_DUE[m];
+    if (!cuReachedLec(d, afterLec)) return false;
+    const reachedWeek = clock.cuWeekReached(d, afterLec);
+    return reachedWeek !== null && clock.current - reachedWeek >= graceWeeks;
+  };
+  const pbCus = pbSrc.filter((d) => N(d.total_target_schools) > 0).map((d) => {
+    const due = msNums.filter((m) => isDue(d, m));
+    return { d, due, measurable: due.filter(hasColumn) };
+  });
+  const pbNotDue = pbCus.filter((c) => c.due.length === 0);
+  const pbNoColumn = pbCus.filter((c) => c.due.length > 0 && c.measurable.length === 0);
+  const pbJudged = pbCus.filter((c) => c.measurable.length > 0);
+  const pbRatings = ({ d, measurable }) => {
+    const tot = measurable.reduce((s, m) => s + [0, 1, 2, 3].reduce((rs, r) => rs + N(d[`m${m}_total_rating_${r}`]), 0), 0);
+    const good = measurable.reduce((s, m) => s + N(d[`m${m}_total_rating_2`]) + N(d[`m${m}_total_rating_3`]), 0);
+    return { tot, good };
+  };
+
+  const noPB = pbJudged.filter((c) => c.measurable.reduce((s, m) => s + N(c.d[`schools_completed_m${m}`]), 0) === 0);
   if (noPB.length > 0) {
     insights.push({
       type: 'warning', icon: '📋', metric: 'pb_completion',
       title: `${noPB.length} CU${noPB.length > 1 ? 's' : ''} with no PB milestones reported`,
-      cus: noPB.map((d) => ({ cu: d.cu, region: d.region })),
+      cus: noPB.map(({ d }) => ({ cu: d.cu, region: d.region })),
     });
   } else {
-    const lowPB = pbSrc.filter((d) => {
-      const tot = [0, 1, 2, 3].reduce((s, r) => s + N(d[`m1_total_rating_${r}`]) + N(d[`m2_total_rating_${r}`]), 0);
-      const good = N(d.m1_total_rating_2) + N(d.m1_total_rating_3) + N(d.m2_total_rating_2) + N(d.m2_total_rating_3);
-      return tot > 0 && good / tot < 0.7;
+    const lowPB = pbJudged.filter((c) => {
+      const { tot, good } = pbRatings(c);
+      return tot >= PB_QUALITY_MIN_RATINGS && good / tot < 0.7;
     });
     if (lowPB.length > 0) {
       insights.push({
         type: 'info', icon: '📗', metric: 'pb_quality',
         title: `${lowPB.length} CU${lowPB.length > 1 ? 's' : ''} with PB quality below 70%`,
-        cus: lowPB.map((d) => {
-          const tot = [0, 1, 2, 3].reduce((s, r) => s + N(d[`m1_total_rating_${r}`]) + N(d[`m2_total_rating_${r}`]), 0);
-          const good = N(d.m1_total_rating_2) + N(d.m1_total_rating_3) + N(d.m2_total_rating_2) + N(d.m2_total_rating_3);
-          return { cu: d.cu, region: d.region, note: `${Math.round(good / tot * 100)}%` };
+        cus: lowPB.map((c) => {
+          const { tot, good } = pbRatings(c);
+          return { cu: c.d.cu, region: c.d.region, note: `${Math.round(good / tot * 100)}%` };
         }),
       });
     }
   }
+  if (pbNotDue.length > 0) {
+    const lastLec = PB_MILESTONE_DUE[msNums[msNums.length - 1]].afterLec;
+    insights.push({
+      type: 'pending', icon: '⏳', metric: 'pb_completion',
+      title: pbNotDue.length === pbCus.length
+        ? `PB Milestones ${msLabel}: not yet due for ${getTermShortLabel(term)} (due after LEC ${lastLec} + grace period)`
+        : `PB Milestones ${msLabel}: not yet due for ${pbNotDue.length} CU${pbNotDue.length > 1 ? 's' : ''}`,
+      cus: pbNotDue.length === pbCus.length ? [] : pbNotDue.map(({ d }) => ({ cu: d.cu, region: d.region })),
+    });
+  }
+  if (pbNoColumn.length > 0) {
+    insights.push({
+      type: 'pending', icon: '⏳', metric: 'pb_completion',
+      title: `PB Milestones ${msLabel}: due for ${pbNoColumn.length} CU${pbNoColumn.length > 1 ? 's' : ''} but not yet reported in the dashboard data`,
+      cus: [],
+    });
+  }
 
-  // 4. Mentor observations — CUs with zero observed mentors.
-  const noObs = data.filter((d) => N(d.total_active_mentors) > 0 && N(d.total_observed_mentors) === 0);
+  // 4. Mentor observations — zero observed mentors is a gap only from the
+  // second LEC of the row's own term (LEC 2 / 7 / 16) onward; before that the
+  // CU is "not yet started". Each row is judged against its own term, so this
+  // also holds when `data` spans several terms.
+  const multiTerm = new Set(data.map((d) => d.term)).size > 1;
+  const termNote = (d) => (multiTerm ? getTermShortLabel(d.term) : undefined);
+  const obsRows = data.filter((d) => N(d.total_active_mentors) > 0);
+  const obsOpen = obsRows.filter((d) => {
+    const startLec = getObservationStartLec(d.term);
+    return startLec === null || cuReachedLec(d, startLec);
+  });
+  const obsNotStarted = obsRows.filter((d) => !obsOpen.includes(d));
+  const noObs = obsOpen.filter((d) => N(d.total_observed_mentors) === 0);
   if (noObs.length > 0) {
     insights.push({
       type: 'alert', icon: '👁️', metric: 'observations',
       title: `${noObs.length} CU${noObs.length > 1 ? 's' : ''} with zero mentor observations`,
-      cus: noObs.map((d) => ({ cu: d.cu, region: d.region })),
+      cus: noObs.map((d) => ({ cu: d.cu, region: d.region, note: termNote(d) })),
+    });
+  }
+  if (obsNotStarted.length > 0) {
+    const allPending = obsNotStarted.length === obsRows.length;
+    insights.push({
+      type: 'pending', icon: '⏳', metric: 'observations',
+      title: allPending && !multiTerm
+        ? `Mentor observations: not yet started for ${getTermShortLabel(term)} (expected from LEC ${getObservationStartLec(term)})`
+        : `Mentor observations: not yet started for ${obsNotStarted.length} CU${obsNotStarted.length > 1 ? 's' : ''}`,
+      cus: allPending && !multiTerm ? [] : obsNotStarted.map((d) => ({
+        cu: d.cu, region: d.region, note: `before LEC ${getObservationStartLec(d.term)}`,
+      })),
     });
   }
   return insights;

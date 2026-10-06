@@ -546,7 +546,7 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const gmTotalPct = formatPercentage1(gmTotalSchools, gmTotalTarget);
   const gmAnyReported = gmRows.some((g) => g.reported);
 
-  const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term), [summaryData, data, year, term]);
+  const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term, schoolData), [summaryData, data, year, term, schoolData]);
   const clusters = useMemo(() => computeLecClusters(schoolData, year, term), [schoolData, year, term]);
 
   const matrix = useMemo(() => buildLecWeekMatrix(schoolData, year, term === 'all' ? 'term1' : term), [schoolData, year, term]);
@@ -884,30 +884,36 @@ export function HeatmapInsights({ matrix, lecNums, totalSchools, term, clusters,
 
 // ── LEC tab · Key Insights & Flags (legacy renderNationalKeyInsights) ────────
 function LecKeyInsights({ onDrill, insights }) {
-  const colors = { warning: '#fff3cd', alert: '#f8d7da', info: '#e7f3ff' };
-  const borders = { warning: C.yellow, alert: C.red, info: C.blue };
+  // 'pending' = the activity's window hasn't opened yet: a neutral grey line
+  // (same palette as .mt-badge.pending), listed after the real issues and not
+  // counted as one.
+  const colors = { warning: '#fff3cd', alert: '#f8d7da', info: '#e7f3ff', pending: '#f8f9fa' };
+  const borders = { warning: C.yellow, alert: C.red, info: C.blue, pending: '#dee2e6' };
+  const issues = insights.filter((ins) => ins.type !== 'pending');
+  const pending = insights.filter((ins) => ins.type === 'pending');
   return (
-    <Section title="🔑 Key Insights & Flags" subtitle={insights.length > 0 ? `${insights.length} issue${insights.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
-      {insights.length === 0 ? (
+    <Section title="🔑 Key Insights & Flags" subtitle={issues.length > 0 ? `${issues.length} issue${issues.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
+      {issues.length === 0 ? (
         <div style={{ padding: '1.5rem', textAlign: 'center', color: C.green }}>✅ No critical issues detected across all CUs.</div>
-      ) : (
-        insights.map((ins, idx) => (
-          <div
-            key={idx}
-            onClick={() => onDrill({ metric: ins.metric })}
-            style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer' }}
-          >
-            <div style={{ fontWeight: 700, marginBottom: '.35rem' }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
+      ) : null}
+      {[...issues, ...pending].map((ins, idx) => (
+        <div
+          key={idx}
+          onClick={() => onDrill({ metric: ins.metric })}
+          style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer', color: ins.type === 'pending' ? '#6c757d' : undefined }}
+        >
+          <div style={{ fontWeight: ins.type === 'pending' ? 600 : 700, marginBottom: ins.cus.length > 0 ? '.35rem' : 0 }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
+          {ins.cus.length > 0 ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.4rem' }}>
               {ins.cus.map((c, i) => (
-                <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: '#333' }}>
+                <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: ins.type === 'pending' ? '#6c757d' : '#333' }}>
                   {c.cu}{c.region ? ` · ${c.region}` : ''}{c.note ? ` (${c.note})` : ''}
                 </span>
               ))}
             </div>
-          </div>
-        ))
-      )}
+          ) : null}
+        </div>
+      ))}
     </Section>
   );
 }
