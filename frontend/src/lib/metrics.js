@@ -413,23 +413,37 @@ export function computeNationalInsights(summaryData, data, year, term) {
   if (data.length === 0) return insights;
 
   // 1. LEC delivery pace — CUs > 1 LEC/school below national average.
-  const natAvgLECs = data.reduce((s, d) => s
-    + lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0) / Math.max(1, N(d.total_target_schools) || 1), 0) / data.length;
+  // Rolled up per CU, each term's LECs read only from that term's rows. Under
+  // All Terms `data` holds one row per (CU, term) while `term` arrives as
+  // 'term1', so scoring every row on Term 1's LECs read each Term 2/3 row as
+  // zero delivered and listed most CUs as behind, twice over. For a single
+  // term there is one row per CU and this gives the same result as before.
+  const paceTerms = [...new Set(data.map((d) => d.term))];
+  const paceLecs = paceTerms.length > 1
+    ? paceTerms.map((t) => [t, getLECsForTerm(year, t)])
+    : [[null, lecNums]];
+  const paceByCu = new Map();
+  data.forEach((d) => {
+    const key = `${d.region}|${d.cu}`;
+    if (!paceByCu.has(key)) paceByCu.set(key, []);
+    paceByCu.get(key).push(d);
+  });
+  const paceCus = [...paceByCu.values()].map((rows) => {
+    const schools = rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0);
+    const delivered = paceLecs.reduce((s, [t, lecs]) => s + sum(
+      rows.filter((d) => !t || d.term === t),
+      (d) => lecs.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0),
+    ), 0);
+    return { cu: rows[0].cu, region: rows[0].region, schools, avg: delivered / Math.max(1, schools || 1) };
+  });
+  const natAvgLECs = paceCus.reduce((s, c) => s + c.avg, 0) / paceCus.length;
   if (natAvgLECs >= 1) {
-    const lowLEC = data.filter((d) => {
-      const n = N(d.total_target_schools);
-      if (!n) return false;
-      const avg = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0) / n;
-      return avg < natAvgLECs - 1;
-    });
+    const lowLEC = paceCus.filter((c) => c.schools > 0 && c.avg < natAvgLECs - 1);
     if (lowLEC.length > 0) {
       insights.push({
         type: 'warning', icon: '📉', metric: 'lec_delivery',
         title: `${lowLEC.length} CU${lowLEC.length > 1 ? 's' : ''} behind national pace (avg ${natAvgLECs.toFixed(1)} LECs/school)`,
-        cus: lowLEC.map((d) => {
-          const avg = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0) / Math.max(1, N(d.total_target_schools) || 1);
-          return { cu: d.cu, region: d.region, note: `${avg.toFixed(1)} LECs/school` };
-        }),
+        cus: lowLEC.map((c) => ({ cu: c.cu, region: c.region, note: `${c.avg.toFixed(1)} LECs/school` })),
       });
     }
   }
