@@ -2743,6 +2743,7 @@ function ElabCuRow({ cu }) {
 function ElabNationalSubTab() {
   const [rows, setRows] = useState(null); // null = loading
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
   const [drillRegion, setDrillRegion] = useState(null);
 
   useEffect(() => {
@@ -2750,7 +2751,10 @@ function ElabNationalSubTab() {
     api
       .fetchElabSummaryByCu('term3')
       .then((res) => {
-        if (active) setRows(res.data || []);
+        if (active) {
+          setRows(res.data || []);
+          setUnavailable(res.available === false);
+        }
       })
       .catch((e) => {
         if (active) {
@@ -2765,6 +2769,7 @@ function ElabNationalSubTab() {
 
   if (rows === null) return <Placeholder label="Loading e-lab data…" />;
   if (error) return <Placeholder label={error} />;
+  if (unavailable) return <Placeholder label="E-Lab data is temporarily unavailable — the source data changed upstream and Data Engineering has been notified." />;
   if (rows.length === 0) return <Placeholder label="No e-lab activity recorded for Term 3 yet." />;
 
   const totalActive = rows.reduce((s, d) => s + (Number(d.active_mentors) || 0), 0);
