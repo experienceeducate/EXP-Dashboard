@@ -115,6 +115,9 @@ body { margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; backgro
 .mt-badge.on { background:#f1f7f1; border-color:#b8d4b8; color:#3b6b3b; }
 .mt-badge.near { background:#fbf1dd; border-color:#e6d4a8; color:#7a5b1f; }
 .mt-badge.off { background:#fcf3f1; border-color:#e8b8b0; color:#7a2e26; }
+/* Neutral, deliberately not on the red/amber/green scale: for an activity that
+   hasn't been reported yet, which is not the same as one that's behind. */
+.mt-badge.pending { background:#f8f9fa; border-color:#dee2e6; color:#6c757d; }
 .mt-bar-track { background:#eee; height:6px; border-radius:3px; overflow:hidden; }
 .mt-bar-fill { height:100%; border-radius:3px; transition:width .3s; }
 .mt-diag { font-size:11px; color:#555; line-height:1.5; border-top:1px dashed #eee; padding-top:8px; margin-top:2px; }

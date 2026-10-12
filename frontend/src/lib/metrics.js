@@ -2,7 +2,10 @@
 // Business-logic metric formulas ported EXACTLY from the legacy dashboard (spec §6).
 // All functions are pure — they take data + year/term rather than reading the DOM.
 // ─────────────────────────────────────────────────────────────────────────────
-import { getLECsForTerm } from './config.js';
+import {
+  getLECsForTerm, getMilestonesForTerm, getObservationStartLec, getTermForMilestone,
+  getTermShortLabel, PB_MILESTONE_DUE, TERM_CONFIG,
+} from './config.js';
 import { calculatePBQualityScore, formatPercentage1 } from './format.js';
 
 const N = (v) => Number(v) || 0;
@@ -259,16 +262,23 @@ export function computeScholarFunnel(summaryData, data, year, term) {
   const recTarget = sum(useT1, (d) => N(d.total_target_schools)) * 45;
   const activated = sum(useT1, (d) => N(d.lec2_scholars));
   const t1Complete = sum(useT1, (d) => N(d.lec5_scholars));
+  // T2 Completed (LEC 14) is a Term 2 event, so it is read from Term 2 rows
+  // only. Unlike T1 there is no fallback to `data`: under Term 3 / All Terms
+  // that would be other terms' rows, which carry stray LEC counts.
+  const isT3plus = term === 'term3' || term === 'all';
+  const t2Rows = summaryData.filter((d) => d.year == year && d.term === 'term2');
+  const t2Complete = sum(t2Rows, (d) => N(d.lec14_scholars));
 
   const { lastLec, lastLecScholars, isProjected: retProjected } = resolveLastLecScholars(data, lecNums);
   const retBase = activated > 0 ? activated : recruited;
   const retentionPct = retBase > 0 ? Math.round((lastLecScholars / retBase) * 100) : 0;
   const activationPct = recruited > 0 ? ((activated / recruited) * 100).toFixed(1) : 0;
   const t1RetPct = recruited > 0 ? ((t1Complete / recruited) * 100).toFixed(1) : 0;
+  const t2RetPct = recruited > 0 ? ((t2Complete / recruited) * 100).toFixed(1) : 0;
 
   return {
-    isT2plus, recruited, recTarget, activated, t1Complete,
-    lastLec, lastLecScholars, retProjected, retBase, retentionPct, activationPct, t1RetPct,
+    isT2plus, isT3plus, recruited, recTarget, activated, t1Complete, t2Complete,
+    lastLec, lastLecScholars, retProjected, retBase, retentionPct, activationPct, t1RetPct, t2RetPct,
   };
 }
 
@@ -397,32 +407,116 @@ export function computeLecClusters(schoolData, year, term, minLecs = 3) {
   return out.sort((a, b) => b.maxLecs - a.maxLecs);
 }
 
+// ── Activity windows: "not yet started / due" vs "behind" ──────────────────
+// Missing activity reads as 0 in the gold model whether it is too early or
+// genuinely late, so these decide from where the CU is in its term instead.
+
+// A CU has reached LEC n once at least half its target schools delivered it.
+const cuReachedLec = (row, n) => {
+  const schools = N(row.total_target_schools);
+  return schools > 0 && N(row[`schools_with_lec${n}`]) >= schools / 2;
+};
+
+const weekNum = (v) => parseInt(String(v || '').replace(/\D/g, ''), 10) || 0;
+
+// Term-relative week clock from school rows' lecN_max_week ("Week 4"):
+// `current` is the latest week any school has reported a LEC in that term, and
+// cuWeekReached(row, n) is the week by which half the CU's schools had LEC n.
+function buildTermClock(schoolData, year, term) {
+  const lecs = TERM_CONFIG[term] ? TERM_CONFIG[term].lecs : [];
+  const rows = schoolData.filter((d) => d.year == year && d.term === term);
+  let current = 0;
+  rows.forEach((d) => lecs.forEach((n) => { current = Math.max(current, weekNum(d[`lec${n}_max_week`])); }));
+  const cuWeekReached = (cuRow, n) => {
+    const weeks = rows
+      .filter((d) => d.region === cuRow.region && d.cu === cuRow.cu && N(d[`schools_with_lec${n}`]) > 0)
+      .map((d) => weekNum(d[`lec${n}_max_week`]))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
+    const half = Math.ceil(N(cuRow.total_target_schools) / 2);
+    return half > 0 && weeks.length >= half ? weeks[half - 1] : null;
+  };
+  return { current, cuWeekReached };
+}
+
+// A term is over once any later term has LEC delivery for the same year.
+function isTermOver(summaryData, year, term) {
+  const order = Object.keys(TERM_CONFIG);
+  return order.slice(order.indexOf(term) + 1).some((later) => summaryData.some((d) => d.year == year
+    && d.term === later && TERM_CONFIG[later].lecs.some((n) => N(d[`schools_with_lec${n}`]) > 0)));
+}
+
+// Per-CU "is PB milestone m due?" for one term (see PB_MILESTONE_DUE): due once
+// the term is over, or once the CU has delivered `afterLec` and `graceWeeks`
+// more weeks have passed on the term's week clock.
+export function makeMilestoneDueCheck(summaryData, schoolData, year, term) {
+  const termOver = isTermOver(summaryData, year, term);
+  const clock = buildTermClock(schoolData, year, term);
+  return (cuRow, m) => {
+    if (termOver) return true;
+    const { afterLec, graceWeeks } = PB_MILESTONE_DUE[m];
+    if (!cuReachedLec(cuRow, afterLec)) return false;
+    const reachedWeek = clock.cuWeekReached(cuRow, afterLec);
+    return reachedWeek !== null && clock.current - reachedWeek >= graceWeeks;
+  };
+}
+
+// National view of the same rule, for tab-level cards and tables: a milestone
+// is due nationally once at least half of CUs have it due. Before that, a low
+// completion rate means "in progress", not "behind".
+export function isMilestoneDueNationally(summaryData, schoolData, year, m) {
+  const term = getTermForMilestone(m);
+  const cus = summaryData.filter((d) => d.year == year && d.term === term && N(d.total_target_schools) > 0);
+  if (!term || cus.length === 0) return false;
+  const isDue = makeMilestoneDueCheck(summaryData, schoolData, year, term);
+  return cus.filter((d) => isDue(d, m)).length >= cus.length / 2;
+}
+
+// Fewest ratings a CU needs before its PB quality is judged.
+const PB_QUALITY_MIN_RATINGS = 50;
+
 // ── National Key Insights & Flags (legacy renderNationalKeyInsights) ─────────
 // CU-level threshold rollups. Returns [{ type, icon, title, metric, cus }].
-export function computeNationalInsights(summaryData, data, year, term) {
+// type 'pending' marks an activity whose window hasn't opened yet — shown as a
+// neutral line, not counted as an issue.
+export function computeNationalInsights(summaryData, data, year, term, schoolData = []) {
   const lecNums = getLECsForTerm(year, term);
   const isT1 = term === 'term1';
   const insights = [];
   if (data.length === 0) return insights;
 
   // 1. LEC delivery pace — CUs > 1 LEC/school below national average.
-  const natAvgLECs = data.reduce((s, d) => s
-    + lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0) / Math.max(1, N(d.total_target_schools) || 1), 0) / data.length;
+  // Rolled up per CU, each term's LECs read only from that term's rows. Under
+  // All Terms `data` holds one row per (CU, term) while `term` arrives as
+  // 'term1', so scoring every row on Term 1's LECs read each Term 2/3 row as
+  // zero delivered and listed most CUs as behind, twice over. For a single
+  // term there is one row per CU and this gives the same result as before.
+  const paceTerms = [...new Set(data.map((d) => d.term))];
+  const paceLecs = paceTerms.length > 1
+    ? paceTerms.map((t) => [t, getLECsForTerm(year, t)])
+    : [[null, lecNums]];
+  const paceByCu = new Map();
+  data.forEach((d) => {
+    const key = `${d.region}|${d.cu}`;
+    if (!paceByCu.has(key)) paceByCu.set(key, []);
+    paceByCu.get(key).push(d);
+  });
+  const paceCus = [...paceByCu.values()].map((rows) => {
+    const schools = rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0);
+    const delivered = paceLecs.reduce((s, [t, lecs]) => s + sum(
+      rows.filter((d) => !t || d.term === t),
+      (d) => lecs.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0),
+    ), 0);
+    return { cu: rows[0].cu, region: rows[0].region, schools, avg: delivered / Math.max(1, schools || 1) };
+  });
+  const natAvgLECs = paceCus.reduce((s, c) => s + c.avg, 0) / paceCus.length;
   if (natAvgLECs >= 1) {
-    const lowLEC = data.filter((d) => {
-      const n = N(d.total_target_schools);
-      if (!n) return false;
-      const avg = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0) / n;
-      return avg < natAvgLECs - 1;
-    });
+    const lowLEC = paceCus.filter((c) => c.schools > 0 && c.avg < natAvgLECs - 1);
     if (lowLEC.length > 0) {
       insights.push({
         type: 'warning', icon: '📉', metric: 'lec_delivery',
         title: `${lowLEC.length} CU${lowLEC.length > 1 ? 's' : ''} behind national pace (avg ${natAvgLECs.toFixed(1)} LECs/school)`,
-        cus: lowLEC.map((d) => {
-          const avg = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0) / Math.max(1, N(d.total_target_schools) || 1);
-          return { cu: d.cu, region: d.region, note: `${avg.toFixed(1)} LECs/school` };
-        }),
+        cus: lowLEC.map((c) => ({ cu: c.cu, region: c.region, note: `${c.avg.toFixed(1)} LECs/school` })),
       });
     }
   }
@@ -444,42 +538,103 @@ export function computeNationalInsights(summaryData, data, year, term) {
     }
   }
 
-  // 3. PB Milestones — no milestone reported, else low PB quality (<70%). Uses T1.
-  const t1pb = summaryData.filter((d) => d.year == year && d.term === 'term1');
-  const pbSrc = t1pb.length > 0 ? t1pb : data;
-  const noPB = pbSrc.filter((d) => N(d.total_target_schools) > 0 && (N(d.schools_completed_m1) + N(d.schools_completed_m2)) === 0);
+  // 3. PB Milestones — the selected term's milestones (M1-2 / M3-4 / M5-6),
+  // judged per CU only once each is due (see PB_MILESTONE_DUE). Due with none
+  // reported → flag; else quality below 70% on at least 50 ratings → flag.
+  // Before that the milestone is "not yet due". A milestone that is due but
+  // whose column isn't in the gold model yet (M5/M6 today) is "not yet
+  // reported" — a data gap, not a CU problem — and switches to real flags on
+  // its own once the column lands.
+  const msNums = getMilestonesForTerm(term);
+  const msLabel = `M${msNums[0]}–M${msNums[msNums.length - 1]}`;
+  const termPb = summaryData.filter((d) => d.year == year && d.term === term);
+  const pbSrc = termPb.length > 0 ? termPb : data;
+  const hasColumn = (m) => pbSrc.some((d) => d[`schools_completed_m${m}`] !== undefined && d[`schools_completed_m${m}`] !== null);
+  const isDue = makeMilestoneDueCheck(summaryData, schoolData, year, term);
+  const pbCus = pbSrc.filter((d) => N(d.total_target_schools) > 0).map((d) => {
+    const due = msNums.filter((m) => isDue(d, m));
+    return { d, due, measurable: due.filter(hasColumn) };
+  });
+  const pbNotDue = pbCus.filter((c) => c.due.length === 0);
+  const pbNoColumn = pbCus.filter((c) => c.due.length > 0 && c.measurable.length === 0);
+  const pbJudged = pbCus.filter((c) => c.measurable.length > 0);
+  const pbRatings = ({ d, measurable }) => {
+    const tot = measurable.reduce((s, m) => s + [0, 1, 2, 3].reduce((rs, r) => rs + N(d[`m${m}_total_rating_${r}`]), 0), 0);
+    const good = measurable.reduce((s, m) => s + N(d[`m${m}_total_rating_2`]) + N(d[`m${m}_total_rating_3`]), 0);
+    return { tot, good };
+  };
+
+  const noPB = pbJudged.filter((c) => c.measurable.reduce((s, m) => s + N(c.d[`schools_completed_m${m}`]), 0) === 0);
   if (noPB.length > 0) {
     insights.push({
       type: 'warning', icon: '📋', metric: 'pb_completion',
       title: `${noPB.length} CU${noPB.length > 1 ? 's' : ''} with no PB milestones reported`,
-      cus: noPB.map((d) => ({ cu: d.cu, region: d.region })),
+      cus: noPB.map(({ d }) => ({ cu: d.cu, region: d.region })),
     });
   } else {
-    const lowPB = pbSrc.filter((d) => {
-      const tot = [0, 1, 2, 3].reduce((s, r) => s + N(d[`m1_total_rating_${r}`]) + N(d[`m2_total_rating_${r}`]), 0);
-      const good = N(d.m1_total_rating_2) + N(d.m1_total_rating_3) + N(d.m2_total_rating_2) + N(d.m2_total_rating_3);
-      return tot > 0 && good / tot < 0.7;
+    const lowPB = pbJudged.filter((c) => {
+      const { tot, good } = pbRatings(c);
+      return tot >= PB_QUALITY_MIN_RATINGS && good / tot < 0.7;
     });
     if (lowPB.length > 0) {
       insights.push({
         type: 'info', icon: '📗', metric: 'pb_quality',
         title: `${lowPB.length} CU${lowPB.length > 1 ? 's' : ''} with PB quality below 70%`,
-        cus: lowPB.map((d) => {
-          const tot = [0, 1, 2, 3].reduce((s, r) => s + N(d[`m1_total_rating_${r}`]) + N(d[`m2_total_rating_${r}`]), 0);
-          const good = N(d.m1_total_rating_2) + N(d.m1_total_rating_3) + N(d.m2_total_rating_2) + N(d.m2_total_rating_3);
-          return { cu: d.cu, region: d.region, note: `${Math.round(good / tot * 100)}%` };
+        cus: lowPB.map((c) => {
+          const { tot, good } = pbRatings(c);
+          return { cu: c.d.cu, region: c.d.region, note: `${Math.round(good / tot * 100)}%` };
         }),
       });
     }
   }
+  if (pbNotDue.length > 0) {
+    const lastLec = PB_MILESTONE_DUE[msNums[msNums.length - 1]].afterLec;
+    insights.push({
+      type: 'pending', icon: '⏳', metric: 'pb_completion',
+      title: pbNotDue.length === pbCus.length
+        ? `PB Milestones ${msLabel}: not yet due for ${getTermShortLabel(term)} (due after LEC ${lastLec} + grace period)`
+        : `PB Milestones ${msLabel}: not yet due for ${pbNotDue.length} CU${pbNotDue.length > 1 ? 's' : ''}`,
+      cus: pbNotDue.length === pbCus.length ? [] : pbNotDue.map(({ d }) => ({ cu: d.cu, region: d.region })),
+    });
+  }
+  if (pbNoColumn.length > 0) {
+    insights.push({
+      type: 'pending', icon: '⏳', metric: 'pb_completion',
+      title: `PB Milestones ${msLabel}: due for ${pbNoColumn.length} CU${pbNoColumn.length > 1 ? 's' : ''} but not yet reported in the dashboard data`,
+      cus: [],
+    });
+  }
 
-  // 4. Mentor observations — CUs with zero observed mentors.
-  const noObs = data.filter((d) => N(d.total_active_mentors) > 0 && N(d.total_observed_mentors) === 0);
+  // 4. Mentor observations — zero observed mentors is a gap only from the
+  // second LEC of the row's own term (LEC 2 / 7 / 16) onward; before that the
+  // CU is "not yet started". Each row is judged against its own term, so this
+  // also holds when `data` spans several terms.
+  const multiTerm = new Set(data.map((d) => d.term)).size > 1;
+  const termNote = (d) => (multiTerm ? getTermShortLabel(d.term) : undefined);
+  const obsRows = data.filter((d) => N(d.total_active_mentors) > 0);
+  const obsOpen = obsRows.filter((d) => {
+    const startLec = getObservationStartLec(d.term);
+    return startLec === null || cuReachedLec(d, startLec);
+  });
+  const obsNotStarted = obsRows.filter((d) => !obsOpen.includes(d));
+  const noObs = obsOpen.filter((d) => N(d.total_observed_mentors) === 0);
   if (noObs.length > 0) {
     insights.push({
       type: 'alert', icon: '👁️', metric: 'observations',
       title: `${noObs.length} CU${noObs.length > 1 ? 's' : ''} with zero mentor observations`,
-      cus: noObs.map((d) => ({ cu: d.cu, region: d.region })),
+      cus: noObs.map((d) => ({ cu: d.cu, region: d.region, note: termNote(d) })),
+    });
+  }
+  if (obsNotStarted.length > 0) {
+    const allPending = obsNotStarted.length === obsRows.length;
+    insights.push({
+      type: 'pending', icon: '⏳', metric: 'observations',
+      title: allPending && !multiTerm
+        ? `Mentor observations: not yet started for ${getTermShortLabel(term)} (expected from LEC ${getObservationStartLec(term)})`
+        : `Mentor observations: not yet started for ${obsNotStarted.length} CU${obsNotStarted.length > 1 ? 's' : ''}`,
+      cus: allPending && !multiTerm ? [] : obsNotStarted.map((d) => ({
+        cu: d.cu, region: d.region, note: `before LEC ${getObservationStartLec(d.term)}`,
+      })),
     });
   }
   return insights;

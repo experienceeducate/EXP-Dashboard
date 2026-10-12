@@ -58,10 +58,14 @@ export const C = {
 };
 
 // term → LEC numbers & milestones (legacy TERM_CONFIG line 2108)
+// `gms` are the Group Mentoring sessions each term runs. GM 4 (Term 3) has no
+// `schools_with_gm4` column in the gold model yet — it is listed here anyway so
+// the tile renders and starts showing real numbers the moment the column lands,
+// with no code change. See getGMsInScope / NationalView's LecTab.
 export const TERM_CONFIG = {
-  term1: { lecs: [1, 2, 3, 4, 5], milestones: [1, 2], label: 'Term 1' },
-  term2: { lecs: [6, 7, 8, 9, 10, 11, 12, 13, 14], milestones: [3, 4], label: 'Term 2' },
-  term3: { lecs: [15, 16, 17, 18, 19, 20], milestones: [5, 6], label: 'Term 3' },
+  term1: { lecs: [1, 2, 3, 4, 5], milestones: [1, 2], gms: [1], label: 'Term 1' },
+  term2: { lecs: [6, 7, 8, 9, 10, 11, 12, 13, 14], milestones: [3, 4], gms: [2, 3], label: 'Term 2' },
+  term3: { lecs: [15, 16, 17, 18, 19, 20], milestones: [5, 6], gms: [4], label: 'Term 3' },
 };
 
 // METRIC_DEFINITIONS (legacy line 3835) — authoritative labels/formulas/thresholds
@@ -155,6 +159,94 @@ export function getLECsForTerm(_year, term) {
 
 export function getLECLabels(lecNums) {
   return lecNums.map((n) => 'LEC ' + n);
+}
+
+// First and last LEC of a term — the two endpoints the LEC Delivery tab
+// reports as its own scorecards. 'all' spans the whole year: the first LEC of
+// the earliest term through the last of the latest.
+export function getTermBoundaryLecs(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  const lecs = keys.flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].lecs : []));
+  if (lecs.length === 0) return { firstLec: null, lastLec: null };
+  return { firstLec: Math.min(...lecs), lastLec: Math.max(...lecs) };
+}
+
+// Which term a given LEC number belongs to. Every LEC belongs to exactly one
+// term, so a single-LEC metric has to be measured against that term's rows
+// rather than whatever happens to be in view — see NationalView's
+// LecTabInsights for why that matters under 'All Terms'.
+export function getTermForLec(lecNum) {
+  return Object.keys(TERM_CONFIG).find((t) => TERM_CONFIG[t].lecs.includes(lecNum)) || null;
+}
+
+// 'term2' → 'T2'. Short form for compact scorecard labels.
+export function getTermShortLabel(term) {
+  return term === 'all' ? 'Year' : String(term).replace('term', 'T');
+}
+
+// Every LEC a selection covers. Deliberately separate from getLECsForTerm():
+// that one falls back to Term 1 for 'all', which several callers rely on, so
+// widening it there would change the drill panel and term comparisons too.
+// This spans the whole year instead.
+export function getLECsInScope(term) {
+  if (term !== 'all') return getLECsForTerm(null, term);
+  return Object.keys(TERM_CONFIG)
+    .flatMap((t) => TERM_CONFIG[t].lecs)
+    .sort((a, b) => a - b);
+}
+
+// Group Mentoring sessions a selection covers — GM 1 for Term 1, GM 2 and 3 for
+// Term 2, GM 4 for Term 3, all four under 'all'.
+export function getGMsInScope(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  return keys
+    .flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].gms || [] : []))
+    .sort((a, b) => a - b);
+}
+
+// Which term runs a given GM session. Same purpose as getTermForLec: a session
+// belongs to one term, so it must be counted from that term's rows only.
+export function getTermForGM(gmNum) {
+  return Object.keys(TERM_CONFIG).find((t) => (TERM_CONFIG[t].gms || []).includes(gmNum)) || null;
+}
+
+// PB milestones a selection covers — M1-2 for Term 1, M3-4 for Term 2, M5-6 for
+// Term 3, all six under 'all'. Unlike getMilestonesForTerm there is no [1, 2]
+// fallback, so 'all' really means the whole year.
+export function getMilestonesInScope(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  return keys
+    .flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].milestones || [] : []))
+    .sort((a, b) => a - b);
+}
+
+// Which term a PB milestone belongs to — same purpose as getTermForGM.
+export function getTermForMilestone(mNum) {
+  return Object.keys(TERM_CONFIG).find((t) => (TERM_CONFIG[t].milestones || []).includes(mNum)) || null;
+}
+
+// When each PB milestone falls due: once a CU has delivered `afterLec` (its
+// term's last LEC) and a further `graceWeeks` have passed. Milestones are an
+// end-of-term activity — almost no school reports one before its term's last
+// LEC — so each grace period is how long after that LEC 90% of schools had
+// reported (2026 Term 1/2 mentor activity reports, rounded up to whole weeks).
+// M5/M6 had no history yet and are assumed to follow M3/M4. Revisit as terms
+// complete. Used by computeNationalInsights to tell "not yet due" from "behind".
+export const PB_MILESTONE_DUE = {
+  1: { afterLec: 5, graceWeeks: 4 },
+  2: { afterLec: 5, graceWeeks: 5 },
+  3: { afterLec: 14, graceWeeks: 1 },
+  4: { afterLec: 14, graceWeeks: 3 },
+  5: { afterLec: 20, graceWeeks: 1 },
+  6: { afterLec: 20, graceWeeks: 3 },
+};
+
+// Mentor observations are expected from the second LEC of each term (LEC 2, 7,
+// 16) through to the end of that term. Before it, zero observations is "not
+// yet started", not a gap.
+export function getObservationStartLec(term) {
+  const cfg = TERM_CONFIG[term];
+  return cfg ? cfg.lecs[1] : null;
 }
 
 export function getMilestonesForTerm(term) {

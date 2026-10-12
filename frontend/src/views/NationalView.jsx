@@ -3,7 +3,10 @@ import * as api from '../lib/api.js';
 import { LMM_METRICS } from '../data/learningMeasurementMap.js';
 import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
 import { resolveLiveMetric, resolveProgress } from '../lib/lmmLiveMetrics.js';
-import { getLECsForTerm, C, TERM_CONFIG } from '../lib/config.js';
+import {
+  getLECsInScope, getGMsInScope, getMilestonesInScope, getTermBoundaryLecs, getTermForLec,
+  getTermForGM, getTermForMilestone, getTermShortLabel, C,
+} from '../lib/config.js';
 import {
   computeNationalKpis,
   computeScholarFunnel,
@@ -20,6 +23,7 @@ import {
   getLECsDueByToday,
   avgScholarsPerLec,
   computeClassSizeAnalysis,
+  isMilestoneDueNationally,
   sum,
 } from '../lib/metrics.js';
 import { ragColor, ragKpiClass, delta, num, getGMLabel, formatPercentage1 } from '../lib/format.js';
@@ -264,11 +268,13 @@ function ExecTab({ summaryData, data, year, term, onDrill, onJumpTab }) {
           <FunnelStat title="Recruited" value={num(funnel.recruited)} note={`${funnel.recTarget > 0 ? ((funnel.recruited / funnel.recTarget) * 100).toFixed(0) : 0}% of ${num(funnel.recTarget)} target`} border={C.blue} bg="#f0f4ff" onClick={() => onDrill({ metric: 'recruitment' })} />
           <FunnelStat title="Activated (LEC 2)" value={num(funnel.activated)} note={`${funnel.activationPct}% of recruited`} border={C.yellow} bg="#fffbeb" onClick={() => onDrill({ metric: 'recruitment' })} />
           {funnel.isT2plus ? <FunnelStat title="T1 Completed (LEC 5)" value={num(funnel.t1Complete)} note={`${funnel.t1RetPct}% of recruited`} border={C.green} bg="#f0fdf4" onClick={() => onDrill({ metric: 'retention' })} /> : null}
+          {funnel.isT3plus ? <FunnelStat title="T2 Completed (LEC 14)" value={num(funnel.t2Complete)} note={`${funnel.t2RetPct}% of recruited`} border={C.green} bg="#f0fdf4" onClick={() => onDrill({ metric: 'retention' })} /> : null}
           <FunnelStat title={`${funnel.retProjected ? '📈 Projected ' : ''}Retention (LEC ${funnel.lastLec})`} value={`${funnel.retentionPct}%`} note={`${funnel.retProjected ? '~' : ''}${num(funnel.lastLecScholars)} of ${num(funnel.retBase)} activated`} border={funnel.retentionPct >= 85 ? C.green : funnel.retentionPct >= 70 ? C.yellow : C.red} bg="#f0fdf4" onClick={() => onDrill({ metric: 'retention' })} />
         </div>
         <FunnelBar label={`Recruited (target: ${num(funnel.recTarget)})`} val={funnel.recruited} denom={funnel.recTarget} color={C.blue} onClick={() => onDrill({ metric: 'recruitment' })} />
         <FunnelBar label="Activated — attended LEC 2" val={funnel.activated} denom={funnel.recruited} color={C.yellow} onClick={() => onDrill({ metric: 'retention' })} />
-        {funnel.isT2plus ? <FunnelBar label="T1 Completed — attended LEC 5" val={funnel.t1Complete} denom={funnel.activated} color={C.green} onClick={() => onDrill({ metric: 'retention' })} /> : null}
+        {funnel.isT2plus ? <FunnelBar label="T1 Completed — attended LEC 5" val={funnel.t1Complete} denom={funnel.recruited} color={C.green} onClick={() => onDrill({ metric: 'retention' })} /> : null}
+        {funnel.isT3plus ? <FunnelBar label="T2 Completed — attended LEC 14" val={funnel.t2Complete} denom={funnel.recruited} color={C.green} onClick={() => onDrill({ metric: 'retention' })} /> : null}
         <FunnelBar label={`${funnel.retProjected ? '📈 Projected ' : ''}Retention — LEC ${funnel.lastLec}`} val={funnel.lastLecScholars} denom={funnel.retBase} color={funnel.retentionPct >= 85 ? C.green : funnel.retentionPct >= 70 ? C.yellow : C.red} onClick={() => onDrill({ metric: 'retention' })} />
       </Section>
     </>
@@ -435,20 +441,95 @@ function FunnelBar({ label, val, denom, color, onClick }) {
 
 // ── LEC Delivery tab ─────────────────────────────────────────────────────────
 function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
-  const lecNums = term === 'all'
-    ? [...(TERM_CONFIG.term1?.lecs || []), ...(TERM_CONFIG.term2?.lecs || [])]
-    : getLECsForTerm(year, term);
-  const uniqueCURows = term === 'all' ? [...new Map(data.map((d) => [d.cu, d])).values()] : data;
-  const totalSchools = sum(uniqueCURows, (d) => N(d.total_target_schools));
+  // LECs and GM sessions follow the term filter. Under 'All Terms' that is the
+  // whole year: LEC 1-20 and GM 1-4 (previously LEC 1-14 only — Term 3 was
+  // silently dropped — and GM 2/3 hardcoded regardless of term).
+  const lecNums = getLECsInScope(term);
+  const gmNums = getGMsInScope(term);
 
-  const lecRows = lecNums.map((n) => {
-    const schoolsWith = sum(data, (d) => N(d[`schools_with_lec${n}`]));
-    const scholars = sum(data, (d) => N(d[`lec${n}_scholars`]));
-    const nonScholars = sum(data, (d) => N(d[`lec${n}_non_scholars`]));
-    const compPct = formatPercentage1(schoolsWith, totalSchools);
-    const avgS = schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—';
-    return { label: `LEC ${n}`, lecNum: n, schoolsWith, scholars, nonScholars, compPct, avgS };
-  });
+  // `data` holds one row per (CU, term), so under 'All Terms' each CU appears
+  // three times. Everything below is rolled up per CU first, and each LEC or GM
+  // session is read only from the rows of the term that runs it.
+  //
+  // Both halves matter. Target schools are a property of the CU, not the term,
+  // so adding the terms together counted the same 825 schools three times. And
+  // a single LEC summed across every term's rows double-counts, because a few
+  // rows carry stray counts for another term's sessions — LEC 1 came to 832
+  // against a 825 denominator, i.e. 100.8%.
+  //
+  // For a single selected term every CU has one row and one owning term, so all
+  // of this collapses to the previous behaviour.
+  const rollup = useMemo(() => {
+    const byCu = new Map();
+    data.forEach((d) => {
+      const key = `${d.region}|${d.cu}`;
+      if (!byCu.has(key)) byCu.set(key, []);
+      byCu.get(key).push(d);
+    });
+    const cuGroups = [...byCu.values()];
+    const scoped = (rows, owning) => (owning ? rows.filter((d) => d.term === owning) : rows);
+    const totalSchools = cuGroups.reduce(
+      (s, rows) => s + rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0),
+      0,
+    );
+
+    const lecs = lecNums.map((n) => {
+      const owning = getTermForLec(n);
+      let schoolsWith = 0;
+      let scholars = 0;
+      let nonScholars = 0;
+      cuGroups.forEach((rows) => {
+        const rs = scoped(rows, owning);
+        schoolsWith += sum(rs, (d) => N(d[`schools_with_lec${n}`]));
+        scholars += sum(rs, (d) => N(d[`lec${n}_scholars`]));
+        nonScholars += sum(rs, (d) => N(d[`lec${n}_non_scholars`]));
+      });
+      return {
+        label: `LEC ${n}`,
+        lecNum: n,
+        schoolsWith,
+        scholars,
+        nonScholars,
+        compPct: formatPercentage1(schoolsWith, totalSchools),
+        avgS: schoolsWith > 0 ? (scholars / schoolsWith).toFixed(1) : '—',
+      };
+    });
+
+    const gms = gmNums.map((n) => {
+      const owning = getTermForGM(n);
+      const field = `schools_with_gm${n}`;
+      let schoolsWith = 0;
+      let scholars = 0;
+      // `reported` asks whether the field EXISTS on any row in scope, not
+      // whether it is non-zero. GM 4 has no column in the gold model yet, so
+      // it arrives as undefined, which N() would flatten to 0 and render as a
+      // delivery failure. Distinguishing the two keeps "not conducted yet"
+      // visually separate from "conducted and missed" — and once the column
+      // lands with real values this flips on its own, so a genuine 0% after
+      // reporting starts still shows as Behind.
+      let reported = false;
+      cuGroups.forEach((rows) => {
+        const rs = scoped(rows, owning);
+        rs.forEach((d) => {
+          if (d[field] !== undefined && d[field] !== null) reported = true;
+        });
+        schoolsWith += sum(rs, (d) => N(d[field]));
+        scholars += sum(rs, (d) => N(d[`gm${n}_total_scholars`]));
+      });
+      return {
+        gmNum: n,
+        field,
+        schoolsWith,
+        scholars,
+        reported,
+        pct: formatPercentage1(schoolsWith, totalSchools),
+      };
+    });
+
+    return { totalSchools, lecs, gms };
+  }, [data, lecNums.join(','), gmNums.join(',')]);
+
+  const { totalSchools, lecs: lecRows, gms: gmRows } = rollup;
 
   // Skills Labs Total tile (legacy: totalLECSchoolDeliveries / lecDeliveryPct).
   const totalLECSchoolDeliveries = lecRows.reduce((s, r) => s + r.schoolsWith, 0);
@@ -457,18 +538,16 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const lecDeliveryPct = formatPercentage1(totalLECSchoolDeliveries, lecsExpected);
   const avgLECScholars = totalLECSchoolDeliveries > 0 ? (totalLECScholars / totalLECSchoolDeliveries).toFixed(1) : '—';
 
-  // GM 2 / GM 3 / GM Total tiles — fixed 825-school denominator per session (legacy).
-  const GM2_TARGET = 825;
-  const GM3_TARGET = 825;
-  const GM_TOTAL_TARGET = GM2_TARGET + GM3_TARGET;
-  const gm2Schools = sum(uniqueCURows, (d) => N(d.schools_with_gm2));
-  const gm3Schools = sum(uniqueCURows, (d) => N(d.schools_with_gm3));
-  const gm2Pct = formatPercentage1(gm2Schools, GM2_TARGET);
-  const gm3Pct = formatPercentage1(gm3Schools, GM3_TARGET);
-  const gmTotalSchools = gm2Schools + gm3Schools;
-  const gmTotalPct = formatPercentage1(gmTotalSchools, GM_TOTAL_TARGET);
+  // GM Total spans every session the selection covers — 825 x 1 for Term 1,
+  // x 2 for Term 2, x 1 for Term 3, x 4 for All Terms. An unreported session
+  // still counts toward the denominator (so All Terms is out of 825 x 4), but
+  // if NOTHING in scope has reported the total reads as pending rather than 0%.
+  const gmTotalSchools = gmRows.reduce((s, g) => s + g.schoolsWith, 0);
+  const gmTotalTarget = totalSchools * gmNums.length;
+  const gmTotalPct = formatPercentage1(gmTotalSchools, gmTotalTarget);
+  const gmAnyReported = gmRows.some((g) => g.reported);
 
-  const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term), [summaryData, data, year, term]);
+  const insights = useMemo(() => computeNationalInsights(summaryData, data, year, term === 'all' ? 'term1' : term, schoolData), [summaryData, data, year, term, schoolData]);
   const clusters = useMemo(() => computeLecClusters(schoolData, year, term), [schoolData, year, term]);
 
   const matrix = useMemo(() => buildLecWeekMatrix(schoolData, year, term === 'all' ? 'term1' : term), [schoolData, year, term]);
@@ -481,7 +560,8 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const activityHeader = (() => {
     const gmSchTotal = sum(data, (d) => N(d.schools_with_gm));
     const gmSchPct = formatPercentage1(gmSchTotal, totalSchools);
-    const termLbl = term === 'term2' ? 'T2' : term === 'term1' ? 'T1' : 'all terms';
+    // Was a term1/term2 ternary, so Term 3 fell through to "all terms".
+    const termLbl = term === 'all' ? 'all terms' : getTermShortLabel(term);
     const leading = lecRows.reduce((best, r) => (r.compPct > (best?.pct || 0) ? { lecNum: r.lecNum, pct: r.compPct } : best), null);
     const leadingStr = leading ? `LEC ${leading.lecNum} leads at ${leading.pct}%` : null;
     const title = lecDeliveryPct >= 80
@@ -530,37 +610,31 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
             dark
             onClick={() => onDrill({ metric: 'lec_delivery' })}
           />
-          <MetricTile
-            label="GM 2"
-            value={gm2Schools}
-            valueSuffix={`/ ${GM2_TARGET}`}
-            status={gm2Pct >= 80 ? 'on' : gm2Pct >= 60 ? 'near' : 'off'}
-            statusLabel={gm2Pct >= 80 ? 'On Track' : gm2Pct >= 60 ? 'Near' : 'Behind'}
-            pct={gm2Pct}
-            fill={gm2Pct >= 80 ? '#2e7d5a' : gm2Pct >= 60 ? '#C38A1F' : '#C9554A'}
-            diag="GM Session 2 delivered"
-            onClick={() => onDrill({ metric: 'gm', gmField: 'schools_with_gm2', gmLabel: 'GM 2' })}
-          />
-          <MetricTile
-            label="GM 3"
-            value={gm3Schools}
-            valueSuffix={`/ ${GM3_TARGET}`}
-            status={gm3Pct >= 80 ? 'on' : gm3Pct >= 60 ? 'near' : 'off'}
-            statusLabel={gm3Pct >= 80 ? 'On Track' : gm3Pct >= 60 ? 'Near' : 'Behind'}
-            pct={gm3Pct}
-            fill={gm3Pct >= 80 ? '#2e7d5a' : gm3Pct >= 60 ? '#C38A1F' : '#C9554A'}
-            diag="GM Session 3 delivered"
-            onClick={() => onDrill({ metric: 'gm', gmField: 'schools_with_gm3', gmLabel: 'GM 3' })}
-          />
+          {gmRows.map((g) => (
+            <MetricTile
+              key={g.gmNum}
+              label={`GM ${g.gmNum}`}
+              value={g.schoolsWith}
+              valueSuffix={`/ ${totalSchools}`}
+              status={!g.reported ? 'pending' : g.pct >= 80 ? 'on' : g.pct >= 60 ? 'near' : 'off'}
+              statusLabel={!g.reported ? 'Not yet reported' : g.pct >= 80 ? 'On Track' : g.pct >= 60 ? 'Near' : 'Behind'}
+              pct={g.pct}
+              fill={!g.reported ? '#dee2e6' : g.pct >= 80 ? '#2e7d5a' : g.pct >= 60 ? '#C38A1F' : '#C9554A'}
+              diag={g.reported
+                ? `GM Session ${g.gmNum} delivered${g.scholars > 0 ? ` · ${num(g.scholars)} scholars` : ''}`
+                : `GM Session ${g.gmNum} not conducted yet — will populate automatically once reported`}
+              onClick={() => onDrill({ metric: 'gm', gmField: g.field, gmLabel: `GM ${g.gmNum}` })}
+            />
+          ))}
           <MetricTile
             label={`${getGMLabel()} Total`}
             value={gmTotalSchools}
-            valueSuffix={`/ ${GM_TOTAL_TARGET}`}
-            status={gmTotalPct >= 80 ? 'on' : gmTotalPct >= 60 ? 'near' : 'off'}
-            statusLabel={`${gmTotalPct}% delivery`}
+            valueSuffix={`/ ${gmTotalTarget}`}
+            status={!gmAnyReported ? 'pending' : gmTotalPct >= 80 ? 'on' : gmTotalPct >= 60 ? 'near' : 'off'}
+            statusLabel={!gmAnyReported ? 'Not yet reported' : `${gmTotalPct}% delivery`}
             pct={gmTotalPct}
-            fill={gmTotalPct >= 80 ? '#8FD48A' : gmTotalPct >= 60 ? '#E6C474' : '#F4A8A0'}
-            diag={`GM 2 (${gm2Schools}) + GM 3 (${gm3Schools}) combined`}
+            fill={!gmAnyReported ? 'rgba(255,255,255,.25)' : gmTotalPct >= 80 ? '#8FD48A' : gmTotalPct >= 60 ? '#E6C474' : '#F4A8A0'}
+            diag={gmRows.map((g) => `GM ${g.gmNum} (${g.reported ? g.schoolsWith : 'n/a'})`).join(' + ')}
             dark
             onClick={() => onDrill({ metric: 'gm' })}
           />
@@ -630,12 +704,64 @@ function LecTab({ summaryData, schoolData, data, year, term, onDrill }) {
 }
 
 // ── Regional Comparison table (legacy renderNationalActivityCompletion) ──────
+// Term-aware like the LEC Delivery tiles: each column covers the sessions the
+// selection runs, out of regional schools x session count.
+//   Term 1: LEC x5, GM x1 (GM 1),   PB M1, M2
+//   Term 2: LEC x9, GM x2 (GM 2+3), PB M3, M4
+//   Term 3: LEC x6, GM x1 (GM 4),   PB M5, M6
+//   All:    LEC x20, GM x4,         PB M1-M6
+// As in LecTab, rows are grouped per CU and each session is read only from the
+// term that runs it, since a few rows carry stray counts for other terms.
+//
+// GM 4 and M5/M6 have no column in the gold model yet. A cell whose columns are
+// absent from every row in scope renders as "Not yet reported" rather than 0%,
+// and fills in on its own once the column lands. GM is one combined column, so
+// it is pending only if none of its sessions has reported; a partly reported
+// GM (All Terms, GM 4 missing) still counts every session in the denominator,
+// matching the GM Total tile.
 function RegionalComparisonTable({ data, lecNums, term }) {
   const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
   if (regions.length === 0) return null;
-  const gmKeys = term === 'term1' ? ['schools_with_gm1']
-    : term === 'term2' ? ['schools_with_gm2', 'schools_with_gm3']
-      : ['schools_with_gm1', 'schools_with_gm2', 'schools_with_gm3'];
+  const gmNums = getGMsInScope(term);
+  const msNums = getMilestonesInScope(term);
+  const pending = <span className="mt-badge pending">Not yet reported</span>;
+
+  const regionRows = regions.map((region) => {
+    const byCu = new Map();
+    data.filter((d) => d.region === region).forEach((d) => {
+      if (!byCu.has(d.cu)) byCu.set(d.cu, []);
+      byCu.get(d.cu).push(d);
+    });
+    const cuGroups = [...byCu.values()];
+    const n = cuGroups.reduce(
+      (s, rows) => s + rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0),
+      0,
+    );
+    // Sum `field` across the region, reading each CU only from `owning` term's rows.
+    const tally = (field, owning) => {
+      let total = 0;
+      let reported = false;
+      cuGroups.forEach((rows) => {
+        rows.filter((d) => !owning || d.term === owning).forEach((d) => {
+          if (d[field] !== undefined && d[field] !== null) reported = true;
+          total += N(d[field]);
+        });
+      });
+      return { total, reported };
+    };
+
+    const lDel = lecNums.reduce((s, ln) => s + tally(`schools_with_lec${ln}`, getTermForLec(ln)).total, 0);
+    const lExp = n * lecNums.length;
+    const gmTallies = gmNums.map((g) => tally(`schools_with_gm${g}`, getTermForGM(g)));
+    const gm = gmTallies.reduce((s, t) => s + t.total, 0);
+    const gmExp = n * gmNums.length;
+    const milestones = msNums.map((m) => ({ m, ...tally(`schools_completed_m${m}`, getTermForMilestone(m)) }));
+    return {
+      region, n, lDel, lExp, lPct: formatPercentage1(lDel, lExp),
+      gm, gmExp, gmPct: formatPercentage1(gm, gmExp), gmReported: gmTallies.some((t) => t.reported),
+      milestones,
+    };
+  });
 
   return (
     <div style={{ marginTop: '1.25rem' }}>
@@ -647,46 +773,22 @@ function RegionalComparisonTable({ data, lecNums, term }) {
               <th>Region</th>
               <th className="center">LEC Delivery</th>
               <th className="center">{getGMLabel()}</th>
-              {term === 'term2' ? (
-                <>
-                  <th className="center">PB Milestone M3</th>
-                  <th className="center">PB Milestone M4</th>
-                </>
-              ) : (
-                <th className="center">PB Milestone</th>
-              )}
+              {msNums.map((m) => <th key={m} className="center">PB Milestone M{m}</th>)}
             </tr>
           </thead>
           <tbody>
-            {regions.map((region) => {
-              const rd = data.filter((d) => d.region === region);
-              const rdUniq = term === 'all' ? [...new Map(rd.map((d) => [d.cu, d])).values()] : rd;
-              const n = sum(rdUniq, (d) => N(d.total_target_schools));
-              const lDel = sum(rd, (d) => lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0));
-              const lExp = n * lecNums.length;
-              const lPct = formatPercentage1(lDel, lExp);
-              const gm = sum(rdUniq, (d) => gmKeys.reduce((a, k) => a + N(d[k]), 0));
-              const gmExp = n * gmKeys.length;
-              const gmPct = formatPercentage1(gm, gmExp);
-              const pbM3 = sum(rd, (d) => N(d.schools_completed_m3));
-              const pbM4 = sum(rd, (d) => N(d.schools_completed_m4));
-              const pbM1 = sum(rdUniq, (d) => N(d.schools_completed_m1) || N(d.schools_with_pb_milestone));
-              return (
-                <tr key={region}>
-                  <td style={{ fontWeight: 700, padding: '.5rem .75rem' }}>{region}</td>
-                  <td className="center" style={{ color: ragColor(lPct), fontWeight: 700 }}>{lDel}/{lExp} ({lPct}%)</td>
-                  <td className="center">{gm}/{gmExp} ({gmPct}%)</td>
-                  {term === 'term2' ? (
-                    <>
-                      <td className="center">{pbM3}/{n} ({formatPercentage1(pbM3, n)}%)</td>
-                      <td className="center">{pbM4}/{n} ({formatPercentage1(pbM4, n)}%)</td>
-                    </>
-                  ) : (
-                    <td className="center">{pbM1}/{n} M1 ({formatPercentage1(pbM1, n)}%)</td>
-                  )}
-                </tr>
-              );
-            })}
+            {regionRows.map((r) => (
+              <tr key={r.region}>
+                <td style={{ fontWeight: 700, padding: '.5rem .75rem' }}>{r.region}</td>
+                <td className="center" style={{ color: ragColor(r.lPct), fontWeight: 700 }}>{r.lDel}/{r.lExp} ({r.lPct}%)</td>
+                <td className="center">{r.gmReported ? `${r.gm}/${r.gmExp} (${r.gmPct}%)` : pending}</td>
+                {r.milestones.map((ms) => (
+                  <td key={ms.m} className="center">
+                    {ms.reported ? `${ms.total}/${r.n} (${formatPercentage1(ms.total, r.n)}%)` : pending}
+                  </td>
+                ))}
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
@@ -783,53 +885,108 @@ export function HeatmapInsights({ matrix, lecNums, totalSchools, term, clusters,
 
 // ── LEC tab · Key Insights & Flags (legacy renderNationalKeyInsights) ────────
 function LecKeyInsights({ onDrill, insights }) {
-  const colors = { warning: '#fff3cd', alert: '#f8d7da', info: '#e7f3ff' };
-  const borders = { warning: C.yellow, alert: C.red, info: C.blue };
+  // 'pending' = the activity's window hasn't opened yet: a neutral grey line
+  // (same palette as .mt-badge.pending), listed after the real issues and not
+  // counted as one.
+  const colors = { warning: '#fff3cd', alert: '#f8d7da', info: '#e7f3ff', pending: '#f8f9fa' };
+  const borders = { warning: C.yellow, alert: C.red, info: C.blue, pending: '#dee2e6' };
+  const issues = insights.filter((ins) => ins.type !== 'pending');
+  const pending = insights.filter((ins) => ins.type === 'pending');
   return (
-    <Section title="🔑 Key Insights & Flags" subtitle={insights.length > 0 ? `${insights.length} issue${insights.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
-      {insights.length === 0 ? (
+    <Section title="🔑 Key Insights & Flags" subtitle={issues.length > 0 ? `${issues.length} issue${issues.length > 1 ? 's' : ''} flagged` : 'CUs needing attention'}>
+      {issues.length === 0 ? (
         <div style={{ padding: '1.5rem', textAlign: 'center', color: C.green }}>✅ No critical issues detected across all CUs.</div>
-      ) : (
-        insights.map((ins, idx) => (
-          <div
-            key={idx}
-            onClick={() => onDrill({ metric: ins.metric })}
-            style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer' }}
-          >
-            <div style={{ fontWeight: 700, marginBottom: '.35rem' }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
+      ) : null}
+      {[...issues, ...pending].map((ins, idx) => (
+        <div
+          key={idx}
+          onClick={() => onDrill({ metric: ins.metric })}
+          style={{ background: colors[ins.type], borderLeft: `4px solid ${borders[ins.type]}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1rem', cursor: 'pointer', color: ins.type === 'pending' ? '#6c757d' : undefined }}
+        >
+          <div style={{ fontWeight: ins.type === 'pending' ? 600 : 700, marginBottom: ins.cus.length > 0 ? '.35rem' : 0 }}>{ins.icon} {ins.title} <span style={{ fontSize: '.7rem', color: '#0077b6' }}>⌕ drill</span></div>
+          {ins.cus.length > 0 ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.4rem' }}>
               {ins.cus.map((c, i) => (
-                <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: '#333' }}>
+                <span key={i} style={{ background: '#fff', border: '1px solid rgba(0,0,0,.1)', borderRadius: 999, padding: '.15rem .6rem', fontSize: '.78rem', color: ins.type === 'pending' ? '#6c757d' : '#333' }}>
                   {c.cu}{c.region ? ` · ${c.region}` : ''}{c.note ? ` (${c.note})` : ''}
                 </span>
               ))}
             </div>
-          </div>
-        ))
-      )}
+          ) : null}
+        </div>
+      ))}
     </Section>
   );
 }
 
 function LecTabInsights({ data, year, term, onDrill }) {
-  const lecNums = getLECsForTerm(year, term);
-  const totalS = sum(data, (d) => N(d.total_target_schools));
-  const delivered = sum(data, (d) => lecNums.reduce((ls, n) => ls + N(d[`schools_with_lec${n}`]), 0));
-  const expected = totalS * lecNums.length;
+  // ── One basis for every card on this tab ───────────────────────────────────
+  // `data` holds one row per (CU, term), so under 'All Terms' each CU appears
+  // three times. Summing it naively counted the same 825 target schools once
+  // per term (reporting 2,475 schools, 138 "CUs in view", and every rate
+  // divided by 3x too much), so the figures are rolled up per CU first.
+  //
+  // A LEC number also belongs to exactly one term, so each LEC is counted only
+  // from the rows of the term that owns it. That matters twice over: it keeps
+  // the single-LEC cards off stray cross-term rows (term2 rows report 9
+  // schools at LEC 1), and it's what lets 'All Terms' span LEC 1–20 honestly.
+  //
+  // For a single selected term every one of these collapses to the previous
+  // behaviour — one row per CU, one owning term — so those views are unchanged.
+  const lecNums = getLECsInScope(term);
+
+  const cuStats = useMemo(() => {
+    const byCu = new Map();
+    data.forEach((d) => {
+      const key = `${d.region}|${d.cu}`;
+      if (!byCu.has(key)) byCu.set(key, []);
+      byCu.get(key).push(d);
+    });
+    return [...byCu.values()].map((rows) => {
+      // Target schools are a property of the CU, not of the term, so take one
+      // value rather than adding the terms together.
+      const schools = rows.reduce((mx, d) => Math.max(mx, N(d.total_target_schools)), 0);
+      const perLec = {};
+      lecNums.forEach((n) => {
+        const owning = getTermForLec(n);
+        const scoped = owning ? rows.filter((d) => d.term === owning) : rows;
+        perLec[n] = sum(scoped, (d) => N(d[`schools_with_lec${n}`]));
+      });
+      const delivered = lecNums.reduce((s, n) => s + perLec[n], 0);
+      return { schools, perLec, delivered, expected: schools * lecNums.length };
+    });
+  }, [data, lecNums.join(',')]);
+
+  const totalS = sum(cuStats, (c) => c.schools);
+  const cuCount = cuStats.length;
+  const delivered = sum(cuStats, (c) => c.delivered);
+  const expected = sum(cuStats, (c) => c.expected);
   const lecPct = formatPercentage1(delivered, expected);
   const durVals = data.map((d) => N(d.avg_lec_session_duration)).filter((v) => v > 0);
   const avgDur = durVals.length > 0 ? Math.round(durVals.reduce((s, v) => s + v, 0) / durVals.length) : 0;
-  const lec6 = sum(data, (d) => N(d.schools_with_lec6));
-  const lec6Pct = formatPercentage1(lec6, totalS);
-  const lec14 = sum(data, (d) => N(d.schools_with_lec14));
-  const lec14Pct = formatPercentage1(lec14, totalS);
+  // A ratio of scholars to schools-delivered, both drawn from the same rows,
+  // so the per-term duplication cancels and only `lecNums` matters here.
   const avgSch = avgScholarsPerLec(data, lecNums);
 
-  const lagging = data.filter((d) => {
-    const n = N(d.total_target_schools) || 1;
-    const dl = lecNums.reduce((s, ln) => s + N(d[`schools_with_lec${ln}`]), 0);
-    return n > 0 && Math.round((dl / (n * lecNums.length)) * 100) < 60;
-  }).length;
+  // The two term-boundary scorecards: first and last LEC of the selection
+  // (previously hardcoded to Term 2's LEC 6 and LEC 14). Denominator is the
+  // shared `totalS` so all six cards on the tab agree.
+  const { firstLec, lastLec } = getTermBoundaryLecs(term);
+  const boundaryCard = (lecNum) => {
+    const del = sum(cuStats, (c) => c.perLec[lecNum] || 0);
+    return { lecNum, delivered: del, pct: formatPercentage1(del, totalS) };
+  };
+  const startCard = firstLec === null ? null : boundaryCard(firstLec);
+  const finalCard = lastLec === null ? null : boundaryCard(lastLec);
+  // Matches the other KPI cards' thresholds, but stays blank rather than red
+  // at 0% — an undelivered LEC is "no data yet", not a failure.
+  const boundaryClass = (p) => (p >= 80 ? 'kpi-green' : p >= 60 ? 'kpi-amber' : p > 0 ? 'kpi-red' : '');
+
+  // Counts CUs, not CU-terms — under 'All Terms' the old version counted the
+  // same CU up to three times.
+  const lagging = cuStats.filter(
+    (c) => c.expected > 0 && Math.round((c.delivered / c.expected) * 100) < 60,
+  ).length;
   const lecInsight = lecPct >= 80
     ? `✅ Strong delivery at ${lecPct}% — programme on track across all regions.`
     : lecPct >= 60
@@ -849,67 +1006,83 @@ function LecTabInsights({ data, year, term, onDrill }) {
       </div>
       <div className="kpi-hero-strip">
         <KpiHeroCard label="LEC Delivery" valueClass={ragKpiClass(lecPct)} value={lecPct} unit="%" sub={`${num(delivered)} / ${num(expected)} sessions`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'lec_delivery' })} />
-        <KpiHeroCard label="Total Schools" valueClass="kpi-blue" value={totalS} sub={`${data.length} CUs in view`} drill="⌕ Schools by region" onClick={() => onDrill({ metric: 'total_schools' })} />
+        <KpiHeroCard label="Total Schools" valueClass="kpi-blue" value={totalS} sub={`${cuCount} CUs in view`} drill="⌕ Schools by region" onClick={() => onDrill({ metric: 'total_schools' })} />
         <KpiHeroCard label="Avg Scholars/LEC" valueClass={ragKpiClass(avgSch, 45, 35)} value={avgSch} sub="across delivered sessions" drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'avg_scholars' })} />
         <KpiHeroCard label="Avg Session Duration" valueClass={avgDur >= 70 && avgDur <= 90 ? 'kpi-green' : avgDur > 0 ? 'kpi-amber' : ''} value={avgDur > 0 ? avgDur : '—'} unit={avgDur > 0 ? ' min' : ''} sub="Target: 70–90 min" drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'lec_duration' })} />
-        <KpiHeroCard label="LEC 6 (T2 Start)" valueClass={lec6Pct >= 80 ? 'kpi-green' : lec6Pct >= 60 ? 'kpi-amber' : lec6Pct > 0 ? 'kpi-red' : ''} value={lec6Pct} unit="%" sub={`${lec6} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: 6 })} />
-        <KpiHeroCard label="LEC 14 (Final)" valueClass={lec14Pct >= 80 ? 'kpi-green' : lec14Pct >= 60 ? 'kpi-amber' : lec14Pct > 0 ? 'kpi-red' : ''} value={lec14Pct} unit="%" sub={`${lec14} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: 14 })} />
+        {startCard ? (
+          <KpiHeroCard label={`LEC ${startCard.lecNum} (${getTermShortLabel(term)} Start)`} valueClass={boundaryClass(startCard.pct)} value={startCard.pct} unit="%" sub={`${startCard.delivered} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: startCard.lecNum })} />
+        ) : null}
+        {finalCard ? (
+          <KpiHeroCard label={`LEC ${finalCard.lecNum} (Final)`} valueClass={boundaryClass(finalCard.pct)} value={finalCard.pct} unit="%" sub={`${finalCard.delivered} of ${totalS} schools`} drill="⌕ drill" onClick={() => onDrill({ metric: 'lec_single', lecNum: finalCard.lecNum })} />
+        ) : null}
       </div>
     </div>
   );
 }
 
 // ── Passbook Quality tab ─────────────────────────────────────────────────────
-function PbTab({ summaryData, data, year, term, onDrill }) {
+function PbTab({ summaryData, schoolData, data, year, term, onDrill }) {
   const [showAll, setShowAll] = useState(false);
+  // Which milestones are due nationally (PB_MILESTONE_DUE, same rule as the LEC
+  // tab's Key Insights). Before that, a low completion rate is "in progress".
+  const msDue = useMemo(
+    () => Object.fromEntries(getMilestonesInScope('all').map((m) => [m, isMilestoneDueNationally(summaryData, schoolData, year, m)])),
+    [summaryData, schoolData, year],
+  );
   return (
     <>
-      <PbTabInsights summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
+      <PbTabInsights summaryData={summaryData} data={data} year={year} term={term} msDue={msDue} onDrill={onDrill} />
       <PbQualitySection summaryData={summaryData} year={year} term={term} showAll={showAll} onToggle={() => setShowAll((s) => !s)} onDrill={onDrill} />
       <Section title="📋 PB Milestone Completion" subtitle="Schools that reported each milestone, by region">
-        <PbMilestoneCompletion summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
+        <PbMilestoneCompletion summaryData={summaryData} data={data} year={year} term={term} msDue={msDue} onDrill={onDrill} />
       </Section>
       <Section title="👥 Group Mentoring Completion" subtitle="Group Mentoring sessions by region">
-        <GmCompletion data={data} term={term} onDrill={onDrill} />
+        <GmCompletion data={data} schoolData={schoolData} year={year} term={term} onDrill={onDrill} />
       </Section>
     </>
   );
 }
 
-function PbTabInsights({ summaryData, data, year, term, onDrill }) {
-  const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
-  const src = t1.length > 0 ? t1 : data;
-  const totalS = sum(data, (d) => N(d.total_target_schools));
-  const pb2t1 = sum(src, (d) => N(d.m1_quality_rated) + N(d.m2_quality_rated));
-  const pbTt1 = sum(src, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
-  const pbPctT1 = pbTt1 > 0 ? Math.round((pb2t1 / pbTt1) * 100) : 0;
-  const m1done = sum(src, (d) => N(d.schools_completed_m1));
-  const m1Pct = formatPercentage1(m1done, totalS);
-  const m2done = sum(src, (d) => N(d.schools_completed_m2));
-  const m2Pct = formatPercentage1(m2done, totalS);
-  const t2src = summaryData.filter((d) => d.year == year && d.term === 'term2');
-  const pb2t2 = sum(t2src, (d) => N(d.m3_quality_rated) + N(d.m4_quality_rated));
-  const pbTt2 = sum(t2src, (d) => N(d.m3_total_rated) + N(d.m4_total_rated));
-  const pbPctT2 = pbTt2 > 0 ? Math.round((pb2t2 / pbTt2) * 100) : 0;
-  const m3done = sum(t2src, (d) => N(d.schools_completed_m3));
-  const m3Pct = formatPercentage1(m3done, totalS);
-  const m4done = sum(t2src, (d) => N(d.schools_completed_m4));
-  const m4Pct = formatPercentage1(m4done, totalS);
-  // Completion cards follow the term filter (same term -> milestone mapping as
-  // PbMilestoneCompletion below): T1 -> M1+M2, T2 -> M3+M4, All Terms -> all four.
-  const showT1Completion = term !== 'term2';
-  const showT2Completion = term === 'term2' || term === 'all';
+function PbTabInsights({ summaryData, data, year, term, msDue, onDrill }) {
+  // Target schools belong to the CU, not the term. Under All Terms `data` has
+  // one row per CU per term, so adding them counted 825 schools as 2,475 and
+  // cut every All Terms completion rate to a third.
+  const totalS = [...data.reduce((m, d) => {
+    const key = `${d.region}|${d.cu}`;
+    return m.set(key, Math.max(m.get(key) || 0, N(d.total_target_schools)));
+  }, new Map()).values()].reduce((s, v) => s + v, 0);
+  // Each milestone is read from the rows of the term that runs it: M1-2 from
+  // T1, M3-4 from T2, M5-6 from T3. Term 1 falls back to `data` as before.
+  const termRows = (t) => {
+    const rows = summaryData.filter((d) => d.year == year && d.term === t);
+    return rows.length > 0 || t !== 'term1' ? rows : data;
+  };
+  const quality = (t) => {
+    const ms = getMilestonesInScope(t);
+    const rows = termRows(t);
+    const good = sum(rows, (d) => ms.reduce((s, m) => s + N(d[`m${m}_quality_rated`]), 0));
+    const total = sum(rows, (d) => ms.reduce((s, m) => s + N(d[`m${m}_total_rated`]), 0));
+    return { t, ms, good, total, pct: total > 0 ? Math.round((good / total) * 100) : 0 };
+  };
+  const completion = (m) => {
+    const done = sum(termRows(getTermForMilestone(m)), (d) => N(d[`schools_completed_m${m}`]));
+    return { m, done, pct: formatPercentage1(done, totalS), due: msDue[m] };
+  };
 
-  // Insights follow the term filter — same "not term2 -> T1, term2 -> T2" rule
-  // as the completion cards, so "All Terms" defaults to the T1 baseline.
-  const insightIsT2 = term === 'term2';
-  const qPct = insightIsT2 ? pbPctT2 : pbPctT1;
-  const qDone = insightIsT2 ? pb2t2 : pb2t1;
-  const qTotal = insightIsT2 ? pbTt2 : pbTt1;
-  const qLabel = insightIsT2 ? 'T2' : 'T1';
-  const compDone = insightIsT2 ? m3done : m1done;
-  const compPct = insightIsT2 ? m3Pct : m1Pct;
-  const compLabel = insightIsT2 ? 'M3' : 'M1';
+  // Insights follow the term filter; All Terms keeps the T1 baseline.
+  const insightTerm = term === 'all' ? 'term1' : term;
+  const q = quality(insightTerm);
+  const qPct = q.pct;
+  const qDone = q.good;
+  const qTotal = q.total;
+  const qLabel = getTermShortLabel(insightTerm);
+  const comp = completion(getMilestonesInScope(insightTerm)[0]);
+
+  // Quality cards: T1 always, then T2 — or T3 when Term 3 is selected. All
+  // Terms shows all three. Completion cards follow the term's milestones
+  // (M1-2 / M3-4 / M5-6, all six under All Terms).
+  const qualityCards = (term === 'term3' ? ['term1', 'term3'] : term === 'all' ? ['term1', 'term2', 'term3'] : ['term1', 'term2']).map(quality);
+  const completionCards = getMilestonesInScope(term).map(completion);
 
   const pbInsight = qTotal === 0
     ? <>ℹ️ <strong>No {qLabel} milestone quality data yet</strong> — check back once ratings are submitted.</>
@@ -930,25 +1103,40 @@ function PbTabInsights({ summaryData, data, year, term, onDrill }) {
           </div>
           <div className="kt-strip-item">
             <div className="kt-strip-bar" />
-            <div>{compLabel} completion: <strong>{compDone}</strong> of {totalS} schools ({compPct}%). {compPct < 60 ? '⚠️ Behind target.' : 'Good progress.'}</div>
+            <div>M{comp.m} completion: <strong>{comp.done}</strong> of {totalS} schools ({comp.pct}%). {!comp.due ? 'In progress — not yet due.' : comp.pct < 60 ? '⚠️ Behind target.' : 'Good progress.'}</div>
           </div>
         </div>
       </div>
       <div className="kpi-hero-strip">
-        <KpiHeroCard label="PB Quality (T1 M1+M2)" valueClass={ragKpiClass(pbPctT1)} value={pbPctT1} unit="%" sub={`${num(pb2t1)} of ${num(pbTt1)} rated ≥2`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term1' })} />
-        <KpiHeroCard label="PB Quality (T2 M3+M4)" valueClass={pbTt2 > 0 ? ragKpiClass(pbPctT2) : 'kpi-blue'} value={pbTt2 > 0 ? pbPctT2 : '—'} unit={pbTt2 > 0 ? '%' : ''} sub={pbTt2 > 0 ? `${num(pb2t2)} of ${num(pbTt2)} rated ≥2` : 'No T2 milestone data yet'} drill={pbTt2 > 0 ? '⌕ Regional breakdown' : 'Awaiting M3+M4 data'} onClick={() => onDrill({ metric: 'pb_quality', pbTerm: 'term2' })} />
-        {showT1Completion ? (
-          <>
-            <KpiHeroCard label="M1 Completed (T1)" valueClass={ragKpiClass(m1Pct)} value={m1Pct} unit="%" sub={`${m1done} of ${totalS} schools`} drill="⌕ Regional breakdown" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 1 })} />
-            <KpiHeroCard label="M2 Completed (T1)" valueClass={m2done > 0 ? ragKpiClass(m2Pct) : 'kpi-blue'} value={m2done > 0 ? m2Pct : '—'} unit={m2done > 0 ? '%' : ''} sub={m2done > 0 ? `${m2done} of ${totalS} schools` : 'No M2 completion data yet'} drill={m2done > 0 ? '⌕ Regional breakdown' : 'Awaiting M2 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 2 })} />
-          </>
-        ) : null}
-        {showT2Completion ? (
-          <>
-            <KpiHeroCard label="M3 Completed (T2)" valueClass={m3done > 0 ? ragKpiClass(m3Pct) : 'kpi-blue'} value={m3done > 0 ? m3Pct : '—'} unit={m3done > 0 ? '%' : ''} sub={m3done > 0 ? `${m3done} of ${totalS} schools` : 'No T2 completion data yet'} drill={m3done > 0 ? '⌕ Regional breakdown' : 'Awaiting M3 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 3 })} />
-            <KpiHeroCard label="M4 Completed (T2)" valueClass={m4done > 0 ? ragKpiClass(m4Pct) : 'kpi-blue'} value={m4done > 0 ? m4Pct : '—'} unit={m4done > 0 ? '%' : ''} sub={m4done > 0 ? `${m4done} of ${totalS} schools` : 'No M4 completion data yet'} drill={m4done > 0 ? '⌕ Regional breakdown' : 'Awaiting M4 data'} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: 4 })} />
-          </>
-        ) : null}
+        {qualityCards.map((c) => {
+          const msLabel = c.ms.map((m) => `M${m}`).join('+');
+          return (
+            <KpiHeroCard
+              key={c.t}
+              label={`PB Quality (${getTermShortLabel(c.t)} ${msLabel})`}
+              valueClass={c.total > 0 ? ragKpiClass(c.pct) : 'kpi-blue'}
+              value={c.total > 0 ? c.pct : '—'}
+              unit={c.total > 0 ? '%' : ''}
+              sub={c.total > 0 ? `${num(c.good)} of ${num(c.total)} rated ≥2` : `No ${getTermShortLabel(c.t)} milestone data yet`}
+              drill={c.total > 0 ? '⌕ Regional breakdown' : `Awaiting ${msLabel} data`}
+              onClick={() => onDrill({ metric: 'pb_quality', pbTerm: c.t })}
+            />
+          );
+        })}
+        {completionCards.map((c) => (
+          // Not yet due → neutral blue with the count, not red: a low rate
+          // mid-term is progress, not a shortfall.
+          <KpiHeroCard
+            key={c.m}
+            label={`M${c.m} Completed (${getTermShortLabel(getTermForMilestone(c.m))})`}
+            valueClass={c.done > 0 && c.due ? ragKpiClass(c.pct) : 'kpi-blue'}
+            value={c.done > 0 ? c.pct : '—'}
+            unit={c.done > 0 ? '%' : ''}
+            sub={c.done > 0 ? `${c.done} of ${totalS} schools${c.due ? '' : ' · in progress, not yet due'}` : `No M${c.m} completion data yet`}
+            drill={c.done > 0 ? '⌕ Regional breakdown' : `Awaiting M${c.m} data`}
+            onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: c.m })}
+          />
+        ))}
       </div>
     </div>
   );
@@ -956,8 +1144,12 @@ function PbTabInsights({ summaryData, data, year, term, onDrill }) {
 
 function PbQualitySection({ summaryData, year, term, showAll, onToggle, onDrill }) {
   const termMsMap = { term1: ['m1', 'm2'], term2: ['m3', 'm4'], term3: ['m5', 'm6'] };
-  let msKeys = showAll ? ['m1', 'm2', 'm3', 'm4'].filter((k) => summaryData.some((d) => N(d[`${k}_total_rated`]) > 0)) : (termMsMap[term] || ['m1', 'm2']);
-  const dataTerm = msKeys.some((k) => ['m1', 'm2'].includes(k)) ? 'term1' : 'term2';
+  let msKeys = showAll
+    ? getMilestonesInScope('all').map((m) => `m${m}`).filter((k) => summaryData.some((d) => N(d[`${k}_total_rated`]) > 0))
+    : (termMsMap[term] || ['m1', 'm2']);
+  // Rows of the term that runs these milestones (M5/M6 → T3). Was a T1/T2
+  // either-or, so Term 3 read T2 rows and found no data.
+  const dataTerm = getTermForMilestone(Number(msKeys[0]?.slice(1))) || 'term1';
   let pbSrc = showAll ? summaryData.filter((d) => d.year == year) : summaryData.filter((d) => d.year == year && d.term === dataTerm);
   if (!showAll && pbSrc.length === 0) pbSrc = summaryData.filter((d) => d.year == year);
 
@@ -995,8 +1187,8 @@ function PbQualitySection({ summaryData, year, term, showAll, onToggle, onDrill 
 
   const worstRegion = regions.map((reg) => {
     const rRows = pbSrc.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
-    const rT = sum(rRows, (d) => N(d.m1_total_rated) + N(d.m2_total_rated));
-    const rQ = sum(rRows, (d) => N(d.m1_quality_rated) + N(d.m2_quality_rated));
+    const rT = sum(rRows, (d) => allMs.reduce((s, m) => s + N(d[`${m.key}_total_rated`]), 0));
+    const rQ = sum(rRows, (d) => allMs.reduce((s, m) => s + N(d[`${m.key}_quality_rated`]), 0));
     return { reg, pct: rT > 0 ? Math.round((rQ / rT) * 100) : null };
   }).filter((r) => r.pct !== null).sort((a, b) => a.pct - b.pct)[0];
 
@@ -1007,9 +1199,11 @@ function PbQualitySection({ summaryData, year, term, showAll, onToggle, onDrill 
         ? `📋 PB quality at ${natQP}% nationally${worstRegion ? ` · ${worstRegion.reg} lowest at ${worstRegion.pct}%` : ''} — coaching focus needed`
         : `🔴 PB quality critically low — ${natQP}% nationally${natPoorP > 20 ? ` · ${natPoorP}% rated Poor` : ''} — immediate support required`
   );
-  const sectionSubtitle = !natQP ? 'Good + Excellent ratings (score ≥ 2) by region' : `Good + Excellent ratings (score ≥ 2) · T1 baseline · ${num(natTotal)} passbooks rated`;
-  const completionField = msKeys.includes('m3') && !msKeys.includes('m1') ? 'schools_completed_m3' : 'schools_completed_m1';
-  const completionLabel = completionField === 'schools_completed_m3' ? 'Schools M3' : 'Schools M1';
+  const sectionSubtitle = !natQP ? 'Good + Excellent ratings (score ≥ 2) by region' : `Good + Excellent ratings (score ≥ 2) · ${showAll ? 'all terms' : getTermShortLabel(dataTerm)} · ${num(natTotal)} passbooks rated`;
+  // First milestone of the term in view (M1 / M3 / M5); M1 for all terms.
+  const completionMs = showAll ? 'm1' : msKeys[0];
+  const completionField = `schools_completed_${completionMs}`;
+  const completionLabel = `Schools M${completionMs.slice(1)}`;
 
   return (
     <Section title={sectionTitle} subtitle={sectionSubtitle}>
@@ -1117,16 +1311,17 @@ function PbQualitySection({ summaryData, year, term, showAll, onToggle, onDrill 
 }
 
 // ── PB Milestone Completion by region (legacy renderNationalPBMilestone, term-aware) ─
-function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
-  // Term → milestones + source rows. M1/M2 from T1 rows; M3/M4 from T2 rows.
-  const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
-  const t2 = summaryData.filter((d) => d.year == year && d.term === 'term2');
-  let milestones;
-  if (term === 'term2') milestones = [{ m: 3, src: t2.length ? t2 : data }, { m: 4, src: t2.length ? t2 : data }];
-  else if (term === 'all') milestones = [{ m: 1, src: t1 }, { m: 2, src: t1 }, { m: 3, src: t2 }, { m: 4, src: t2 }];
-  else milestones = [{ m: 1, src: t1.length ? t1 : data }, { m: 2, src: t1.length ? t1 : data }];
-  milestones = milestones.filter((ms) => ms.src.length > 0);
+function PbMilestoneCompletion({ summaryData, data, year, term, msDue, onDrill }) {
+  // Term → milestones (M1-2 / M3-4 / M5-6, all six under All Terms), each read
+  // from the rows of the term that runs it. A single term falls back to `data`.
+  const milestones = getMilestonesInScope(term).map((m) => {
+    const rows = summaryData.filter((d) => d.year == year && d.term === getTermForMilestone(m));
+    return { m, src: rows.length || term === 'all' ? rows : data, due: msDue[m] };
+  }).filter((ms) => ms.src.length > 0);
   if (milestones.length === 0) return <Placeholder label="No milestone completion data yet for this term." />;
+  // Not yet due → neutral grey instead of the red/amber/green scale.
+  const pendingGrey = '#6c757d';
+  const msColor = (ms, pct) => (ms.due ? ragColor(pct) : pendingGrey);
 
   const regions = REGIONS.filter((reg) => data.some((d) => String(d.region || '').toLowerCase() === reg.toLowerCase()));
   const cell = (rows, m, regionFilter) => {
@@ -1150,8 +1345,8 @@ function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
               style={{ background: '#f8f9fa', borderRadius: 8, padding: '1rem', borderLeft: `4px solid ${border}`, cursor: 'pointer' }}
             >
               <div style={{ fontSize: '.72rem', fontWeight: 700, textTransform: 'uppercase', color: '#888' }}>Milestone {ms.m} Completed <span style={{ color: '#0077b6' }}>⌕</span></div>
-              <div style={{ fontSize: '1.6rem', fontWeight: 800, color: ragColor(c.pct) }}>{c.done} <span style={{ fontSize: '.9rem', fontWeight: 400, color: '#888' }}>/ {c.tot} schools</span></div>
-              <div style={{ fontSize: '.8rem', color: '#555' }}>{c.pct}% completion rate</div>
+              <div style={{ fontSize: '1.6rem', fontWeight: 800, color: msColor(ms, c.pct) }}>{c.done} <span style={{ fontSize: '.9rem', fontWeight: 400, color: '#888' }}>/ {c.tot} schools</span></div>
+              <div style={{ fontSize: '.8rem', color: '#555' }}>{c.pct}% completion rate{ms.due ? '' : ' · in progress, not yet due'}</div>
             </div>
           );
         })}
@@ -1172,7 +1367,7 @@ function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
                 <td className="item-name clickable" onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: milestones[0].m })}>{region} <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
                 {milestones.map((ms) => {
                   const c = cell(ms.src, ms.m, region);
-                  return <td key={ms.m} className="center clickable" style={{ fontWeight: 700, color: ragColor(c.pct) }} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: ms.m })}>{c.done}/{c.tot} ({c.pct}%)</td>;
+                  return <td key={ms.m} className="center clickable" style={{ fontWeight: 700, color: msColor(ms, c.pct) }} onClick={() => onDrill({ metric: 'pb_completion', milestoneNum: ms.m })}>{c.done}/{c.tot} ({c.pct}%)</td>;
                 })}
               </tr>
             ))}
@@ -1180,7 +1375,7 @@ function PbMilestoneCompletion({ summaryData, data, year, term, onDrill }) {
               <td>NATIONAL</td>
               {milestones.map((ms) => {
                 const c = cell(ms.src, ms.m, null);
-                return <td key={ms.m} className="center" style={{ color: ragColor(c.pct) }}>{c.done}/{c.tot} ({c.pct}%)</td>;
+                return <td key={ms.m} className="center" style={{ color: msColor(ms, c.pct) }}>{c.done}/{c.tot} ({c.pct}%)</td>;
               })}
             </tr>
           </tbody>
@@ -1194,6 +1389,7 @@ const GM_SESSIONS = [
   { key: 'schools_with_gm1', schlKey: 'gm1_total_scholars', label: 'GM 1', terms: ['term1', 'all'] },
   { key: 'schools_with_gm2', schlKey: 'gm2_total_scholars', label: 'GM 2', terms: ['term2', 'all'] },
   { key: 'schools_with_gm3', schlKey: 'gm3_total_scholars', label: 'GM 3', terms: ['term2', 'all'] },
+  { key: 'schools_with_gm4', schlKey: 'gm4_total_scholars', label: 'GM 4', terms: ['term3', 'all'] },
 ];
 
 // A pill-style "click to drill" hint — more visible than a bare "⌕" glyph.
@@ -1213,20 +1409,34 @@ function DrillTag({ label = 'Drill', onClick }) {
 }
 
 // legacy renderNationalGMCompletion — overall banner + per-session × region breakdown.
-function GmCompletion({ data, term, onDrill }) {
+function GmCompletion({ data, schoolData = [], year, term, onDrill }) {
   const regions = REGIONS.filter((reg) => data.some((d) => String(d.region || '').toLowerCase() === reg.toLowerCase()));
   const cuRows = term === 'all' ? [...new Map(data.map((d) => [d.cu, d])).values()] : data;
   const totalS = sum(cuRows, (d) => N(d.total_target_schools));
   if (totalS === 0) return null;
 
-  const gmTotal = sum(data, (d) => N(d.schools_with_gm));
+  // "At least 1 GM session" under All Terms means any session in the year, so
+  // count distinct schools from the school rows of the CUs in view. Adding
+  // each term's CU total counted a school once per term (1,681 of 825).
+  const cuKeys = new Set(data.map((d) => `${d.region}|${d.cu}`));
+  const gmTotal = term === 'all'
+    ? new Set(schoolData
+      .filter((s) => s.year == year && cuKeys.has(`${s.region}|${s.cu}`) && N(s.schools_with_gm) > 0)
+      .map((s) => s.school_id)).size
+    : sum(data, (d) => N(d.schools_with_gm));
+  // Under All Terms each session is read only from the term that runs it —
+  // Term 2 rows carry a few stray GM 1 counts (GM 1 read 827 of 825).
+  const sessionRows = (s, rows) => {
+    const owning = term === 'all' ? getTermForGM(Number(s.key.replace(/\D/g, ''))) : null;
+    return owning ? rows.filter((d) => d.term === owning) : rows;
+  };
   const gmPct = formatPercentage1(gmTotal, totalS);
   const gmRag = gmPct >= 80 ? C.green : gmPct >= 60 ? C.yellow : C.red;
   const gmBg = gmPct >= 80 ? '#EEF5ED' : gmPct >= 60 ? '#FBF1DD' : '#FCF3F1';
   const gmScholars = sum(data, (d) => N(d.GM_total_scholars));
 
   const active = GM_SESSIONS.filter((s) => s.terms.includes(term));
-  const hasData = active.some((s) => sum(data, (d) => N(d[s.key])) > 0);
+  const hasData = active.some((s) => sum(sessionRows(s, data), (d) => N(d[s.key])) > 0);
 
   return (
     <>
@@ -1236,7 +1446,7 @@ function GmCompletion({ data, term, onDrill }) {
         title="Click for the full regional → CU → school breakdown"
       >
         <span style={{ fontSize: '1.4rem', fontWeight: 800, color: gmRag }}>{gmPct}%</span>
-        <span><strong>{gmTotal}</strong> of {totalS} schools completed at least 1 GM session (1 in T1 · 2 in T2)</span>
+        <span><strong>{gmTotal}</strong> of {totalS} schools completed at least 1 GM session (1 in T1 · 2 in T2 · 1 in T3)</span>
         <span><strong>{num(gmScholars)}</strong> total GM scholars</span>
         <DrillTag label="Drill to regions" />
       </div>
@@ -1263,8 +1473,8 @@ function GmCompletion({ data, term, onDrill }) {
             </thead>
             <tbody>
               {active.map((s) => {
-                const cnt = sum(data, (d) => N(d[s.key]));
-                const sch = sum(data, (d) => N(d[s.schlKey]));
+                const cnt = sum(sessionRows(s, data), (d) => N(d[s.key]));
+                const sch = sum(sessionRows(s, data), (d) => N(d[s.schlKey]));
                 const pct = formatPercentage1(cnt, totalS);
                 return (
                   <tr key={s.key}>
@@ -1281,7 +1491,7 @@ function GmCompletion({ data, term, onDrill }) {
                       const rr = data.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
                       const rCU = term === 'all' ? [...new Map(rr.map((d) => [d.cu, d])).values()] : rr;
                       const rT = sum(rCU, (d) => N(d.total_target_schools));
-                      const rC = sum(rr, (d) => N(d[s.key]));
+                      const rC = sum(sessionRows(s, rr), (d) => N(d[s.key]));
                       const rP = formatPercentage1(rC, rT);
                       return (
                         <td
@@ -4050,7 +4260,7 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
     switch (tabId) {
       case 'exec': return <ExecTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} onJumpTab={setTab} />;
       case 'lec': return <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
-      case 'pb': return <PbTab summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />;
+      case 'pb': return <PbTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
       case 'quality': return <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
       case 'mentor': return <MentorQualityTab term={term} year={year} summaryData={summaryData} />;
       case 'lmm': return <LearningMeasurementMapTab onJumpTab={setTab} summaryData={summaryData} schoolData={schoolData} year={year} />;
