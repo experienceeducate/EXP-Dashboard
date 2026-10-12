@@ -3,8 +3,8 @@
 // All functions are pure — they take data + year/term rather than reading the DOM.
 // ─────────────────────────────────────────────────────────────────────────────
 import {
-  getLECsForTerm, getMilestonesForTerm, getObservationStartLec, getTermShortLabel,
-  PB_MILESTONE_DUE, TERM_CONFIG,
+  getLECsForTerm, getMilestonesForTerm, getObservationStartLec, getTermForMilestone,
+  getTermShortLabel, PB_MILESTONE_DUE, TERM_CONFIG,
 } from './config.js';
 import { calculatePBQualityScore, formatPercentage1 } from './format.js';
 
@@ -446,6 +446,32 @@ function isTermOver(summaryData, year, term) {
     && d.term === later && TERM_CONFIG[later].lecs.some((n) => N(d[`schools_with_lec${n}`]) > 0)));
 }
 
+// Per-CU "is PB milestone m due?" for one term (see PB_MILESTONE_DUE): due once
+// the term is over, or once the CU has delivered `afterLec` and `graceWeeks`
+// more weeks have passed on the term's week clock.
+export function makeMilestoneDueCheck(summaryData, schoolData, year, term) {
+  const termOver = isTermOver(summaryData, year, term);
+  const clock = buildTermClock(schoolData, year, term);
+  return (cuRow, m) => {
+    if (termOver) return true;
+    const { afterLec, graceWeeks } = PB_MILESTONE_DUE[m];
+    if (!cuReachedLec(cuRow, afterLec)) return false;
+    const reachedWeek = clock.cuWeekReached(cuRow, afterLec);
+    return reachedWeek !== null && clock.current - reachedWeek >= graceWeeks;
+  };
+}
+
+// National view of the same rule, for tab-level cards and tables: a milestone
+// is due nationally once at least half of CUs have it due. Before that, a low
+// completion rate means "in progress", not "behind".
+export function isMilestoneDueNationally(summaryData, schoolData, year, m) {
+  const term = getTermForMilestone(m);
+  const cus = summaryData.filter((d) => d.year == year && d.term === term && N(d.total_target_schools) > 0);
+  if (!term || cus.length === 0) return false;
+  const isDue = makeMilestoneDueCheck(summaryData, schoolData, year, term);
+  return cus.filter((d) => isDue(d, m)).length >= cus.length / 2;
+}
+
 // Fewest ratings a CU needs before its PB quality is judged.
 const PB_QUALITY_MIN_RATINGS = 50;
 
@@ -509,16 +535,8 @@ export function computeNationalInsights(summaryData, data, year, term, schoolDat
   const msLabel = `M${msNums[0]}–M${msNums[msNums.length - 1]}`;
   const termPb = summaryData.filter((d) => d.year == year && d.term === term);
   const pbSrc = termPb.length > 0 ? termPb : data;
-  const termOver = isTermOver(summaryData, year, term);
-  const clock = buildTermClock(schoolData, year, term);
   const hasColumn = (m) => pbSrc.some((d) => d[`schools_completed_m${m}`] !== undefined && d[`schools_completed_m${m}`] !== null);
-  const isDue = (d, m) => {
-    if (termOver) return true;
-    const { afterLec, graceWeeks } = PB_MILESTONE_DUE[m];
-    if (!cuReachedLec(d, afterLec)) return false;
-    const reachedWeek = clock.cuWeekReached(d, afterLec);
-    return reachedWeek !== null && clock.current - reachedWeek >= graceWeeks;
-  };
+  const isDue = makeMilestoneDueCheck(summaryData, schoolData, year, term);
   const pbCus = pbSrc.filter((d) => N(d.total_target_schools) > 0).map((d) => {
     const due = msNums.filter((m) => isDue(d, m));
     return { d, due, measurable: due.filter(hasColumn) };
