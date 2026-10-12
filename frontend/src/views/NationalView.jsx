@@ -1037,14 +1037,20 @@ function PbTab({ summaryData, schoolData, data, year, term, onDrill }) {
         <PbMilestoneCompletion summaryData={summaryData} data={data} year={year} term={term} msDue={msDue} onDrill={onDrill} />
       </Section>
       <Section title="👥 Group Mentoring Completion" subtitle="Group Mentoring sessions by region">
-        <GmCompletion data={data} term={term} onDrill={onDrill} />
+        <GmCompletion data={data} schoolData={schoolData} year={year} term={term} onDrill={onDrill} />
       </Section>
     </>
   );
 }
 
 function PbTabInsights({ summaryData, data, year, term, msDue, onDrill }) {
-  const totalS = sum(data, (d) => N(d.total_target_schools));
+  // Target schools belong to the CU, not the term. Under All Terms `data` has
+  // one row per CU per term, so adding them counted 825 schools as 2,475 and
+  // cut every All Terms completion rate to a third.
+  const totalS = [...data.reduce((m, d) => {
+    const key = `${d.region}|${d.cu}`;
+    return m.set(key, Math.max(m.get(key) || 0, N(d.total_target_schools)));
+  }, new Map()).values()].reduce((s, v) => s + v, 0);
   // Each milestone is read from the rows of the term that runs it: M1-2 from
   // T1, M3-4 from T2, M5-6 from T3. Term 1 falls back to `data` as before.
   const termRows = (t) => {
@@ -1403,20 +1409,34 @@ function DrillTag({ label = 'Drill', onClick }) {
 }
 
 // legacy renderNationalGMCompletion — overall banner + per-session × region breakdown.
-function GmCompletion({ data, term, onDrill }) {
+function GmCompletion({ data, schoolData = [], year, term, onDrill }) {
   const regions = REGIONS.filter((reg) => data.some((d) => String(d.region || '').toLowerCase() === reg.toLowerCase()));
   const cuRows = term === 'all' ? [...new Map(data.map((d) => [d.cu, d])).values()] : data;
   const totalS = sum(cuRows, (d) => N(d.total_target_schools));
   if (totalS === 0) return null;
 
-  const gmTotal = sum(data, (d) => N(d.schools_with_gm));
+  // "At least 1 GM session" under All Terms means any session in the year, so
+  // count distinct schools from the school rows of the CUs in view. Adding
+  // each term's CU total counted a school once per term (1,681 of 825).
+  const cuKeys = new Set(data.map((d) => `${d.region}|${d.cu}`));
+  const gmTotal = term === 'all'
+    ? new Set(schoolData
+      .filter((s) => s.year == year && cuKeys.has(`${s.region}|${s.cu}`) && N(s.schools_with_gm) > 0)
+      .map((s) => s.school_id)).size
+    : sum(data, (d) => N(d.schools_with_gm));
+  // Under All Terms each session is read only from the term that runs it —
+  // Term 2 rows carry a few stray GM 1 counts (GM 1 read 827 of 825).
+  const sessionRows = (s, rows) => {
+    const owning = term === 'all' ? getTermForGM(Number(s.key.replace(/\D/g, ''))) : null;
+    return owning ? rows.filter((d) => d.term === owning) : rows;
+  };
   const gmPct = formatPercentage1(gmTotal, totalS);
   const gmRag = gmPct >= 80 ? C.green : gmPct >= 60 ? C.yellow : C.red;
   const gmBg = gmPct >= 80 ? '#EEF5ED' : gmPct >= 60 ? '#FBF1DD' : '#FCF3F1';
   const gmScholars = sum(data, (d) => N(d.GM_total_scholars));
 
   const active = GM_SESSIONS.filter((s) => s.terms.includes(term));
-  const hasData = active.some((s) => sum(data, (d) => N(d[s.key])) > 0);
+  const hasData = active.some((s) => sum(sessionRows(s, data), (d) => N(d[s.key])) > 0);
 
   return (
     <>
@@ -1453,8 +1473,8 @@ function GmCompletion({ data, term, onDrill }) {
             </thead>
             <tbody>
               {active.map((s) => {
-                const cnt = sum(data, (d) => N(d[s.key]));
-                const sch = sum(data, (d) => N(d[s.schlKey]));
+                const cnt = sum(sessionRows(s, data), (d) => N(d[s.key]));
+                const sch = sum(sessionRows(s, data), (d) => N(d[s.schlKey]));
                 const pct = formatPercentage1(cnt, totalS);
                 return (
                   <tr key={s.key}>
@@ -1471,7 +1491,7 @@ function GmCompletion({ data, term, onDrill }) {
                       const rr = data.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
                       const rCU = term === 'all' ? [...new Map(rr.map((d) => [d.cu, d])).values()] : rr;
                       const rT = sum(rCU, (d) => N(d.total_target_schools));
-                      const rC = sum(rr, (d) => N(d[s.key]));
+                      const rC = sum(sessionRows(s, rr), (d) => N(d[s.key]));
                       const rP = formatPercentage1(rC, rT);
                       return (
                         <td
