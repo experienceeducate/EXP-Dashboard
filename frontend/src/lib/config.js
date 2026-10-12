@@ -225,6 +225,30 @@ export function getTermForMilestone(mNum) {
   return Object.keys(TERM_CONFIG).find((t) => (TERM_CONFIG[t].milestones || []).includes(mNum)) || null;
 }
 
+// When each PB milestone falls due: once a CU has delivered `afterLec` (its
+// term's last LEC) and a further `graceWeeks` have passed. Milestones are an
+// end-of-term activity — almost no school reports one before its term's last
+// LEC — so each grace period is how long after that LEC 90% of schools had
+// reported (2026 Term 1/2 mentor activity reports, rounded up to whole weeks).
+// M5/M6 had no history yet and are assumed to follow M3/M4. Revisit as terms
+// complete. Used by computeNationalInsights to tell "not yet due" from "behind".
+export const PB_MILESTONE_DUE = {
+  1: { afterLec: 5, graceWeeks: 4 },
+  2: { afterLec: 5, graceWeeks: 5 },
+  3: { afterLec: 14, graceWeeks: 1 },
+  4: { afterLec: 14, graceWeeks: 3 },
+  5: { afterLec: 20, graceWeeks: 1 },
+  6: { afterLec: 20, graceWeeks: 3 },
+};
+
+// Mentor observations are expected from the second LEC of each term (LEC 2, 7,
+// 16) through to the end of that term. Before it, zero observations is "not
+// yet started", not a gap.
+export function getObservationStartLec(term) {
+  const cfg = TERM_CONFIG[term];
+  return cfg ? cfg.lecs[1] : null;
+}
+
 export function getMilestonesForTerm(term) {
   const cfg = TERM_CONFIG[term];
   return cfg && cfg.milestones ? cfg.milestones : [1, 2];

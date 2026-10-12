@@ -2,7 +2,7 @@
 // region → CU → school drill for the selected metric, plus the
 // "How this is calculated" card from METRIC_DEFINITIONS.
 import { useState } from 'react';
-import { METRIC_DEFINITIONS, getLECsForTerm, C } from '../lib/config.js';
+import { METRIC_DEFINITIONS, getLECsForTerm, getMilestonesInScope, C } from '../lib/config.js';
 import { sum, resolveLastLecScholars, avgScholarsPerLec, getReportTimelinessSummary } from '../lib/metrics.js';
 import { ragColor } from '../lib/format.js';
 
@@ -66,7 +66,8 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
     // t1Rows here was the bug (every drill showed T1's M1+M2 number even when
     // "T2 M3+M4" was the tile clicked).
     const pt = pbTerm || term;
-    const pbFields = pt === 'term1' ? ['m1', 'm2'] : pt === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+    // M1-2 / M3-4 / M5-6 for a single term, all six otherwise.
+    const pbFields = getMilestonesInScope(['term1', 'term2', 'term3'].includes(pt) ? pt : 'all').map((m) => `m${m}`);
     const src = pt === 'term1' ? (t1Rows.length > 0 ? t1Rows : rows) : rows;
     const q = sum(src, (d) => pbFields.reduce((s, m) => s + N(d[`${m}_quality_rated`]), 0));
     const t = sum(src, (d) => pbFields.reduce((s, m) => s + N(d[`${m}_total_rated`]), 0));
@@ -74,7 +75,7 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
   }
   if (metric === 'pb_completion') {
     const pt = pbTerm || term;
-    const num = milestoneNum || (pt === 'term2' ? 3 : 1);
+    const num = milestoneNum || (pt === 'term2' ? 3 : pt === 'term3' ? 5 : 1);
     const src = num <= 2 ? (t1Rows.length > 0 ? t1Rows : rows) : rows;
     const done = sum(src, (d) => N(d[`schools_completed_m${num}`]));
     return { val: t1SchoolCount > 0 ? Math.round((done / t1SchoolCount) * 100) : 0, sub: `${done} of ${t1SchoolCount} schools reported M${num}` };
