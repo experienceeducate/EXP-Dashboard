@@ -31,7 +31,14 @@ class Settings(BaseSettings):
 
     # ── BigQuery ──────────────────────────────────────────────────────────
     GOOGLE_SERVICE_ACCOUNT_KEY: str = Field(
-        ..., description="Filesystem path to the GCP service-account JSON key."
+        "",
+        description=(
+            "Filesystem path to the GCP service-account JSON key. Required for "
+            "any deploy (k8s mounts it at /var/secrets/gcp/key.json). Leave "
+            "empty in local development to authenticate as yourself via "
+            "Application Default Credentials — see core/database.py's "
+            "_load_credentials()."
+        ),
     )
     BQ_PROJECT_ID: str = "educate-data-warehouse-test"
     BQ_DATASET: str = "gold_exp"
@@ -117,8 +124,10 @@ def get_settings() -> Settings:
     except Exception as exc:  # pydantic ValidationError on missing required env
         raise RuntimeError(
             "Configuration error — a required setting is missing. "
-            "Ensure JWT_SECRET, DASHBOARD_PASSWORD and GOOGLE_SERVICE_ACCOUNT_KEY "
-            f"are set (see .env.example). Original error: {exc}"
+            "Ensure JWT_SECRET and DASHBOARD_PASSWORD are set (see .env.example). "
+            "GOOGLE_SERVICE_ACCOUNT_KEY is optional: set it to a service-account "
+            "JSON path for a deploy, or leave it empty locally to use "
+            f"`gcloud auth application-default login`. Original error: {exc}"
         ) from exc
 
 

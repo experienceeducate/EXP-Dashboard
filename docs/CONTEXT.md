@@ -87,8 +87,17 @@ Single replica per service; **pod restart is the recovery path.**
   `database.run_query(...)` via the module object. A by-value
   `from app.core.database import run_query` would bypass the test monkeypatch —
   don't do it.
-- **Config fails fast.** Missing `JWT_SECRET` / `DASHBOARD_PASSWORD` /
-  `GOOGLE_SERVICE_ACCOUNT_KEY` raises at import → crash-loop with a clear message.
+- **Config fails fast.** Missing `JWT_SECRET` / `DASHBOARD_PASSWORD` raises at
+  import → crash-loop with a clear message.
+- **BigQuery credentials have two paths** (`core/database.py`'s
+  `_load_credentials`). `GOOGLE_SERVICE_ACCOUNT_KEY` set → that service-account
+  key file; that is how every deploy runs and it always wins. Empty → Application
+  Default Credentials, the local-dev path, so a developer runs
+  `gcloud auth application-default login` and queries as their own identity
+  rather than putting the SA key on a laptop (the key is meant to exist only in
+  the k8s Secret — see the deployment notes below). With neither available the
+  client raises naming both options, so a deploy that loses its key still fails
+  loudly instead of silently falling back.
 - **`cachetools` is pinned to 5.x**, not 6.x — 6.x conflicts with
   `google-auth`'s dependency range. Keep it pinned.
 - **Access config** lives in `core/access.py` (`_build_fallback_access_config`,
