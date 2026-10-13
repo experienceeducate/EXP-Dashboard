@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import * as api from '../lib/api.js';
-import { getLECsForTerm, C } from '../lib/config.js';
+import { getLECsForTerm, getLECsInScope, getGMsInScope, getMilestonesInScope, getClubMeetingsInScope, C } from '../lib/config.js';
 import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, mergeRowsAcrossTerms, sum } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap, ElabSliceTable } from '../components/ui.jsx';
@@ -525,8 +525,10 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
 }
 
 // ── Activity Completion & Participation (legacy renderRegionalActivityCompletion) ─
-function ActivityCompletion({ data, year, term }) {
-  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
+function ActivityCompletion({ data, term }) {
+  // All Terms covers LEC 1-20 (was LEC 1-14, dropping Term 3). `data` is one
+  // term-merged row per CU there, so each LEC reads its own term's value.
+  const lecNums = getLECsInScope(term);
   const totalSchools = sum(data, (d) => N(d.total_target_schools));
 
   const lecRows = lecNums.map((n) => {
@@ -542,15 +544,27 @@ function ActivityCompletion({ data, year, term }) {
   const lecsExp = totalSchools * lecNums.length;
   const lecPct = formatPercentage1(lecDeliveries, lecsExp);
 
-  const gmSessions = term === 'term2'
-    ? [{ label: 'GM 2', field: 'schools_with_gm2', schl: 'gm2_total_scholars' }, { label: 'GM 3', field: 'schools_with_gm3', schl: 'gm3_total_scholars' }]
-    : [{ label: 'GM 1', field: 'schools_with_gm1', schl: 'gm1_total_scholars' }];
+  // GM sessions and PB milestones follow the term (T1 → GM 1, M1-2; T2 → GM
+  // 2-3, M3-4; T3 → GM 4, M5-6; All Terms → all of them). Was a "Term 2, else
+  // Term 1" either-or for GM, and the PB row read M1 for every term.
+  const gmSessions = getGMsInScope(term)
+    .map((g) => ({ label: `GM ${g}`, field: `schools_with_gm${g}`, schl: `gm${g}_total_scholars` }));
+  const pbMilestones = getMilestonesInScope(term);
+  // A column absent from every row isn't in the gold model yet: "Not yet
+  // reported", filling in on its own once the column lands.
+  const reported = (field) => data.some((d) => d[field] !== undefined && d[field] !== null);
+  // Community Day is Term 1 and Skills Day Term 2; Term 3 has neither.
   const cdField = term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
-  const withCD = sum(data, (d) => N(d[cdField]));
+  const withCD = term === 'term3' ? 0 : sum(data, (d) => N(d[cdField]));
   const cdScholars = term === 'term2' ? sum(data, (d) => N(d.sd_total_scholars)) : sum(data, (d) => N(d.cd_scholar_attendance));
   const cdNon = term === 'term2' ? 0 : sum(data, (d) => N(d.cd_non_scholar_attendance));
-  const pbSchools = sum(data, (d) => N(d.schools_completed_m1));
-  const pbPct = formatPercentage1(pbSchools, totalSchools);
+  const PendingRow = ({ label }) => (
+    <tr>
+      <td style={{ padding: '.55rem .75rem', fontWeight: 500, color: C.navy }}>{label}</td>
+      <td className="center"><span className="mt-badge pending">Not yet reported</span></td>
+      <td colSpan={4} style={{ color: '#888', fontSize: '.8rem' }}>Not in the dashboard data yet — fills in once reported</td>
+    </tr>
+  );
 
   const Row = ({ label, schoolsWith, pct, scholars, nonScholars, avg, denom, denomLabel, bold }) => (
     <tr style={bold ? { fontWeight: 700, background: '#f8f9fa', borderTop: '2px solid #dee2e6' } : undefined}>
@@ -580,13 +594,19 @@ function ActivityCompletion({ data, year, term }) {
           {lecRows.map((r) => <Row key={r.label} label={r.label} schoolsWith={r.schoolsWith} pct={r.pct} scholars={r.scholars} nonScholars={r.nonScholars} avg={r.avg} />)}
           <Row label={`Skills Labs (${term === 'all' ? 'All' : term.replace('term', 'T')} Total)`} schoolsWith={lecDeliveries} pct={lecPct} scholars={lecScholars} nonScholars={lecNon} avg={lecDeliveries > 0 ? (lecScholars / lecDeliveries).toFixed(1) : '—'} denom={lecsExp} denomLabel=" sessions" bold />
           {gmSessions.map((gs) => {
+            if (!reported(gs.field)) return <PendingRow key={gs.label} label={gs.label} />;
             const cnt = sum(data, (d) => N(d[gs.field]));
             const sch = sum(data, (d) => N(d[gs.schl]));
             const pct = formatPercentage1(cnt, totalSchools);
             return <Row key={gs.label} label={gs.label} schoolsWith={cnt} pct={pct} scholars={sch} nonScholars={0} avg={cnt > 0 ? (sch / cnt).toFixed(1) : '—'} />;
           })}
           {withCD > 0 ? <Row label={getNonLECActivityLabel(term)} schoolsWith={withCD} pct={formatPercentage1(withCD, totalSchools)} scholars={cdScholars} nonScholars={cdNon} avg={withCD > 0 ? (cdScholars / withCD).toFixed(1) : '—'} /> : null}
-          <Row label="PB Milestone (Passbook)" schoolsWith={pbSchools} pct={pbPct} scholars={0} nonScholars={0} avg="—" />
+          {pbMilestones.map((m) => {
+            const label = `PB Milestone M${m}`;
+            if (!reported(`schools_completed_m${m}`)) return <PendingRow key={label} label={label} />;
+            const cnt = sum(data, (d) => N(d[`schools_completed_m${m}`]));
+            return <Row key={label} label={label} schoolsWith={cnt} pct={formatPercentage1(cnt, totalSchools)} scholars={0} nonScholars={0} avg="—" />;
+          })}
         </tbody>
       </table>
     </div>
@@ -594,16 +614,24 @@ function ActivityCompletion({ data, year, term }) {
 }
 
 // ── Club Milestones & BMP by CU (per-CU, legacy §2.13) ───────────────────────
-function ClubMilestonesByCU({ data, term }) {
-  const all = [
-    { key: 'schools_with_club_meeting_1', label: 'CM 1', terms: ['term1', 'all'] },
-    { key: 'schools_with_club_meeting_2', label: 'CM 2', terms: ['term1', 'all'] },
-    { key: 'schools_with_club_meeting_3', label: 'CM 3', terms: ['term2', 'all'] },
-    { key: 'schools_with_club_meeting_4', label: 'CM 4', terms: ['term2', 'all'] },
-    { key: 'schools_with_bmp', label: 'BMP', terms: ['term2', 'all'] },
-  ];
-  const active = all.filter((m) => m.terms.includes(term));
+// Club meetings follow the term (CM 1-2 / 3-4 / 5-6, all six under All Terms);
+// BMP runs in Term 2 and Term 3. Under All Terms `data` is one term-merged row
+// per CU, so each meeting reads its own term's value; BMP counts distinct
+// schools from the school rows instead, as a few presented in both terms.
+// A column not yet in the gold table shows "Not yet reported".
+function ClubMilestonesByCU({ data, schoolData = [], year, term }) {
+  const active = [
+    ...getClubMeetingsInScope(term).map((c) => ({ key: `schools_with_club_meeting_${c}`, label: `CM ${c}` })),
+    ...(term === 'term1' ? [] : [{ key: 'schools_with_bmp', label: 'BMP' }]),
+  ].map((m) => ({ ...m, reported: data.some((d) => d[m.key] !== undefined && d[m.key] !== null) }));
   if (active.length === 0) return <Placeholder label="No club milestones for the selected term." />;
+  const countFor = (cu, m) => {
+    if (!(term === 'all' && m.key === 'schools_with_bmp')) return N(cu[m.key]);
+    const cuName = String(cu.cu || '').toLowerCase();
+    return new Set(schoolData
+      .filter((s) => s.year == year && ['term2', 'term3'].includes(s.term) && String(s.cu || '').toLowerCase() === cuName && N(s.schools_with_bmp) > 0)
+      .map((s) => s.school_id)).size;
+  };
   return (
     <div className="table-wrap">
       <table className="breakdown-table">
@@ -618,7 +646,8 @@ function ClubMilestonesByCU({ data, term }) {
                 <td className="item-name">{cu.cu}</td>
                 <td className="center">{n}</td>
                 {active.map((m) => {
-                  const cnt = N(cu[m.key]);
+                  if (!m.reported) return <td key={m.key} className="center"><span className="mt-badge pending">Not yet reported</span></td>;
+                  const cnt = countFor(cu, m);
                   const pct = formatPercentage1(cnt, n);
                   return <td key={m.key} className="center" style={{ fontWeight: 600, color: cnt > 0 ? ragColor(pct) : '#ccc' }}>{cnt > 0 ? `${cnt}/${n} (${pct}%)` : '—'}</td>;
                 })}
@@ -730,7 +759,7 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
         <ElabCompletion region={region} />
       </Section>
       <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by CU">
-        <ClubMilestonesByCU data={data} term={term} />
+        <ClubMilestonesByCU data={data} schoolData={regionSchoolData} year={year} term={term} />
       </Section>
       {showSkillsDay ? (
         <Section title="🔬 Skills Day — Gender Breakdown" subtitle="Skills Day attendance disaggregated by gender, by CU">
