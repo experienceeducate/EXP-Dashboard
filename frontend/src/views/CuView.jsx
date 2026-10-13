@@ -1190,7 +1190,10 @@ export default function CuView({ schoolData, cuData, year, term, cu, allowedCUs,
   const cuRows = useMemo(() => {
     if (!cu) return [];
     if (cuData && cuData.length > 0) {
-      return cuData.filter((d) => term === 'all' ? true : d.term === term);
+      // /api/cu returns every year and term for the CU, so filter by both —
+      // matching the schoolData fallback below. Without the year check a
+      // second year's data would be combined into the same term.
+      return cuData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
     }
     return schoolData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && String(d.cu || '').toLowerCase() === String(cu).toLowerCase());
   }, [cu, cuData, schoolData, year, term]);
