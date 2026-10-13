@@ -903,16 +903,28 @@ function SequencingCellDrill({ school, week, year, term, schoolData, onClose }) 
 // ── Schools Behind Schedule (legacy renderCUSchoolsBehind, v6.5 term-aware) ──
 function SchoolsBehind({ schoolData, data, year, term, cu }) {
   const lecNums = getLECsForTerm(year, term);
-  const actField = term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
+  // Term 3 tracks only its own activities — LEC 15-20, GM 4, CM 5 and CM 6 —
+  // and has no Community/Skills Day. Earlier terms' activities read 0 on a
+  // Term 3 row, so checking them flagged every school as behind on GM 1-3,
+  // Comm Day and CM 1-4. Term 1, Term 2 and All Terms are unchanged below.
+  const isT3 = term === 'term3';
+  const actField = isT3 ? null : term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
   const actLabel = term === 'term2' ? 'Skills Day' : 'Comm Day';
-  const gmFields = term === 'term1' ? [{ key: 'schools_with_gm1', label: 'GM 1' }]
-    : term === 'term2' ? [{ key: 'schools_with_gm2', label: 'GM 2' }, { key: 'schools_with_gm3', label: 'GM 3' }]
-      : [{ key: 'schools_with_gm1', label: 'GM 1' }, { key: 'schools_with_gm2', label: 'GM 2' }, { key: 'schools_with_gm3', label: 'GM 3' }];
-  const cmFields = term === 'term1' ? [{ key: 'schools_with_club_meeting_1', label: 'CM 1' }, { key: 'schools_with_club_meeting_2', label: 'CM 2' }]
-    : term === 'term2' ? [{ key: 'schools_with_club_meeting_3', label: 'CM 3' }, { key: 'schools_with_club_meeting_4', label: 'CM 4' }]
-      : [{ key: 'schools_with_club_meeting_1', label: 'CM 1' }, { key: 'schools_with_club_meeting_2', label: 'CM 2' }, { key: 'schools_with_club_meeting_3', label: 'CM 3' }, { key: 'schools_with_club_meeting_4', label: 'CM 4' }];
+  const gmFields = isT3 ? getGMsInScope('term3').map((g) => ({ key: `schools_with_gm${g}`, label: `GM ${g}` }))
+    : term === 'term1' ? [{ key: 'schools_with_gm1', label: 'GM 1' }]
+      : term === 'term2' ? [{ key: 'schools_with_gm2', label: 'GM 2' }, { key: 'schools_with_gm3', label: 'GM 3' }]
+        : [{ key: 'schools_with_gm1', label: 'GM 1' }, { key: 'schools_with_gm2', label: 'GM 2' }, { key: 'schools_with_gm3', label: 'GM 3' }];
+  const cmFields = isT3 ? getClubMeetingsInScope('term3').map((c) => ({ key: `schools_with_club_meeting_${c}`, label: `CM ${c}` }))
+    : term === 'term1' ? [{ key: 'schools_with_club_meeting_1', label: 'CM 1' }, { key: 'schools_with_club_meeting_2', label: 'CM 2' }]
+      : term === 'term2' ? [{ key: 'schools_with_club_meeting_3', label: 'CM 3' }, { key: 'schools_with_club_meeting_4', label: 'CM 4' }]
+        : [{ key: 'schools_with_club_meeting_1', label: 'CM 1' }, { key: 'schools_with_club_meeting_2', label: 'CM 2' }, { key: 'schools_with_club_meeting_3', label: 'CM 3' }, { key: 'schools_with_club_meeting_4', label: 'CM 4' }];
 
   const schools = dedupSchools(data);
+  // A GM/CM column absent from every row isn't in the gold table yet: its
+  // header says "Not yet reported", its cells show "—", and it isn't counted
+  // as pending (no data is not the same as not done).
+  const reported = (key) => schools.some((s) => s[key] !== undefined && s[key] !== null);
+  const missing = (s, key) => reported(key) && !N(s[key]);
   const cuName = String(cu || '').trim().toLowerCase();
   const t1Map = new Map();
   schoolData.filter((d) => d.term === 'term1' && String(d.year) == year && String(d.cu || '').trim().toLowerCase() === cuName)
@@ -920,11 +932,20 @@ function SchoolsBehind({ schoolData, data, year, term, cu }) {
 
   const behind = schools.filter((s) => {
     const del = lecNums.filter((ln) => N(s[`schools_with_lec${ln}`])).length;
-    return del < lecNums.length || !N(s[actField]) || gmFields.some((g) => !N(s[g.key])) || cmFields.some((c) => !N(s[c.key]));
+    return del < lecNums.length || (actField && !N(s[actField])) || gmFields.some((g) => missing(s, g.key)) || cmFields.some((c) => missing(s, c.key));
   });
   if (behind.length === 0) return <div style={{ textAlign: 'center', padding: '2rem', color: C.green }}>✅ All schools are on track!</div>;
 
   const chk = (v) => <span style={{ color: v ? C.green : C.red }}>{v ? '✓' : '✗'}</span>;
+  const head = (f) => (
+    <th key={f.key} className="center">
+      {f.label}
+      {reported(f.key) ? null : <div><span className="mt-badge pending">Not yet reported</span></div>}
+    </th>
+  );
+  const cell = (s, f) => (
+    <td key={f.key} className="center">{reported(f.key) ? chk(N(s[f.key])) : <span style={{ color: '#ccc' }}>—</span>}</td>
+  );
 
   return (
     <div className="table-wrap">
@@ -932,9 +953,9 @@ function SchoolsBehind({ schoolData, data, year, term, cu }) {
         <thead>
           <tr>
             <th>School</th><th>Mentor</th><th className="center">Recruited (T1)</th><th className="center">LECs (x/{lecNums.length})</th>
-            {gmFields.map((g) => (<th key={g.key} className="center">{g.label}</th>))}
-            <th className="center">{actLabel}</th>
-            {cmFields.map((c) => (<th key={c.key} className="center">{c.label}</th>))}
+            {gmFields.map(head)}
+            {actField ? <th className="center">{actLabel}</th> : null}
+            {cmFields.map(head)}
             <th>Action Needed</th>
           </tr>
         </thead>
@@ -945,18 +966,18 @@ function SchoolsBehind({ schoolData, data, year, term, cu }) {
             const rec = t1 ? N(t1.total_scholars_recruited) : N(s.total_scholars_recruited);
             const actions = [];
             if (del < lecNums.length) actions.push(`${lecNums.length - del} LEC Pending`);
-            gmFields.forEach((g) => { if (!N(s[g.key])) actions.push(`${g.label} pending`); });
-            if (!N(s[actField])) actions.push(`${actLabel} pending`);
-            cmFields.forEach((c) => { if (!N(s[c.key])) actions.push(`${c.label} pending`); });
+            gmFields.forEach((g) => { if (missing(s, g.key)) actions.push(`${g.label} pending`); });
+            if (actField && !N(s[actField])) actions.push(`${actLabel} pending`);
+            cmFields.forEach((c) => { if (missing(s, c.key)) actions.push(`${c.label} pending`); });
             return (
               <tr key={s.school_id}>
                 <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
                 <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
                 <td className="center" style={{ fontWeight: 700 }}>{rec > 0 ? rec : '—'}</td>
                 <td className="center" style={{ fontWeight: 700, color: del / lecNums.length >= 0.8 ? C.green : C.red }}>{del}/{lecNums.length}</td>
-                {gmFields.map((g) => (<td key={g.key} className="center">{chk(N(s[g.key]))}</td>))}
-                <td className="center">{chk(N(s[actField]))}</td>
-                {cmFields.map((c) => (<td key={c.key} className="center">{chk(N(s[c.key]))}</td>))}
+                {gmFields.map((g) => cell(s, g))}
+                {actField ? <td className="center">{chk(N(s[actField]))}</td> : null}
+                {cmFields.map((c) => cell(s, c))}
                 <td style={{ color: C.red, fontWeight: 600 }}>{actions.join(', ')}</td>
               </tr>
             );
