@@ -990,14 +990,23 @@ function SchoolsBehind({ schoolData, data, year, term, cu }) {
 
 // ── Milestone Reporting (legacy renderCUMilestoneReporting) ──────────────────
 function MilestoneReporting({ data, term }) {
-  const mDefs = term === 'term2'
-    ? [{ label: 'M3', comp: 'schools_completed_m3' }, { label: 'M4', comp: 'schools_completed_m4' }]
-    : term === 'all'
-      ? [{ label: 'M1', comp: 'schools_completed_m1' }, { label: 'M2', comp: 'schools_completed_m2' }, { label: 'M3', comp: 'schools_completed_m3' }, { label: 'M4', comp: 'schools_completed_m4' }]
-      : [{ label: 'M1', comp: 'schools_completed_m1' }, { label: 'M2', comp: 'schools_completed_m2' }];
+  // Term 3 → M5/M6 (it fell through to M1/M2, which read 0 on Term 3 rows, so
+  // every school showed 2 missing). Term 1, Term 2 and All Terms unchanged.
+  const mDefs = term === 'term3'
+    ? getMilestonesInScope('term3').map((m) => ({ label: `M${m}`, comp: `schools_completed_m${m}` }))
+    : term === 'term2'
+      ? [{ label: 'M3', comp: 'schools_completed_m3' }, { label: 'M4', comp: 'schools_completed_m4' }]
+      : term === 'all'
+        ? [{ label: 'M1', comp: 'schools_completed_m1' }, { label: 'M2', comp: 'schools_completed_m2' }, { label: 'M3', comp: 'schools_completed_m3' }, { label: 'M4', comp: 'schools_completed_m4' }]
+        : [{ label: 'M1', comp: 'schools_completed_m1' }, { label: 'M2', comp: 'schools_completed_m2' }];
   const schools = dedupSchools(data);
   const n = schools.length;
-  const totalExpected = n * mDefs.length;
+  // A milestone column absent from every row isn't in the gold table yet: it
+  // shows "Not yet reported" and is left out of Missing and Rate, rather than
+  // counting as missed by every school.
+  const isReported = (m) => schools.some((s) => s[m.comp] !== undefined && s[m.comp] !== null);
+  const counted = mDefs.filter(isReported);
+  const totalExpected = n * counted.length;
   let totalReported = 0;
   const chk = (v) => <span style={{ color: v ? C.green : C.red }}>{v ? '✓' : '✗'}</span>;
 
@@ -1007,31 +1016,42 @@ function MilestoneReporting({ data, term }) {
         <thead>
           <tr>
             <th>School</th><th>Mentor</th>
-            {mDefs.map((m) => (<th key={m.comp} className="center">{m.label}</th>))}
+            {mDefs.map((m) => (
+              <th key={m.comp} className="center">
+                {m.label}
+                {isReported(m) ? null : <div><span className="mt-badge pending">Not yet reported</span></div>}
+              </th>
+            ))}
             <th className="center">Missing</th><th style={{ minWidth: 130 }}>Rate</th>
           </tr>
         </thead>
         <tbody>
           {schools.map((s) => {
-            const reported = mDefs.filter((m) => N(s[m.comp])).length;
-            const missing = mDefs.length - reported;
-            const rate = formatPercentage1(reported, mDefs.length);
+            const reported = counted.filter((m) => N(s[m.comp])).length;
+            const missing = counted.length - reported;
+            const rate = formatPercentage1(reported, counted.length);
             totalReported += reported;
             return (
               <tr key={s.school_id}>
                 <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
                 <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
-                {mDefs.map((m) => (<td key={m.comp} className="center">{chk(N(s[m.comp]))}</td>))}
-                <td className="center" style={{ fontWeight: 700, color: missing === 0 ? C.green : C.red }}>{missing === 0 ? '✅ 0' : `🔴 ${missing}`}</td>
-                <td style={{ minWidth: 130 }}><ProgressCell pct={rate} minWidth={130} /></td>
+                {mDefs.map((m) => (<td key={m.comp} className="center">{isReported(m) ? chk(N(s[m.comp])) : <span style={{ color: '#ccc' }}>—</span>}</td>))}
+                {counted.length === 0 ? (
+                  <><td className="center" style={{ color: '#ccc' }}>—</td><td style={{ color: '#ccc' }}>—</td></>
+                ) : (
+                  <>
+                    <td className="center" style={{ fontWeight: 700, color: missing === 0 ? C.green : C.red }}>{missing === 0 ? '✅ 0' : `🔴 ${missing}`}</td>
+                    <td style={{ minWidth: 130 }}><ProgressCell pct={rate} minWidth={130} /></td>
+                  </>
+                )}
               </tr>
             );
           })}
           <tr style={{ background: '#f0f4ff', fontWeight: 800, borderTop: `2px solid ${C.navy}` }}>
             <td colSpan={2}>CU TOTAL</td>
             {mDefs.map((m) => (<td key={m.comp} />))}
-            <td className="center">{totalExpected - totalReported}</td>
-            <td style={{ minWidth: 130 }}><ProgressCell pct={formatPercentage1(totalReported, totalExpected)} minWidth={130} /></td>
+            <td className="center">{counted.length === 0 ? '—' : totalExpected - totalReported}</td>
+            <td style={{ minWidth: 130 }}>{counted.length === 0 ? '—' : <ProgressCell pct={formatPercentage1(totalReported, totalExpected)} minWidth={130} />}</td>
           </tr>
         </tbody>
       </table>
