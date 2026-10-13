@@ -440,7 +440,7 @@ function buildTermClock(schoolData, year, term) {
 }
 
 // A term is over once any later term has LEC delivery for the same year.
-function isTermOver(summaryData, year, term) {
+export function isTermOver(summaryData, year, term) {
   const order = Object.keys(TERM_CONFIG);
   return order.slice(order.indexOf(term) + 1).some((later) => summaryData.some((d) => d.year == year
     && d.term === later && TERM_CONFIG[later].lecs.some((n) => N(d[`schools_with_lec${n}`]) > 0)));
@@ -1132,22 +1132,46 @@ export function computeCuPriorityAlerts(data, year, term, schoolData = []) {
   return { alerts, bottom5, denom };
 }
 
+// ── Non-scholar participation per school ────────────────────────────────────
+// One entry per school, each of its rows read against that row's own term's
+// LECs. For a single term that's one row per school (unchanged); under All
+// Terms a school's three term rows combine into one school across LEC 1-20.
+// Previously All Terms read every term's rows against Term 1's LECs (or LEC
+// 1-14), counting each school three times and its Term 2/3 rows as zero.
+// `nsTotal` sums non-scholars over all its LECs; `nsDelivered`/`delivered`
+// cover only LECs the school delivered (for the per-LEC average).
+export function schoolNonScholarStats(schoolRows) {
+  const bySchool = new Map();
+  schoolRows.forEach((d) => {
+    const key = String(d.school_id || d.school_name || '');
+    if (!bySchool.has(key)) {
+      bySchool.set(key, { school: key, region: d.region, cu: d.cu, nsTotal: 0, nsDelivered: 0, delivered: 0 });
+    }
+    const s = bySchool.get(key);
+    (TERM_CONFIG[d.term] ? TERM_CONFIG[d.term].lecs : []).forEach((n) => {
+      const ns = N(d[`lec${n}_non_scholars`]);
+      s.nsTotal += ns;
+      if (N(d[`schools_with_lec${n}`])) { s.nsDelivered += ns; s.delivered += 1; }
+    });
+  });
+  return [...bySchool.values()];
+}
+
 // ── Non-scholar participation buckets (spec §6) ──────────────────────────────
 export function computeNonScholar(schoolData, year, term) {
   const rows = schoolData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
-  const lecNums = getLECsForTerm(year, term === 'all' ? 'term1' : term);
-  const withNS = rows.filter((d) => lecNums.some((n) => N(d[`lec${n}_non_scholars`]) > 0)).length;
-  const pctWith = formatPercentage1(withNS, rows.length);
+  const schools = schoolNonScholarStats(rows);
+  const withNS = schools.filter((s) => s.nsTotal > 0).length;
+  const pctWith = formatPercentage1(withNS, schools.length);
   const buckets = { '0': 0, '1-10': 0, '11-20': 0, '21-30': 0, '31+': 0 };
-  rows.forEach((d) => {
-    const total = lecNums.reduce((s, n) => s + N(d[`lec${n}_non_scholars`]), 0);
+  schools.forEach(({ nsTotal: total }) => {
     if (total === 0) buckets['0'] += 1;
     else if (total <= 10) buckets['1-10'] += 1;
     else if (total <= 20) buckets['11-20'] += 1;
     else if (total <= 30) buckets['21-30'] += 1;
     else buckets['31+'] += 1;
   });
-  return { total: rows.length, withNS, pctWith, buckets };
+  return { total: schools.length, withNS, pctWith, buckets };
 }
 
 const NS_BUCKETS = ['0', '1-10', '11-20', '21-30', '31+'];
@@ -1156,20 +1180,15 @@ const NS_BUCKETS = ['0', '1-10', '11-20', '21-30', '31+'];
 // Buckets each school by its AVERAGE non-scholars per delivered LEC (not the sum
 // across the term), matching the legacy calculation exactly.
 export function computeNonScholarBreakdown(schoolData, year, term) {
-  const lecNums = term === 'all' ? Array.from({ length: 14 }, (_, i) => i + 1) : getLECsForTerm(year, term);
   const rows = schoolData.filter((d) => String(d.year) == year && (term === 'all' ? true : d.term === term));
 
   const bucketOf = (v) => (v === 0 ? '0' : v <= 10 ? '1-10' : v <= 20 ? '11-20' : v <= 30 ? '21-30' : '31+');
-  const avgFor = (s) => {
-    let totalNS = 0;
-    let totalDel = 0;
-    lecNums.forEach((n) => {
-      if (N(s[`schools_with_lec${n}`])) { totalNS += N(s[`lec${n}_non_scholars`]); totalDel += 1; }
-    });
-    return totalDel > 0 ? totalNS / totalDel : 0;
-  };
-
-  const schoolAvgs = rows.map((s) => ({ region: s.region, avgNS: avgFor(s) }));
+  // One entry per school, each row against its own term's LECs (see
+  // schoolNonScholarStats) — All Terms previously used LEC 1-14 on every row.
+  const schoolAvgs = schoolNonScholarStats(rows).map((s) => ({
+    region: s.region,
+    avgNS: s.delivered > 0 ? s.nsDelivered / s.delivered : 0,
+  }));
   const natCounts = Object.fromEntries(NS_BUCKETS.map((b) => [b, 0]));
   schoolAvgs.forEach((s) => { natCounts[bucketOf(s.avgNS)] += 1; });
   const natTotal = schoolAvgs.length;
