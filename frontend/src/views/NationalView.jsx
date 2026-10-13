@@ -5,7 +5,7 @@ import { OKR_DESCRIPTIONS } from '../data/okrDescriptions.js';
 import { resolveLiveMetric, resolveProgress } from '../lib/lmmLiveMetrics.js';
 import {
   getLECsInScope, getGMsInScope, getMilestonesInScope, getTermBoundaryLecs, getTermForLec,
-  getTermForGM, getTermForMilestone, getTermShortLabel, C,
+  getTermForGM, getTermForMilestone, getTermShortLabel, C, TERM_CONFIG,
 } from '../lib/config.js';
 import {
   computeNationalKpis,
@@ -24,6 +24,7 @@ import {
   avgScholarsPerLec,
   computeClassSizeAnalysis,
   isMilestoneDueNationally,
+  isTermOver,
   sum,
 } from '../lib/metrics.js';
 import { ragColor, ragKpiClass, delta, num, getGMLabel, formatPercentage1 } from '../lib/format.js';
@@ -1521,30 +1522,47 @@ function GmCompletion({ data, schoolData = [], year, term, onDrill }) {
 
 // ── Programme Quality tab ────────────────────────────────────────────────────
 function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
-  const obs = useMemo(() => computeObsCoverageByRegion(data), [data]);
+  // Observation coverage is a per-term figure — each term re-counts its active
+  // mentors — so it's computed from one term's rows only. Under All Terms each
+  // term is shown side by side and the headline uses the latest term with
+  // observations; adding the terms together counted every mentor three times.
+  const { obs, obsByTerm, obsTerm, obsRows } = useMemo(() => {
+    const termRows = (t) => summaryData.filter((d) => d.year == year && d.term === t);
+    if (term !== 'all') return { obs: computeObsCoverageByRegion(data), obsByTerm: null, obsTerm: term, obsRows: data };
+    const byTerm = Object.keys(TERM_CONFIG)
+      .map((t) => ({ t, ...computeObsCoverageByRegion(termRows(t)) }))
+      .filter((o) => o.totalObs > 0);
+    const latest = byTerm.length > 0 ? byTerm[byTerm.length - 1].t : 'term1';
+    return { obs: computeObsCoverageByRegion(termRows(latest)), obsByTerm: byTerm, obsTerm: latest, obsRows: termRows(latest) };
+  }, [summaryData, data, year, term]);
   const rt = useMemo(() => getReportTimelinessSummary(data), [data]);
   const ns = useMemo(() => computeNonScholar(schoolData, year, term), [schoolData, year, term]);
   const nsBreak = useMemo(() => computeNonScholarBreakdown(schoolData, year, term), [schoolData, year, term]);
   const regions = [...new Set(data.map((d) => d.region).filter(Boolean))].sort();
 
   const unobs = obs.totalMentors - obs.totalObserved;
-  const obsIsHistorical = term === 'term2' || term === 'term3' || term === 'all';
+  // Name the term being described. Was hard-coded "T1" for every term but
+  // Term 1, so e.g. Term 3's 65% read as "observation coverage in T1".
+  const obsLabel = getTermShortLabel(obsTerm);
+  const obsIsHistorical = isTermOver(summaryData, year, obsTerm);
+  const obsDrill = term === 'all' ? { metric: 'observations', scopeTerm: obsTerm } : { metric: 'observations' };
   const obsInsight = obs.totalCovPct >= 80
-    ? <>✅ <strong>Observation coverage strong at {obs.totalCovPct}%</strong> — FOA supervision {obsIsHistorical ? 'was completed in T1' : 'on track'}.</>
+    ? <>✅ <strong>{obsLabel} observation coverage strong at {obs.totalCovPct}%</strong> — FOA supervision {obsIsHistorical ? `was completed in ${obsLabel}` : 'on track'}.</>
     : obs.totalCovPct >= 50
       ? (obsIsHistorical
-        ? <>ℹ️ <strong>{obs.totalCovPct}% observation coverage in T1</strong> — {unobs} mentor{unobs !== 1 ? 's' : ''} were not observed during the T1 campaign. Review for next term planning.</>
-        : <>⚠️ <strong>{obs.totalCovPct}% observation coverage</strong> — {unobs} mentor{unobs !== 1 ? 's' : ''} not yet observed. Prioritise FOA visits.</>)
+        ? <>ℹ️ <strong>{obs.totalCovPct}% observation coverage in {obsLabel}</strong> — {unobs} mentor{unobs !== 1 ? 's' : ''} were not observed during the {obsLabel} campaign. Review for next term planning.</>
+        : <>⚠️ <strong>{obsLabel} observation coverage at {obs.totalCovPct}%</strong> — {unobs} mentor{unobs !== 1 ? 's' : ''} not yet observed. Prioritise FOA visits.</>)
       : (obsIsHistorical
-        ? <>🔴 <strong>Observation coverage was low at {obs.totalCovPct}% in T1</strong> — {unobs} mentors not observed. Factor into next term planning.</>
-        : <>🔴 <strong>Observation coverage critically low at {obs.totalCovPct}%</strong> — {unobs} mentors unobserved. Urgent action needed.</>);
+        ? <>🔴 <strong>Observation coverage was low at {obs.totalCovPct}% in {obsLabel}</strong> — {unobs} mentors not observed. Factor into next term planning.</>
+        : <>🔴 <strong>{obsLabel} observation coverage critically low at {obs.totalCovPct}%</strong> — {unobs} mentors unobserved. Urgent action needed.</>);
 
+  // Skills Day runs in Term 2 only.
   const skillsDaySchools = sum(data, (d) => N(d.schools_with_skills_day));
   const skillsDayTarget = sum(data, (d) => N(d.total_target_schools));
   const skillsDayPct = formatPercentage1(skillsDaySchools, skillsDayTarget);
-  const showSkillsDayHero = term === 'term2' || term === 'term3' || term === 'all';
+  const showSkillsDayHero = term === 'term2';
 
-  const obsScores = data.map((d) => N(d.avg_cu_observation_score)).filter((v) => v > 0);
+  const obsScores = obsRows.map((d) => N(d.avg_cu_observation_score)).filter((v) => v > 0);
   const obsAvgScore = obsScores.length > 0 ? (obsScores.reduce((s, v) => s + v, 0) / obsScores.length).toFixed(2) : null;
   const obsSectionTitle = obs.totalCovPct >= 80
     ? `👁️ ${obs.totalCovPct}% mentor observation coverage${obsAvgScore ? ` · avg score ${obsAvgScore}/3.0` : ''} — on track`
@@ -1591,7 +1609,7 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
       </div>
 
       <div className="kpi-hero-strip" style={{ marginBottom: '1.5rem' }}>
-        <KpiHeroCard label="Observation Coverage" valueClass={ragKpiClass(obs.totalCovPct, 80, 50)} value={obs.totalCovPct} unit="%" sub={`${obs.totalObserved}/${obs.totalMentors} mentors`} drill="⌕ Drill to mentors" onClick={() => onDrill({ metric: 'observations' })} />
+        <KpiHeroCard label={term === 'all' ? `Observation Coverage (${obsLabel})` : 'Observation Coverage'} valueClass={ragKpiClass(obs.totalCovPct, 80, 50)} value={obs.totalCovPct} unit="%" sub={`${obs.totalObserved}/${obs.totalMentors} mentors`} drill="⌕ Drill to mentors" onClick={() => onDrill(obsDrill)} />
         <KpiHeroCard label="Report Timeliness" valueClass={ragKpiClass(rt.onTrackPct, 70, 50)} value={rt.onTrackPct} unit="%" sub={`${rt.onTrack} on track of ${rt.total}`} drill="⌕ Drill to regions" onClick={() => onDrill({ metric: 'report_timeliness' })} />
         <KpiHeroCard label="Non-Scholar Participation" valueClass="kpi-blue" value={ns.pctWith} unit="%" sub={`${ns.withNS} of ${ns.total} schools`} drill="⌕ Drill to regions" onClick={() => onDrill({ metric: 'non_scholar' })} />
         {showSkillsDayHero ? (
@@ -1599,7 +1617,55 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
         ) : null}
       </div>
 
-      <Section title={obsSectionTitle} subtitle={`${obs.totalObserved} of ${obs.totalMentors} mentors observed · click any cell for CU detail`}>
+      <Section
+        title={term === 'all' ? `${obsSectionTitle} (${obsLabel})` : obsSectionTitle}
+        subtitle={term === 'all'
+          ? `Coverage per term — each term counts its own active mentors · headline is ${obsLabel}, the latest term with observations · click a cell for CU detail`
+          : `${obs.totalObserved} of ${obs.totalMentors} mentors observed · click any cell for CU detail`}
+      >
+        {obsByTerm ? (
+          <div className="table-wrap">
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.875rem' }}>
+              <thead>
+                <tr style={{ background: C.navy, color: '#fff' }}>
+                  <th style={{ padding: '.6rem .75rem', textAlign: 'left' }}>Region</th>
+                  {obsByTerm.map((o) => (
+                    <th key={o.t} style={{ padding: '.6rem .75rem', textAlign: 'center' }}>{getTermShortLabel(o.t)} coverage</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...new Set(obsByTerm.flatMap((o) => o.rows.map((r) => r.region)))].sort().map((region) => (
+                  <tr key={region} style={{ borderBottom: '1px solid #e9ecef' }}>
+                    <td style={{ padding: '.6rem .75rem', fontWeight: 700 }}>{region}</td>
+                    {obsByTerm.map((o) => {
+                      const r = o.rows.find((x) => x.region === region);
+                      return (
+                        <td key={o.t} className="clickable" onClick={() => onDrill({ metric: 'observations', scopeTerm: o.t, initialRegion: region })} style={{ padding: '.5rem .75rem' }}>
+                          {r ? (
+                            <>
+                              <ProgressCell pct={r.covPct} color={ragColor(r.covPct, 75, 50)} />
+                              <div style={{ fontSize: '.72rem', color: '#666', textAlign: 'center' }}>{r.observed}/{r.mentors} mentors · {r.obsCount} obs</div>
+                            </>
+                          ) : '—'}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+                <tr style={{ background: '#f0f4ff', borderTop: '2px solid #dee2e6', fontWeight: 800 }}>
+                  <td style={{ padding: '.6rem .75rem' }}>National Total</td>
+                  {obsByTerm.map((o) => (
+                    <td key={o.t} className="clickable" onClick={() => onDrill({ metric: 'observations', scopeTerm: o.t })} style={{ padding: '.5rem .75rem' }}>
+                      <ProgressCell pct={o.totalCovPct} color={ragColor(o.totalCovPct, 75, 50)} />
+                      <div style={{ fontSize: '.72rem', color: '#666', textAlign: 'center', fontWeight: 600 }}>{o.totalObserved}/{o.totalMentors} mentors · {o.totalObs} obs</div>
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        ) : (
         <div className="table-wrap">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.875rem' }}>
             <thead>
@@ -1611,7 +1677,7 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
             </thead>
             <tbody>
               {obs.rows.map((r) => (
-                <tr key={r.region} className="clickable" onClick={() => onDrill({ metric: 'observations' })} style={{ borderBottom: '1px solid #e9ecef' }}>
+                <tr key={r.region} className="clickable" onClick={() => onDrill({ ...obsDrill, initialRegion: r.region })} style={{ borderBottom: '1px solid #e9ecef' }}>
                   <td style={{ padding: '.6rem .75rem', fontWeight: 700 }}>{r.region}<DrillTag /></td>
                   <td style={{ textAlign: 'center' }}>{r.mentors}</td>
                   <td style={{ textAlign: 'center', fontWeight: 700, color: ragColor(r.covPct, 75, 50) }}>{r.observed}</td>
@@ -1633,6 +1699,7 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
             </tbody>
           </table>
         </div>
+        )}
       </Section>
 
       <Section title={nsSectionTitle} subtitle={`Distribution by non-scholar count per LEC · ${nsBreak.natTotal} schools`}>
@@ -1691,12 +1758,15 @@ function QualityTab({ summaryData, schoolData, data, year, term, onDrill }) {
         </div>
       </Section>
 
-      <Section title={`${term === 'term2' ? '🔬 Skills Day' : term === 'all' ? '🎉 Community Day / 🔬 Skills Day' : '🎉 Community Day'}`} subtitle="Delivery and attendance by region">
-        <CommunitySkillsDay summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
-      </Section>
+      {/* Community Day is Term 1, Skills Day is Term 2 — Term 3 has neither. */}
+      {term !== 'term3' ? (
+        <Section title={term === 'term2' ? '🔬 Skills Day' : '🎉 Community Day'} subtitle="Delivery and attendance by region">
+          <CommunitySkillsDay summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
+        </Section>
+      ) : null}
 
       <Section title="🏛️ Club Milestones & BMP" subtitle="Club meetings and Business Model Presentation by region">
-        <ClubMilestones summaryData={summaryData} data={data} year={year} term={term} onDrill={onDrill} />
+        <ClubMilestones summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />
       </Section>
 
       <Section title={rtSectionTitle} subtitle={`${num(rt.total)} reports submitted · early + on-schedule = on track`}>
@@ -1786,9 +1856,10 @@ function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
     );
   }
 
-  if (term === 'term2' || term === 'all') {
-    const rows = term === 'all' ? summaryData.filter((d) => d.year == year && d.term === 'term2') : data;
-    const cuRows = term === 'all' ? cuDedup(rows) : rows;
+  // Skills Day is shown for Term 2 only (hidden under All Terms too).
+  if (term === 'term2') {
+    const rows = data;
+    const cuRows = rows;
     const total = sum(cuRows, (d) => N(d.total_target_schools));
     const withSD = sum(cuRows, (d) => N(d.schools_with_skills_day));
     const sdSch = sum(rows, (d) => N(d.sd_total_scholars));
@@ -1841,22 +1912,57 @@ function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
 }
 
 // ── Club Milestones & BMP by region (legacy renderNationalClubMilestones) ─────
-function ClubMilestones({ summaryData, data, year, term, onDrill }) {
-  const all = [
-    { key: 'schools_with_club_meeting_1', label: 'Club Meeting 1', terms: ['term1', 'all'] },
-    { key: 'schools_with_club_meeting_2', label: 'Club Meeting 2', terms: ['term1', 'all'] },
-    { key: 'schools_with_club_meeting_3', label: 'Club Meeting 3', terms: ['term2', 'all'] },
-    { key: 'schools_with_club_meeting_4', label: 'Club Meeting 4', terms: ['term2', 'all'] },
-    { key: 'schools_with_bmp', label: 'Business Model Presentation', terms: ['term2', 'all'] },
-  ];
-  const active = all.filter((m) => m.terms.includes(term));
+// Each milestone belongs to the term(s) that run it and is read only from those
+// rows — under All Terms, summing every term's rows put the Term 2/3 club
+// meetings that the gold model files under Club Meeting 1 into CM1 (1,085 of
+// 825). BMP runs in Term 2 and Term 3; under All Terms it counts distinct
+// schools, as a few did both.
+// CM5/CM6 have no gold column yet. The meeting number exists upstream
+// (staging `session_number`, bronze `club_meeting_no`) but is dropped when
+// silver_exp.exp_common_mentor_activity_report is built, so the gold model
+// files Term 3 meetings under CM1. Until schools_with_club_meeting_5/6 exist,
+// those rows show "Not yet reported" and then fill in on their own.
+const CLUB_MILESTONES = [
+  { key: 'schools_with_club_meeting_1', label: 'Club Meeting 1', terms: ['term1'] },
+  { key: 'schools_with_club_meeting_2', label: 'Club Meeting 2', terms: ['term1'] },
+  { key: 'schools_with_club_meeting_3', label: 'Club Meeting 3', terms: ['term2'] },
+  { key: 'schools_with_club_meeting_4', label: 'Club Meeting 4', terms: ['term2'] },
+  { key: 'schools_with_club_meeting_5', label: 'Club Meeting 5', terms: ['term3'] },
+  { key: 'schools_with_club_meeting_6', label: 'Club Meeting 6', terms: ['term3'] },
+  { key: 'schools_with_bmp', label: 'Business Model Presentation', terms: ['term2', 'term3'] },
+];
+
+function ClubMilestones({ summaryData, schoolData = [], data, year, term, onDrill }) {
+  const active = CLUB_MILESTONES.filter((m) => term === 'all' || m.terms.includes(term));
   if (active.length === 0) return <Placeholder label="No club milestones for the selected term." />;
 
-  const rows = term === 'all' ? summaryData.filter((d) => d.year == year) : data;
-  const cuRows = [...new Map(rows.map((d) => [d.cu, d])).values()];
-  const total = sum(cuRows, (d) => N(d.total_target_schools));
+  const yearRows = summaryData.filter((d) => d.year == year);
+  const scopeRows = term === 'all' ? yearRows : data;
+  const inRegion = (reg) => (d) => String(d.region || '').toLowerCase() === reg.toLowerCase();
+  // Target schools belong to the CU, so take each CU's value once.
+  const targetOf = (rows) => [...rows.reduce((m, d) => {
+    const key = `${d.region}|${d.cu}`;
+    return m.set(key, Math.max(m.get(key) || 0, N(d.total_target_schools)));
+  }, new Map()).values()].reduce((s, v) => s + v, 0);
+  const total = targetOf(scopeRows);
   if (total === 0) return <Placeholder label="No club milestone data yet." />;
-  const regions = REGIONS.filter((reg) => rows.some((d) => String(d.region || '').toLowerCase() === reg.toLowerCase()));
+  const regions = REGIONS.filter((reg) => scopeRows.some(inRegion(reg)));
+
+  // Rows a milestone is read from, whether its column exists yet, and its
+  // count (distinct schools when it spans terms under All Terms).
+  const milestoneView = (m) => {
+    const srcTerms = term === 'all' ? m.terms : [term];
+    const rows = term === 'all' ? yearRows.filter((d) => srcTerms.includes(d.term)) : data;
+    const reported = rows.some((d) => d[m.key] !== undefined && d[m.key] !== null);
+    const distinct = term === 'all' && srcTerms.length > 1;
+    const count = (reg) => {
+      if (!distinct) return sum(reg ? rows.filter(inRegion(reg)) : rows, (d) => N(d[m.key]));
+      const schools = schoolData.filter((d) => d.year == year && srcTerms.includes(d.term) && N(d[m.key]) > 0 && (!reg || inRegion(reg)(d)));
+      return new Set(schools.map((d) => d.school_id || d.school_name)).size;
+    };
+    const scopeTerm = term === 'all' && srcTerms.length === 1 ? srcTerms[0] : undefined;
+    return { reported, count, scopeTerm };
+  };
 
   return (
     <div className="table-wrap">
@@ -1870,18 +1976,29 @@ function ClubMilestones({ summaryData, data, year, term, onDrill }) {
         </thead>
         <tbody>
           {active.map((m) => {
-            const natCount = sum(rows, (d) => N(d[m.key]));
+            const v = milestoneView(m);
+            if (!v.reported) {
+              return (
+                <tr key={m.key}>
+                  <td className="item-name">{m.label}</td>
+                  <td className="center"><span className="mt-badge pending">Not yet reported</span></td>
+                  {regions.map((reg) => (<td key={reg} className="center" style={{ color: '#ccc' }}>—</td>))}
+                </tr>
+              );
+            }
+            const natCount = v.count(null);
             const natPct = formatPercentage1(natCount, total);
-            const drillMilestone = (initialRegion) => onDrill({ metric: 'club_milestone', milestoneKey: m.key, milestoneLabel: m.label, ...(initialRegion ? { initialRegion } : {}) });
+            const drillMilestone = (initialRegion) => onDrill({
+              metric: 'club_milestone', milestoneKey: m.key, milestoneLabel: m.label,
+              ...(v.scopeTerm ? { scopeTerm: v.scopeTerm } : {}), ...(initialRegion ? { initialRegion } : {}),
+            });
             return (
               <tr key={m.key}>
                 <td className="item-name" onClick={() => drillMilestone()} style={{ cursor: 'pointer' }}>{m.label}<DrillTag /></td>
                 <td className="center" onClick={() => drillMilestone()} style={{ fontWeight: 700, color: ragColor(natPct), cursor: 'pointer' }}>{natCount}/{total} ({natPct}%)</td>
                 {regions.map((reg) => {
-                  const rr = rows.filter((d) => String(d.region || '').toLowerCase() === reg.toLowerCase());
-                  const rCU = [...new Map(rr.map((d) => [d.cu, d])).values()];
-                  const rTot = sum(rCU, (d) => N(d.total_target_schools));
-                  const rCount = sum(rr, (d) => N(d[m.key]));
+                  const rTot = targetOf(scopeRows.filter(inRegion(reg)));
+                  const rCount = v.count(reg);
                   const rP = formatPercentage1(rCount, rTot);
                   return (
                     <td

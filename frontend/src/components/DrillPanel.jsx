@@ -3,7 +3,7 @@
 // "How this is calculated" card from METRIC_DEFINITIONS.
 import { useState } from 'react';
 import { METRIC_DEFINITIONS, getLECsForTerm, getMilestonesInScope, C } from '../lib/config.js';
-import { sum, resolveLastLecScholars, avgScholarsPerLec, getReportTimelinessSummary } from '../lib/metrics.js';
+import { sum, resolveLastLecScholars, avgScholarsPerLec, getReportTimelinessSummary, schoolNonScholarStats } from '../lib/metrics.js';
 import { ragColor } from '../lib/format.js';
 
 const N = (v) => Number(v) || 0;
@@ -28,7 +28,29 @@ const METRIC_LABELS = {
   club_milestone: 'Club Milestone',
 };
 
-const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day', 'club_milestone']);
+const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day', 'club_milestone', 'non_scholar']);
+
+// Metrics whose region/CU values must count distinct schools from the school
+// rows rather than add up CU rows: non-scholar participation always (a CU row
+// can't say how many of its schools had any), and a club milestone under All
+// Terms (BMP runs in T2 and T3, and a few schools did both).
+const usesSchoolRows = (metric, term) => metric === 'non_scholar' || (metric === 'club_milestone' && term === 'all');
+
+function schoolRowsMetric(metric, schoolRows, milestoneKey) {
+  if (metric === 'non_scholar') {
+    const schools = schoolNonScholarStats(schoolRows);
+    const withNS = schools.filter((s) => s.nsTotal > 0).length;
+    return { val: schools.length > 0 ? Math.round((withNS / schools.length) * 100) : 0, sub: `${withNS} of ${schools.length} schools with non-scholars` };
+  }
+  const bySchool = new Map();
+  schoolRows.forEach((d) => {
+    const key = String(d.school_id || d.school_name || '');
+    bySchool.set(key, bySchool.get(key) || N(d[milestoneKey]) > 0);
+  });
+  const total = bySchool.size;
+  const held = [...bySchool.values()].filter(Boolean).length;
+  return { val: total > 0 ? Math.round((held / total) * 100) : 0, sub: `${held} of ${total} schools` };
+}
 
 // Evaluate a metric for a group of rows. `schoolCount`/`t1SchoolCount` are the
 // denominators (CU rows use total_target_schools; a single-entity drill level —
@@ -122,18 +144,27 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
     const done = sum(rows, (d) => N(d[milestoneKey]));
     return { val: schoolCount > 0 ? Math.round((done / schoolCount) * 100) : 0, sub: `${done} of ${schoolCount} schools` };
   }
+  if (metric === 'non_scholar') {
+    // School level only — `rows` are that school's own rows. Region and CU
+    // levels go through schoolRowsMetric directly (see usesSchoolRows).
+    return schoolRowsMetric('non_scholar', rows);
+  }
   // total_schools / fallback
   return { val: schoolCount, sub: '' };
 }
 
 // Region-level rows (from CU summaryData).
-function regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
+function regionRows(metric, summaryData, schoolData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
   const lecNums = getLECsForTerm(year, term);
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
   const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
   const obsSrc = term === 'all' ? t1 : data;
   const regions = [...new Set(summaryData.filter((d) => d.year == year).map((d) => String(d.region || '').trim()).filter(Boolean))].sort();
   const match = (d, reg) => String(d.region || '').trim().toLowerCase() === reg.trim().toLowerCase();
+  if (usesSchoolRows(metric, term)) {
+    const schools = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
+    return regions.map((reg) => ({ key: reg, name: reg, ...schoolRowsMetric(metric, schools.filter((d) => match(d, reg)), milestoneKey) }));
+  }
   return regions.map((reg) => {
     const rd = data.filter((d) => match(d, reg));
     const rdT1 = t1.filter((d) => match(d, reg));
@@ -149,7 +180,7 @@ function regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTer
 }
 
 // CU-level rows within a region.
-function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
+function cuRows(metric, summaryData, schoolData, year, term, region, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
   const lecNums = getLECsForTerm(year, term);
   const inRegion = (d) => String(d.region || '').trim().toLowerCase() === String(region).trim().toLowerCase();
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inRegion(d));
@@ -157,6 +188,10 @@ function cuRows(metric, summaryData, year, term, region, lecNum, milestoneKey, p
   const obsSrc = term === 'all' ? t1 : data;
   const cus = [...new Set(summaryData.filter((d) => d.year == year && inRegion(d)).map((d) => d.cu).filter(Boolean))].sort();
   const byCu = (rows, c) => rows.filter((d) => String(d.cu || '').toLowerCase() === String(c).toLowerCase());
+  if (usesSchoolRows(metric, term)) {
+    const schools = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inRegion(d));
+    return cus.map((c) => ({ key: c, name: c, ...schoolRowsMetric(metric, byCu(schools, c), milestoneKey) }));
+  }
   return cus.map((c) => {
     const rd = byCu(data, c);
     const rdT1 = byCu(t1, c);
@@ -201,13 +236,17 @@ function schoolFieldRows(schoolData, year, term, cu, fieldKey) {
   const inCu = (d) => String(d.cu || '').toLowerCase() === String(cu).toLowerCase();
   const rows = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inCu(d));
   const t1All = (schoolData || []).filter((d) => d.year == year && d.term === 'term1' && inCu(d));
+  // Held if ANY of the school's rows has it — under All Terms a school has one
+  // row per term, and keeping only the first one could show ✗ for a school
+  // that did it in another term.
   const map = new Map();
   rows.forEach((r) => {
     const name = r.school_name || r.school_id || 'Unknown';
-    if (!map.has(name)) map.set(name, r);
+    const prev = map.get(name);
+    map.set(name, { r: prev ? prev.r : r, held: (prev ? prev.held : false) || N(r[fieldKey]) > 0 });
   });
   return [...map.entries()]
-    .map(([name, r]) => ({ key: name, name, held: N(r[fieldKey]) > 0, ...schoolBio([r], t1All.filter((d) => (d.school_name || d.school_id || 'Unknown') === name)) }))
+    .map(([name, { r, held }]) => ({ key: name, name, held, ...schoolBio([r], t1All.filter((d) => (d.school_name || d.school_id || 'Unknown') === name)) }))
     // Poor performers first: not-held (✗) schools before held (✓) ones.
     .sort((a, b) => Number(a.held) - Number(b.held) || a.name.localeCompare(b.name));
 }
@@ -289,10 +328,14 @@ function MetricDefCard({ metric }) {
   );
 }
 
-export default function DrillPanel({ drill, summaryData, schoolData, year, term, onClose }) {
+export default function DrillPanel({ drill, summaryData, schoolData, year, term: selectedTerm, onClose }) {
   // stack: [] = regions · [region] = CUs · [region, cu] = schools.
   const [stack, setStack] = useState(() => (drill && drill.initialRegion ? [drill.initialRegion] : []));
   if (!drill) return null;
+  // `scopeTerm` pins a drill to one term's rows when the tile it came from is
+  // term-specific — e.g. a Club Meeting 3 row or a T2 observation column under
+  // All Terms — so the drill matches the number that was clicked.
+  const term = drill.scopeTerm || selectedTerm;
   const { metric, lecNum, milestoneKey, pbTerm, milestoneNum, gmField, gmLabel } = drill;
   // Region → CU → School for every metric here (the Mentor Quality tab has its
   // own separate region → CU → mentor drill, not this panel). GM and club
@@ -464,10 +507,10 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term,
   let rows;
   let colHeader;
   if (level === 'region') {
-    rows = regionRows(metric, summaryData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
+    rows = regionRows(metric, summaryData, schoolData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
     colHeader = 'Region';
   } else if (level === 'cu') {
-    rows = cuRows(metric, summaryData, year, term, stack[0], lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
+    rows = cuRows(metric, summaryData, schoolData, year, term, stack[0], lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
     colHeader = 'Cluster Unit';
   } else if (level === 'mentor') {
     rows = mentorObsRows(schoolData, year, term, stack[1]);
