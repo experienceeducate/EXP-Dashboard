@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as api from '../lib/api.js';
-import { getLECsForTerm, C } from '../lib/config.js';
+import { getLECsForTerm, getGMsInScope, getMilestonesInScope, getClubMeetingsInScope, C, TERM_CONFIG } from '../lib/config.js';
 import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
@@ -251,25 +251,27 @@ function CuActivityCompletion({ data, year, term }) {
     return { label: `LEC ${ln}`, nDel, pct, scholars, nonScholars, avgS: nDel > 0 ? (scholars / nDel).toFixed(1) : '—', avgNS: nDel > 0 ? (nonScholars / nDel).toFixed(1) : '—' };
   });
 
-  const actDef = term === 'term2'
-    ? [
-        { label: 'GM 2', field: 'schools_with_gm2', schl: 'gm2_total_scholars' },
-        { label: 'GM 3', field: 'schools_with_gm3', schl: 'gm3_total_scholars' },
-        { label: 'PB Milestone M3', field: 'schools_completed_m3', schl: 'm3_total_rated' },
-        { label: 'PB Milestone M4', field: 'schools_completed_m4', schl: 'm4_total_rated' },
-      ]
-    : [
-        { label: 'GM 1', field: 'schools_with_gm1', schl: 'gm1_total_scholars' },
-        { label: 'PB Milestone M1', field: 'schools_completed_m1', schl: 'm1_total_rated' },
-        { label: 'PB Milestone M2', field: 'schools_completed_m2', schl: 'm2_total_rated' },
-      ];
+  // GM sessions, PB milestones and club meetings follow the term: T1 → GM 1,
+  // M1-2, CM 1-2; T2 → GM 2-3, M3-4, CM 3-4; T3 → GM 4, M5-6, CM 5-6. Was a
+  // "Term 2, else Term 1" either-or, so Term 3 showed Term 1's rows. All Terms
+  // keeps Term 1's set for now (its own fix follows separately).
+  const actTerm = TERM_CONFIG[term] ? term : 'term1';
+  const actDef = [
+    ...getGMsInScope(actTerm).map((g) => ({ label: `GM ${g}`, field: `schools_with_gm${g}`, schl: `gm${g}_total_scholars` })),
+    ...getMilestonesInScope(actTerm).map((m) => ({ label: `PB Milestone M${m}`, field: `schools_completed_m${m}`, schl: `m${m}_total_rated` })),
+  ];
+  // A column absent from every row isn't in the gold model yet (CM 5/6 today):
+  // "Not yet reported", filling in on its own once the column lands.
+  const reported = (field) => schools.some((s) => s[field] !== undefined && s[field] !== null);
   const actRows = actDef.map((act) => {
     const cnt = schools.filter((s) => N(s[act.field])).length;
     const pct = formatPercentage1(cnt, n);
     const scholars = sum(schools, (r) => N(r[act.schl]));
-    return { label: act.label, nDel: cnt, pct, scholars, avgS: cnt > 0 ? (scholars / cnt).toFixed(1) : '—' };
+    return { label: act.label, reported: reported(act.field), nDel: cnt, pct, scholars, avgS: cnt > 0 ? (scholars / cnt).toFixed(1) : '—' };
   });
 
+  // Community Day is Term 1 and Skills Day Term 2; Term 3 has neither.
+  const showCd = term !== 'term3';
   const cdField = term === 'term2' ? 'schools_with_skills_day' : 'schools_with_community_day';
   const cdLabel = getNonLECActivityLabel(term);
   const cdCnt = schools.filter((s) => N(s[cdField])).length;
@@ -278,13 +280,17 @@ function CuActivityCompletion({ data, year, term }) {
     ? sum(schools, (r) => N(r.sd_scholar_attendance || r.sd_total_scholars))
     : sum(schools, (r) => N(r.cd_scholar_attendance));
 
-  const cmDefs = term === 'term2'
-    ? [{ label: 'Club Meeting 3', field: 'schools_with_club_meeting_3' }, { label: 'Club Meeting 4', field: 'schools_with_club_meeting_4' }]
-    : [{ label: 'Club Meeting 1', field: 'schools_with_club_meeting_1' }, { label: 'Club Meeting 2', field: 'schools_with_club_meeting_2' }];
+  const cmDefs = getClubMeetingsInScope(actTerm).map((c) => ({ label: `Club Meeting ${c}`, field: `schools_with_club_meeting_${c}` }));
   const cmRows = cmDefs.map((cm) => {
     const cnt = schools.filter((s) => N(s[cm.field]) > 0).length;
-    return { label: cm.label, cnt, pct: formatPercentage1(cnt, n) };
+    return { label: cm.label, reported: reported(cm.field), cnt, pct: formatPercentage1(cnt, n) };
   });
+  const pendingCells = (span) => (
+    <>
+      <td className="center"><span className="mt-badge pending">Not yet reported</span></td>
+      <td colSpan={span} style={{ color: '#888', fontSize: '.8rem' }}>Not in the dashboard data yet — fills in once reported</td>
+    </>
+  );
 
   // Peer Circles — mentor-level, dedup by mentor_id (max value across a mentor's school rows).
   const mentorPCMap = new Map();
@@ -332,29 +338,39 @@ function CuActivityCompletion({ data, year, term }) {
           {actRows.map((r) => (
             <tr key={r.label} style={{ background: '#fafafa' }}>
               <td style={{ fontWeight: 600, color: C.navy }}>{r.label}</td>
-              <td className="center"><strong style={{ color: ragColor(r.pct) }}>{r.nDel}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{n}</span></td>
-              <td style={{ minWidth: 140 }}><ProgressCell pct={r.pct} minWidth={140} /></td>
-              <td className="center">{r.scholars > 0 ? num(r.scholars) : '—'}</td>
-              <td className="center" style={{ color: '#666' }}>—</td>
-              <td className="center" style={{ fontWeight: 600 }}>{r.avgS}</td>
-              <td className="center" style={{ color: '#888' }}>—</td>
+              {r.reported ? (
+                <>
+                  <td className="center"><strong style={{ color: ragColor(r.pct) }}>{r.nDel}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{n}</span></td>
+                  <td style={{ minWidth: 140 }}><ProgressCell pct={r.pct} minWidth={140} /></td>
+                  <td className="center">{r.scholars > 0 ? num(r.scholars) : '—'}</td>
+                  <td className="center" style={{ color: '#666' }}>—</td>
+                  <td className="center" style={{ fontWeight: 600 }}>{r.avgS}</td>
+                  <td className="center" style={{ color: '#888' }}>—</td>
+                </>
+              ) : pendingCells(5)}
             </tr>
           ))}
-          <tr style={{ background: '#fafafa' }}>
-            <td style={{ fontWeight: 600, color: C.navy }}>{cdLabel}</td>
-            <td className="center"><strong style={{ color: ragColor(cdPct) }}>{cdCnt}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{n}</span></td>
-            <td style={{ minWidth: 140 }}><ProgressCell pct={cdPct} minWidth={140} /></td>
-            <td className="center" style={{ fontWeight: 600 }}>{cdScholars > 0 ? num(cdScholars) : '—'}</td>
-            <td className="center" style={{ color: '#666' }}>—</td>
-            <td className="center" style={{ fontWeight: 600 }}>{cdCnt > 0 ? (cdScholars / cdCnt).toFixed(1) : '—'}</td>
-            <td className="center" style={{ color: '#888' }}>—</td>
-          </tr>
+          {showCd ? (
+            <tr style={{ background: '#fafafa' }}>
+              <td style={{ fontWeight: 600, color: C.navy }}>{cdLabel}</td>
+              <td className="center"><strong style={{ color: ragColor(cdPct) }}>{cdCnt}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{n}</span></td>
+              <td style={{ minWidth: 140 }}><ProgressCell pct={cdPct} minWidth={140} /></td>
+              <td className="center" style={{ fontWeight: 600 }}>{cdScholars > 0 ? num(cdScholars) : '—'}</td>
+              <td className="center" style={{ color: '#666' }}>—</td>
+              <td className="center" style={{ fontWeight: 600 }}>{cdCnt > 0 ? (cdScholars / cdCnt).toFixed(1) : '—'}</td>
+              <td className="center" style={{ color: '#888' }}>—</td>
+            </tr>
+          ) : null}
           {cmRows.map((r) => (
             <tr key={r.label} style={{ background: '#fafafa' }}>
               <td style={{ fontWeight: 600, color: C.navy }}>{r.label}</td>
-              <td className="center"><strong style={{ color: ragColor(r.pct) }}>{r.cnt}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{n}</span></td>
-              <td style={{ minWidth: 140 }}><ProgressCell pct={r.pct} minWidth={140} /></td>
-              <td colSpan={4} style={{ color: '#888', fontSize: '.8rem' }}>Schools that completed {r.label}</td>
+              {r.reported ? (
+                <>
+                  <td className="center"><strong style={{ color: ragColor(r.pct) }}>{r.cnt}</strong><span style={{ color: '#888', fontSize: '.8rem' }}>/{n}</span></td>
+                  <td style={{ minWidth: 140 }}><ProgressCell pct={r.pct} minWidth={140} /></td>
+                  <td colSpan={4} style={{ color: '#888', fontSize: '.8rem' }}>Schools that completed {r.label}</td>
+                </>
+              ) : pendingCells(5)}
             </tr>
           ))}
           <tr style={{ background: '#fafafa' }}>

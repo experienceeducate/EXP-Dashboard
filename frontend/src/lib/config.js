@@ -63,9 +63,9 @@ export const C = {
 // the tile renders and starts showing real numbers the moment the column lands,
 // with no code change. See getGMsInScope / NationalView's LecTab.
 export const TERM_CONFIG = {
-  term1: { lecs: [1, 2, 3, 4, 5], milestones: [1, 2], gms: [1], label: 'Term 1' },
-  term2: { lecs: [6, 7, 8, 9, 10, 11, 12, 13, 14], milestones: [3, 4], gms: [2, 3], label: 'Term 2' },
-  term3: { lecs: [15, 16, 17, 18, 19, 20], milestones: [5, 6], gms: [4], label: 'Term 3' },
+  term1: { lecs: [1, 2, 3, 4, 5], milestones: [1, 2], gms: [1], clubMeetings: [1, 2], label: 'Term 1' },
+  term2: { lecs: [6, 7, 8, 9, 10, 11, 12, 13, 14], milestones: [3, 4], gms: [2, 3], clubMeetings: [3, 4], label: 'Term 2' },
+  term3: { lecs: [15, 16, 17, 18, 19, 20], milestones: [5, 6], gms: [4], clubMeetings: [5, 6], label: 'Term 3' },
 };
 
 // METRIC_DEFINITIONS (legacy line 3835) — authoritative labels/formulas/thresholds
@@ -217,6 +217,15 @@ export function getMilestonesInScope(term) {
   const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
   return keys
     .flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].milestones || [] : []))
+    .sort((a, b) => a - b);
+}
+
+// Club meetings a selection covers — CM 1-2 for Term 1, 3-4 for Term 2, 5-6 for
+// Term 3, all six under 'all'.
+export function getClubMeetingsInScope(term) {
+  const keys = term === 'all' ? Object.keys(TERM_CONFIG) : [term];
+  return keys
+    .flatMap((t) => (TERM_CONFIG[t] ? TERM_CONFIG[t].clubMeetings || [] : []))
     .sort((a, b) => a - b);
 }
 
