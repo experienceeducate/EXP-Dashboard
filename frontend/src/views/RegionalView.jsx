@@ -45,6 +45,15 @@ function ScoreCards({ summaryData, data, year, term }) {
   const pb2Quality = sum(t2Rows, (d) => N(d.m3_quality_rated) + N(d.m4_quality_rated));
   const pb2Total = sum(t2Rows, (d) => N(d.m3_total_rated) + N(d.m4_total_rated));
   const feedbackRate2 = pb2Total > 0 ? formatPercentage(pb2Quality, pb2Total) : 0;
+
+  // T3 (M5+M6), same as T2: Term 3 rows for the CUs in view. If the M5/M6
+  // columns are absent from every row they aren't in the gold table yet, so
+  // the card says "Not yet reported" and fills in once they land.
+  const t3Rows = summaryData.filter((d) => d.year == year && d.term === 'term3' && cuSet.has(String(d.cu || '').toLowerCase()));
+  const pb3Reported = t3Rows.some((d) => d.m5_total_rated != null || d.m6_total_rated != null);
+  const pb3Quality = sum(t3Rows, (d) => N(d.m5_quality_rated) + N(d.m6_quality_rated));
+  const pb3Total = sum(t3Rows, (d) => N(d.m5_total_rated) + N(d.m6_total_rated));
+  const feedbackRate3 = pb3Total > 0 ? formatPercentage(pb3Quality, pb3Total) : 0;
   const staticNote = term !== 'term1' ? ' (T1)' : '';
 
   return (
@@ -55,6 +64,13 @@ function ScoreCards({ summaryData, data, year, term }) {
       <ScoreCard tone={parseInt(recruitmentRate, 10) >= 80 ? 'green' : 'yellow'} label={`Recruitment${staticNote}`} value={recruitmentRate} unit="%" subtext={`${num(totalRecruited)} / ${num(totalTarget)} scholars`} />
       <ScoreCard tone={ragScoreClass(feedbackRate, 70, 50)} label="PB Quality (T1)" value={feedbackRate} unit="%" subtext="M1+M2 ratings" />
       <ScoreCard tone={pb2Total > 0 ? ragScoreClass(feedbackRate2, 70, 50) : 'blue'} label="PB Quality (T2)" value={pb2Total > 0 ? feedbackRate2 : '—'} unit={pb2Total > 0 ? '%' : ''} subtext={pb2Total > 0 ? 'M3+M4 ratings' : 'No M3/M4 data yet'} />
+      <ScoreCard
+        tone={pb3Total > 0 ? ragScoreClass(feedbackRate3, 70, 50) : 'blue'}
+        label="PB Quality (T3)"
+        value={!pb3Reported ? <span className="mt-badge pending">Not yet reported</span> : pb3Total > 0 ? feedbackRate3 : '—'}
+        unit={pb3Reported && pb3Total > 0 ? '%' : ''}
+        subtext={!pb3Reported ? 'M5+M6 not in the dashboard data yet' : pb3Total > 0 ? 'M5+M6 ratings' : 'No M5/M6 data yet'}
+      />
       <ScoreCard tone={parseInt(observationRate, 10) >= 75 ? 'green' : 'yellow'} label="Mentor Observations" value={observedMentors} unit={`/${totalMentors}`} subtext={`${observationRate}% observed · ${totalObsCount} visits`} />
     </div>
   );
