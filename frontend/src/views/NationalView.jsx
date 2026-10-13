@@ -1913,11 +1913,15 @@ function CommunitySkillsDay({ summaryData, data, year, term, onDrill }) {
 
 // ── Club Milestones & BMP by region (legacy renderNationalClubMilestones) ─────
 // Each milestone belongs to the term(s) that run it and is read only from those
-// rows — under All Terms, summing every term's rows put Term 2/3's unnumbered
-// club meetings into Club Meeting 1 (1,085 of 825). BMP runs in Term 2 and
-// Term 3; under All Terms it counts distinct schools, as a few did both.
-// CM5/CM6 have no gold column yet (Term 3 reports carry no meeting number) and
-// show "Not yet reported" until schools_with_club_meeting_5/6 exist.
+// rows — under All Terms, summing every term's rows put the Term 2/3 club
+// meetings that the gold model files under Club Meeting 1 into CM1 (1,085 of
+// 825). BMP runs in Term 2 and Term 3; under All Terms it counts distinct
+// schools, as a few did both.
+// CM5/CM6 have no gold column yet. The meeting number exists upstream
+// (staging `session_number`, bronze `club_meeting_no`) but is dropped when
+// silver_exp.exp_common_mentor_activity_report is built, so the gold model
+// files Term 3 meetings under CM1. Until schools_with_club_meeting_5/6 exist,
+// those rows show "Not yet reported" and then fill in on their own.
 const CLUB_MILESTONES = [
   { key: 'schools_with_club_meeting_1', label: 'Club Meeting 1', terms: ['term1'] },
   { key: 'schools_with_club_meeting_2', label: 'Club Meeting 2', terms: ['term1'] },
