@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as api from '../lib/api.js';
-import { getLECsForTerm, getGMsInScope, getMilestonesInScope, getClubMeetingsInScope, C, TERM_CONFIG } from '../lib/config.js';
+import { getLECsForTerm, getLECsInScope, getGMsInScope, getMilestonesInScope, getClubMeetingsInScope, C } from '../lib/config.js';
 import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
 import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
@@ -236,9 +236,13 @@ function CuScoreCards({ schoolData, data, year, term, cu }) {
 }
 
 // ── School activity completion ───────────────────────────────────────────────
-function CuActivityCompletion({ data, year, term }) {
-  const lecNums = getLECsForTerm(year, term);
-  const schools = dedupSchools(data);
+function CuActivityCompletion({ data, term }) {
+  // All Terms covers LEC 1-20 (getLECsForTerm fell back to Term 1's LEC 1-5),
+  // and merges each school's per-term rows — each field keeps its populated
+  // value — instead of keeping whichever term's row came first, which showed
+  // a school as delivering nothing when that row was from another term.
+  const lecNums = getLECsInScope(term);
+  const schools = term === 'all' ? mergeRowsAcrossTerms(data, (r) => String(r.school_id)) : dedupSchools(data);
   const n = schools.length;
   if (n === 0) return <Placeholder label="No school data available." />;
 
@@ -252,13 +256,11 @@ function CuActivityCompletion({ data, year, term }) {
   });
 
   // GM sessions, PB milestones and club meetings follow the term: T1 → GM 1,
-  // M1-2, CM 1-2; T2 → GM 2-3, M3-4, CM 3-4; T3 → GM 4, M5-6, CM 5-6. Was a
-  // "Term 2, else Term 1" either-or, so Term 3 showed Term 1's rows. All Terms
-  // keeps Term 1's set for now (its own fix follows separately).
-  const actTerm = TERM_CONFIG[term] ? term : 'term1';
+  // M1-2, CM 1-2; T2 → GM 2-3, M3-4, CM 3-4; T3 → GM 4, M5-6, CM 5-6; All
+  // Terms → all of them. Was a "Term 2, else Term 1" either-or.
   const actDef = [
-    ...getGMsInScope(actTerm).map((g) => ({ label: `GM ${g}`, field: `schools_with_gm${g}`, schl: `gm${g}_total_scholars` })),
-    ...getMilestonesInScope(actTerm).map((m) => ({ label: `PB Milestone M${m}`, field: `schools_completed_m${m}`, schl: `m${m}_total_rated` })),
+    ...getGMsInScope(term).map((g) => ({ label: `GM ${g}`, field: `schools_with_gm${g}`, schl: `gm${g}_total_scholars` })),
+    ...getMilestonesInScope(term).map((m) => ({ label: `PB Milestone M${m}`, field: `schools_completed_m${m}`, schl: `m${m}_total_rated` })),
   ];
   // A column absent from every row isn't in the gold model yet (CM 5/6 today):
   // "Not yet reported", filling in on its own once the column lands.
@@ -280,7 +282,7 @@ function CuActivityCompletion({ data, year, term }) {
     ? sum(schools, (r) => N(r.sd_scholar_attendance || r.sd_total_scholars))
     : sum(schools, (r) => N(r.cd_scholar_attendance));
 
-  const cmDefs = getClubMeetingsInScope(actTerm).map((c) => ({ label: `Club Meeting ${c}`, field: `schools_with_club_meeting_${c}` }));
+  const cmDefs = getClubMeetingsInScope(term).map((c) => ({ label: `Club Meeting ${c}`, field: `schools_with_club_meeting_${c}` }));
   const cmRows = cmDefs.map((cm) => {
     const cnt = schools.filter((s) => N(s[cm.field]) > 0).length;
     return { label: cm.label, reported: reported(cm.field), cnt, pct: formatPercentage1(cnt, n) };
