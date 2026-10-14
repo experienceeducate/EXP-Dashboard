@@ -204,7 +204,13 @@ function CuScoreCards({ schoolData, data, year, term, cu }) {
   // in this file (CuMentorPerformance) — a term2 row's m1/m2 fields read 0
   // (and vice versa for term1's m3/m4), so hardcoding m1+m2 here left PB
   // Quality permanently blank whenever term2 was selected.
-  const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : ['m1', 'm2', 'm3', 'm4'];
+  // Term 3 uses M5+M6 — it fell through to M1-M4, which read 0 on Term 3 rows
+  // ("0/0 rated"). The label names the term whose milestones are shown (it
+  // said "(T1)" under Term 2 too). Term 1 and All Terms are unchanged.
+  const pbFields = term === 'term1' ? ['m1', 'm2'] : term === 'term2' ? ['m3', 'm4'] : term === 'term3' ? ['m5', 'm6'] : ['m1', 'm2', 'm3', 'm4'];
+  const pbLabel = term === 'term2' ? 'T2' : term === 'term3' ? 'T3' : 'T1';
+  // Milestone columns absent from every row aren't in the gold table yet.
+  const pbReported = pbFields.some((m) => schools.some((s) => s[`${m}_total_rated`] !== undefined && s[`${m}_total_rated`] !== null));
   const pbTotal = sum(schools, (r) => pbFields.reduce((s, m) => s + N(r[`${m}_total_rated`]), 0));
   const pbQuality = sum(schools, (r) => pbFields.reduce((s, m) => s + N(r[`${m}_quality_rated`]), 0));
   const feedbackRate = formatPercentage(pbQuality, pbTotal);
@@ -229,7 +235,13 @@ function CuScoreCards({ schoolData, data, year, term, cu }) {
       <ScoreCard tone={ragScoreClass(lecDeliveryPct)} label="LEC Delivery Rate" value={lecDeliveryPct} unit="%" subtext={`${lecsDelivered}/${lecsExpected} sessions delivered`} />
       <ScoreCard tone="blue" label="Avg Scholars / LEC" value={avgScholars} subtext="Per school per session" />
       <ScoreCard tone={ragScoreClass(parseInt(onTrackRate, 10))} label="Schools On Track" value={onTrackRate} unit="%" subtext={`${onTrack}/${n} ≥60% LECs & ≥30 scholars`} />
-      <ScoreCard tone={pbTotal > 0 ? ragScoreClass(parseInt(feedbackRate, 10), 70, 50) : 'blue'} label="PB Feedback Quality (T1)" value={pbTotal > 0 ? feedbackRate : '-'} unit={pbTotal > 0 ? '%' : ''} subtext={`${pbQuality}/${pbTotal} rated Good/Excellent`} />
+      <ScoreCard
+        tone={pbTotal > 0 ? ragScoreClass(parseInt(feedbackRate, 10), 70, 50) : 'blue'}
+        label={`PB Feedback Quality (${pbLabel})`}
+        value={!pbReported ? <span className="mt-badge pending">Not yet reported</span> : pbTotal > 0 ? feedbackRate : '-'}
+        unit={pbReported && pbTotal > 0 ? '%' : ''}
+        subtext={!pbReported ? `${pbFields.map((m) => m.toUpperCase()).join('+')} not in the dashboard data yet` : `${pbQuality}/${pbTotal} rated Good/Excellent`}
+      />
       <ScoreCard tone={parseInt(obsRate, 10) >= 75 ? 'green' : 'yellow'} label="Mentor Observations" value={obsSchools} unit={`/${totalMentorCount}`} subtext={`${obsRate}% schools observed · ${totalObsVisits} visits`} />
     </div>
   );
