@@ -78,17 +78,25 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    # CORS — locked to the app hostname + localhost dev origins.
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", settings.CLIENT_HEADER_NAME],
-    )
-
-    # OAuth state storage. NOTE: JWT_SECRET doubles as the session key (v1 limitation).
-    app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
+    # ── Middleware order matters here; do not reshuffle casually. ──────────
+    # add_middleware() inserts at the FRONT of the list and the first entry is
+    # the OUTERMOST layer, so these are registered innermost-first and the
+    # resulting nesting is:
+    #
+    #   CORSMiddleware           <- outermost: must see every response
+    #     cors_safe_errors       <- turns an escaping exception into JSON
+    #       SessionMiddleware
+    #         client_header_guard
+    #           (routes)
+    #
+    # Why CORS has to be outside the error layer: Starlette always wraps the
+    # whole stack in ServerErrorMiddleware, outside every user middleware, so
+    # a 500 *it* generates can never pick up an Access-Control-Allow-Origin
+    # header. A browser discards such a response and fetch() rejects, so the
+    # UI gets an opaque network error with no status and no detail — which is
+    # exactly how an upstream BigQuery schema break once surfaced as nothing
+    # but "Failed to fetch". See docs/CONTEXT.md. Catching inside CORS keeps
+    # the status and detail visible to the client.
 
     # Custom client-header guard: every /api/* request must carry the token.
     @app.middleware("http")
@@ -103,6 +111,38 @@ def create_app() -> FastAPI:
         if request.headers.get(settings.CLIENT_HEADER_NAME) != settings.CLIENT_HEADER_TOKEN:
             return JSONResponse(status_code=403, content={"detail": "Missing or invalid client header"})
         return await call_next(request)
+
+    # OAuth state storage. NOTE: JWT_SECRET doubles as the session key (v1 limitation).
+    app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
+
+    # Last line of defence for any exception a router didn't handle. Sits
+    # INSIDE CORSMiddleware on purpose (see the ordering note above) so the
+    # response it builds still gets CORS headers and the client sees a real
+    # 500 instead of a network-level failure. HTTPException never reaches
+    # here — ExceptionMiddleware is innermost and converts it first — so this
+    # only ever catches genuinely unexpected errors. They are logged with a
+    # full traceback server-side; the client gets a generic message, since an
+    # unexpected exception's text may carry internals that shouldn't leak.
+    @app.middleware("http")
+    async def cors_safe_errors(request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception:  # noqa: BLE001 — deliberate catch-all; see above.
+            logger.exception("Unhandled error serving %s %s", request.method, request.url.path)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Something went wrong loading this data. Please try again."},
+            )
+
+    # CORS — locked to the app hostname + localhost dev origins. Registered
+    # last so it ends up outermost and decorates error responses too.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", settings.CLIENT_HEADER_NAME],
+    )
 
     app.include_router(health.router)
     app.include_router(auth.router)
