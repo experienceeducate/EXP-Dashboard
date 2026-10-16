@@ -1,20 +1,21 @@
 import { useState } from 'react';
 import { C, RAG } from '../lib/config.js';
-import { Section, Placeholder } from '../components/ui.jsx';
+import { Section } from '../components/ui.jsx';
 
-// Dashboard Guide — a static reference tab, not tied to term/year/access
-// scope. Mirrors National View's own inner-tab pattern (nat-tab-bar +
-// onJumpTab) so "Found in ..." cross-references behave exactly like the
-// Learning & Measurement Map tab's jump-links to Mentor Quality.
-export const GUIDE_TABS = [
-  { id: 'overview', label: '📖 Overview' },
-  { id: 'howto', label: '🧭 How to Read' },
-  { id: 'national', label: '📊 National View' },
-  { id: 'regional', label: '🗺️ Regional View' },
-  { id: 'cu', label: '🏫 CU View' },
-  { id: 'glossary', label: '📐 Glossary' },
-  { id: 'roles', label: '🔐 Roles & Access' },
-];
+// Dashboard Guide — a static reference page, not tied to term/year/access
+// scope. Overview + How to Read live directly on the page since they're the
+// orienting content everyone needs first; National/Regional/CU View,
+// Glossary, and Roles & Access are each one click away as a slide-in drill
+// panel — the same drill-panel/drill-backdrop pattern used for metric
+// drill-downs elsewhere in the app (see DrillPanel.jsx), so "Found in ..."
+// cross-references open a panel instead of switching a tab.
+const GUIDE_DRILLS = {
+  national: { icon: '📊', label: 'National View', blurb: "How the leadership-facing view is organized, tab by tab." },
+  regional: { icon: '🗺️', label: 'Regional View', blurb: "What a Regional Officer sees for their region." },
+  cu: { icon: '🏫', label: 'CU View', blurb: "What an FOA sees for their Cluster Unit(s)." },
+  glossary: { icon: '📐', label: 'Glossary', blurb: "Every metric's definition, formula, and RAG thresholds." },
+  roles: { icon: '🔐', label: 'Roles & Access', blurb: "Who sees what, and how it's enforced." },
+};
 
 function RagChip({ tone, children }) {
   const map = {
@@ -74,7 +75,7 @@ function SubView({ icon, title, children }) {
 }
 
 // ── Overview ─────────────────────────────────────────────────────────────────
-function OverviewTab({ onJumpTab }) {
+function OverviewTab({ onOpenDrill }) {
   return (
     <Section title="What this dashboard is" subtitle="One data source, three levels of zoom">
       <p style={{ color: '#444', maxWidth: '62ch' }}>
@@ -87,17 +88,17 @@ function OverviewTab({ onJumpTab }) {
           <thead><tr><th>View</th><th>Shows</th><th>Typically used by</th></tr></thead>
           <tbody>
             <tr>
-              <td className="item-name clickable" onClick={() => onJumpTab('national')}>National View <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
+              <td className="item-name clickable" onClick={() => onOpenDrill('national')}>National View <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
               <td>Every region, rolled up and compared side by side</td>
               <td>National Leadership</td>
             </tr>
             <tr>
-              <td className="item-name clickable" onClick={() => onJumpTab('regional')}>Regional View <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
+              <td className="item-name clickable" onClick={() => onOpenDrill('regional')}>Regional View <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
               <td>One region's Cluster Units, compared side by side</td>
               <td>Regional Officers</td>
             </tr>
             <tr>
-              <td className="item-name clickable" onClick={() => onJumpTab('cu')}>CU View <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
+              <td className="item-name clickable" onClick={() => onOpenDrill('cu')}>CU View <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span></td>
               <td>One Cluster Unit's schools and mentors, in detail</td>
               <td>FOAs</td>
             </tr>
@@ -109,14 +110,14 @@ function OverviewTab({ onJumpTab }) {
         enforced on the server, not hidden in the interface — a Regional Officer's Regional
         View is already filtered to their region before it reaches the screen, and an FOA's
         CU View to their Cluster Unit(s). See{' '}
-        <JumpLink onClick={() => onJumpTab('roles')}>Roles &amp; Access</JumpLink> for the full breakdown.
+        <JumpLink onClick={() => onOpenDrill('roles')}>Roles &amp; Access</JumpLink> for the full breakdown.
       </div>
     </Section>
   );
 }
 
 // ── How to Read ──────────────────────────────────────────────────────────────
-function HowToTab({ onJumpTab }) {
+function HowToTab({ onOpenDrill }) {
   return (
     <>
       <Section title="1. The Term filter changes which milestones apply" subtitle="Not just a date range">
@@ -140,7 +141,7 @@ function HowToTab({ onJumpTab }) {
       <Section title="2. RAG status: green / amber / red" subtitle="The threshold is different per metric">
         <p style={{ color: '#444', maxWidth: '62ch' }}>
           Read the color as "on track for this metric," not a universal scale — see the exact
-          thresholds behind each color in the <JumpLink onClick={() => onJumpTab('glossary')}>Glossary</JumpLink>.
+          thresholds behind each color in the <JumpLink onClick={() => onOpenDrill('glossary')}>Glossary</JumpLink>.
         </p>
         <div style={{ display: 'flex', gap: '.6rem', flexWrap: 'wrap', margin: '.6rem 0' }}>
           <div style={{ flex: '1 1 160px', background: '#fff', border: '1px solid #e9ecef', borderRadius: 8, padding: '.8rem 1rem' }}>
@@ -174,7 +175,7 @@ function HowToTab({ onJumpTab }) {
 }
 
 // ── National View ────────────────────────────────────────────────────────────
-function NationalGuideTab({ onJumpTab }) {
+function NationalGuideTab({ onOpenDrill }) {
   return (
     <Section title="National View" subtitle="Every region · lands on Executive Summary by default">
       <p style={{ color: '#444', maxWidth: '64ch' }}>
@@ -208,7 +209,7 @@ function NationalGuideTab({ onJumpTab }) {
           Milestone Completion table, and Group Mentoring Completion by region and session.
         </p>
         <div style={{ marginTop: '.5rem' }}>
-          <JumpLink onClick={() => onJumpTab('glossary')}>See: PB Quality Rate, PB Milestone Completion, Group Mentoring →</JumpLink>
+          <JumpLink onClick={() => onOpenDrill('glossary')}>See: PB Quality Rate, PB Milestone Completion, Group Mentoring →</JumpLink>
         </div>
       </SubView>
 
@@ -244,7 +245,7 @@ function NationalGuideTab({ onJumpTab }) {
 }
 
 // ── Regional View ────────────────────────────────────────────────────────────
-function RegionalGuideTab({ onJumpTab }) {
+function RegionalGuideTab({ onOpenDrill }) {
   return (
     <Section title="Regional View" subtitle="One region, all its Cluster Units">
       <p style={{ color: '#444', maxWidth: '64ch' }}>
@@ -264,7 +265,7 @@ function RegionalGuideTab({ onJumpTab }) {
         <li><strong>Activity Report Timeliness</strong>, by Cluster Unit.</li>
       </ul>
       <p style={{ marginTop: '.7rem', color: '#444' }}>
-        Click any Cluster Unit row to open <JumpLink onClick={() => onJumpTab('cu')}>CU View</JumpLink> for that unit.
+        Click any Cluster Unit row to open <JumpLink onClick={() => onOpenDrill('cu')}>CU View</JumpLink> for that unit.
       </p>
     </Section>
   );
@@ -301,7 +302,7 @@ function CuGuideTab() {
 }
 
 // ── Glossary ─────────────────────────────────────────────────────────────────
-function GlossaryTab({ onJumpTab }) {
+function GlossaryTab({ onOpenDrill }) {
   return (
     <>
       <Section title="Glossary of metrics" subtitle="What each number means, how it's calculated, and its RAG thresholds">
@@ -310,9 +311,9 @@ function GlossaryTab({ onJumpTab }) {
           <Formula>Σ schools_with_lecN (term's LECs) ÷ (target_schools × #LECs in term) × 100</Formula>
           <div><RagChip tone="good">≥ 80%</RagChip><RagChip tone="warn">60–79%</RagChip><RagChip tone="bad">&lt; 60%</RagChip></div>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('regional')}>Regional View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('cu')}>CU View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('regional')}>Regional View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('cu')}>CU View</JumpLink>
           </FoundIn>
         </MetricEntry>
 
@@ -321,8 +322,8 @@ function GlossaryTab({ onJumpTab }) {
           <Formula>total_scholars_recruited (Term 1) ÷ (target_schools × 45) × 100</Formula>
           <div><RagChip tone="good">≥ 95%</RagChip><RagChip tone="warn">80–94%</RagChip><RagChip tone="bad">&lt; 80%</RagChip></div>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('regional')}>Regional View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('regional')}>Regional View</JumpLink>
           </FoundIn>
         </MetricEntry>
 
@@ -330,7 +331,7 @@ function GlossaryTab({ onJumpTab }) {
           <p style={{ margin: '0 0 .3rem', color: '#444' }}>Average scholar attendance per delivered session — a read on session turnout, not just whether the session happened.</p>
           <Formula>Σ lecN_scholars (delivered) ÷ Σ schools_with_lecN (delivered)</Formula>
           <div><RagChip tone="good">≥ 45</RagChip><RagChip tone="warn">35–44</RagChip><RagChip tone="bad">&lt; 35</RagChip></div>
-          <FoundIn><JumpLink onClick={() => onJumpTab('national')}>National View → LEC Delivery</JumpLink></FoundIn>
+          <FoundIn><JumpLink onClick={() => onOpenDrill('national')}>National View → LEC Delivery</JumpLink></FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-pb-quality" title="PB Quality Rate">
@@ -338,15 +339,15 @@ function GlossaryTab({ onJumpTab }) {
           <Formula>{'T1: (m1_quality_rated + m2_quality_rated) ÷ (m1_total_rated + m2_total_rated) × 100\nT2: (m3_quality_rated + m4_quality_rated) ÷ (m3_total_rated + m4_total_rated) × 100'}</Formula>
           <div><RagChip tone="good">≥ 80%</RagChip><RagChip tone="warn">60–79%</RagChip><RagChip tone="bad">&lt; 60%</RagChip></div>
           <p style={{ margin: '.3rem 0 0', color: '#444' }}><strong>Not the same as PB Milestone Completion below</strong> — Quality measures how well a submitted entry was rated; Completion measures whether a school submitted at all.</p>
-          <FoundIn><JumpLink onClick={() => onJumpTab('national')}>National View → Passbook Quality</JumpLink></FoundIn>
+          <FoundIn><JumpLink onClick={() => onOpenDrill('national')}>National View → Passbook Quality</JumpLink></FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-pb-completion" title="PB Milestone Completion (M1 / M2 / M3 / M4)">
           <p style={{ margin: '0 0 .3rem', color: '#444' }}>Whether a school completed and reported a given Passbook milestone at all, regardless of its rating. Follows the Term filter: Term 1 shows M1 + M2, Term 2 shows M3 + M4, All Terms shows all four.</p>
           <Formula>schools_completed_mN ÷ total_target_schools × 100</Formula>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View → Passbook Quality</JumpLink>
-            <JumpLink onClick={() => onJumpTab('cu')}>CU View → Milestone Reporting</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View → Passbook Quality</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('cu')}>CU View → Milestone Reporting</JumpLink>
           </FoundIn>
         </MetricEntry>
 
@@ -356,8 +357,8 @@ function GlossaryTab({ onJumpTab }) {
           <div><RagChip tone="good">≥ 80%</RagChip><RagChip tone="warn">50–79%</RagChip><RagChip tone="bad">&lt; 50%</RagChip></div>
           <p style={{ margin: '.3rem 0 0', color: '#444' }}>Its drill-down is the one exception to the usual Region → CU → School chain — it stops at <strong>Mentor</strong>, since coverage is about whether a specific person was observed.</p>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View → Programme Quality</JumpLink>
-            <JumpLink onClick={() => onJumpTab('regional')}>Regional View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View → Programme Quality</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('regional')}>Regional View</JumpLink>
           </FoundIn>
         </MetricEntry>
 
@@ -365,7 +366,7 @@ function GlossaryTab({ onJumpTab }) {
           <p style={{ margin: '0 0 .3rem', color: '#444' }}>Scholars still engaged by the final tracked LEC, against those activated at LEC 2.</p>
           <Formula>{'lec{last}_scholars ÷ lec2_scholars × 100'}</Formula>
           <div><RagChip tone="good">≥ 95%</RagChip><RagChip tone="warn">80–94%</RagChip><RagChip tone="bad">&lt; 80%</RagChip></div>
-          <FoundIn><JumpLink onClick={() => onJumpTab('national')}>National View → LEC Delivery (scholar funnel)</JumpLink></FoundIn>
+          <FoundIn><JumpLink onClick={() => onOpenDrill('national')}>National View → LEC Delivery (scholar funnel)</JumpLink></FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-report-timeliness" title="Report Timeliness">
@@ -373,46 +374,46 @@ function GlossaryTab({ onJumpTab }) {
           <Formula>(reports_early + reports_on_schedule) ÷ total_reports × 100</Formula>
           <div><RagChip tone="good">≥ 70%</RagChip><RagChip tone="warn">50–69%</RagChip><RagChip tone="bad">&lt; 50%</RagChip></div>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('regional')}>Regional View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('cu')}>CU View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('regional')}>Regional View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('cu')}>CU View</JumpLink>
           </FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-non-scholar" title="Non-Scholar Participation">
           <p style={{ margin: 0, color: '#444' }}>The share of schools where at least one participant who isn't an enrolled scholar ("non-scholar") attended a session — informational, with no fixed RAG target.</p>
-          <FoundIn><JumpLink onClick={() => onJumpTab('national')}>National View → Programme Quality</JumpLink></FoundIn>
+          <FoundIn><JumpLink onClick={() => onOpenDrill('national')}>National View → Programme Quality</JumpLink></FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-gm" title="Group Mentoring (GM)">
           <p style={{ margin: '0 0 .3rem', color: '#444' }}>Mentor-led group sessions held alongside LEC delivery. GM 1 runs in Term 1; GM 2 and GM 3 run in Term 2 (GM 4 is reserved and not yet active).</p>
           <Formula>schools_with_gmN ÷ total_target_schools × 100</Formula>
           <div><RagChip tone="good">≥ 80%</RagChip><RagChip tone="warn">60–79%</RagChip><RagChip tone="bad">&lt; 60%</RagChip></div>
-          <FoundIn><JumpLink onClick={() => onJumpTab('national')}>National View → Executive Summary &amp; Passbook Quality</JumpLink></FoundIn>
+          <FoundIn><JumpLink onClick={() => onOpenDrill('national')}>National View → Executive Summary &amp; Passbook Quality</JumpLink></FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-cd-sd" title="Community Day / Skills Day">
           <p style={{ margin: '0 0 .3rem', color: '#444' }}>The same slot on the calendar, named differently by term: Community Day in Term 1, Skills Day in Term 2 — Skills Day additionally breaks attendance down by gender.</p>
           <Formula>schools_with_community_day (or _skills_day) ÷ total_target_schools × 100</Formula>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View → Programme Quality</JumpLink>
-            <JumpLink onClick={() => onJumpTab('regional')}>Regional View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('cu')}>CU View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View → Programme Quality</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('regional')}>Regional View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('cu')}>CU View</JumpLink>
           </FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-session-duration" title="Avg LEC Session Duration">
           <p style={{ margin: 0, color: '#444' }}>Average minutes per delivered session; typical values sit around 80 minutes. A handful of extreme outliers in the raw data can inflate a simple average, so treat sudden swings with a little skepticism.</p>
-          <FoundIn><JumpLink onClick={() => onJumpTab('national')}>National View → LEC Delivery</JumpLink></FoundIn>
+          <FoundIn><JumpLink onClick={() => onOpenDrill('national')}>National View → LEC Delivery</JumpLink></FoundIn>
         </MetricEntry>
 
         <MetricEntry id="term-club-milestones" title="Club Milestones & BMP">
           <p style={{ margin: '0 0 .3rem', color: '#444' }}>Club Meetings 1–4 track a scholar club's progress through the term; the Business Model Presentation (BMP) is the Term 2 capstone activity.</p>
           <Formula>schools_with_club_meeting_N (or _bmp) ÷ total_target_schools × 100</Formula>
           <FoundIn>
-            <JumpLink onClick={() => onJumpTab('national')}>National View → Programme Quality</JumpLink>
-            <JumpLink onClick={() => onJumpTab('regional')}>Regional View</JumpLink>
-            <JumpLink onClick={() => onJumpTab('cu')}>CU View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('national')}>National View → Programme Quality</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('regional')}>Regional View</JumpLink>
+            <JumpLink onClick={() => onOpenDrill('cu')}>CU View</JumpLink>
           </FoundIn>
         </MetricEntry>
       </Section>
@@ -468,32 +469,67 @@ function RolesTab() {
   );
 }
 
-export default function GuideView() {
-  const [tab, setTab] = useState('overview');
+// ── Launcher cards for the drill-in sections ────────────────────────────────
+function DrillCard({ id, onOpen }) {
+  const d = GUIDE_DRILLS[id];
+  return (
+    <div
+      onClick={() => onOpen(id)}
+      style={{ flex: '1 1 220px', border: '1px solid #e9ecef', borderRadius: 10, background: '#fff', padding: '1rem 1.15rem', cursor: 'pointer' }}
+    >
+      <div style={{ fontWeight: 800, color: C.navy, marginBottom: '.3rem' }}>
+        {d.icon} {d.label} <span style={{ fontSize: '.65rem', color: '#0077b6' }}>⌕</span>
+      </div>
+      <p style={{ margin: 0, fontSize: '.82rem', color: '#666' }}>{d.blurb}</p>
+    </div>
+  );
+}
 
-  const renderTabContent = (tabId) => {
-    switch (tabId) {
-      case 'overview': return <OverviewTab onJumpTab={setTab} />;
-      case 'howto': return <HowToTab onJumpTab={setTab} />;
-      case 'national': return <NationalGuideTab onJumpTab={setTab} />;
-      case 'regional': return <RegionalGuideTab onJumpTab={setTab} />;
-      case 'cu': return <CuGuideTab onJumpTab={setTab} />;
-      case 'glossary': return <GlossaryTab onJumpTab={setTab} />;
-      case 'roles': return <RolesTab onJumpTab={setTab} />;
-      default: return <Placeholder label="Nothing here yet." />;
-    }
-  };
+function renderDrillContent(id, onOpenDrill) {
+  switch (id) {
+    case 'national': return <NationalGuideTab onOpenDrill={onOpenDrill} />;
+    case 'regional': return <RegionalGuideTab onOpenDrill={onOpenDrill} />;
+    case 'cu': return <CuGuideTab onOpenDrill={onOpenDrill} />;
+    case 'glossary': return <GlossaryTab onOpenDrill={onOpenDrill} />;
+    case 'roles': return <RolesTab onOpenDrill={onOpenDrill} />;
+    default: return null;
+  }
+}
+
+// Reuses the same drill-panel/drill-backdrop slide-in used for metric
+// drill-downs (DrillPanel.jsx) so the guide's secondary content behaves like
+// the rest of the app instead of introducing its own overlay pattern.
+function GuideDrillPanel({ id, onOpenDrill, onClose }) {
+  if (!id) return null;
+  const d = GUIDE_DRILLS[id];
+  return (
+    <>
+      <div className="drill-backdrop" onClick={onClose} />
+      <aside className="drill-panel" role="dialog" aria-label={d.label}>
+        <div className="drill-head">
+          <button className="drill-close" onClick={onClose} aria-label="Close">×</button>
+          <div className="drill-title">{d.icon} {d.label}</div>
+          <div className="drill-subtitle">{d.blurb}</div>
+        </div>
+        <div className="drill-body">{renderDrillContent(id, onOpenDrill)}</div>
+      </aside>
+    </>
+  );
+}
+
+export default function GuideView() {
+  const [drill, setDrill] = useState(null);
 
   return (
     <div>
-      <div className="nat-tab-bar">
-        {GUIDE_TABS.map((t) => (
-          <button key={t.id} type="button" className={`nat-tab-btn ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {renderTabContent(tab)}
+      <OverviewTab onOpenDrill={setDrill} />
+      <HowToTab onOpenDrill={setDrill} />
+      <Section title="Go deeper" subtitle="Each of these opens as a panel — jump back to this page any time">
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.75rem' }}>
+          {Object.keys(GUIDE_DRILLS).map((id) => <DrillCard key={id} id={id} onOpen={setDrill} />)}
+        </div>
+      </Section>
+      <GuideDrillPanel id={drill} onOpenDrill={setDrill} onClose={() => setDrill(null)} />
     </div>
   );
 }
