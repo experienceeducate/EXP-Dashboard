@@ -2,6 +2,47 @@
 from app.core import database
 
 
+def test_summary_by_cu_degrades_gracefully_on_schema_mismatch(client, client_headers, monkeypatch, make_token):
+    """Regression (2026-09-29 incident): if the source table's schema
+    changes upstream (a column this router expects no longer exists),
+    BigQuery raises BadRequest, not NotFound — query_rows_ignore_missing_table
+    doesn't catch that. Must degrade to available:false + empty data, never
+    a 500."""
+    from google.api_core.exceptions import BadRequest
+
+    def fake_run_query(sql, params=None, *, scope_key="public", use_cache=True):
+        raise BadRequest("Unrecognized name: lesson_name; Did you mean mentor_name?")
+
+    monkeypatch.setattr(database, "run_query", fake_run_query)
+    token = make_token("admin@experienceeducate.org")
+    r = client.get(
+        "/api/elab/summary-by-cu?term=term3",
+        headers={**client_headers, "Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert body["data"] == []
+
+
+def test_mentors_degrades_gracefully_on_schema_mismatch(client, client_headers, monkeypatch, make_token):
+    from google.api_core.exceptions import BadRequest
+
+    def fake_run_query(sql, params=None, *, scope_key="public", use_cache=True):
+        raise BadRequest("Unrecognized name: gender")
+
+    monkeypatch.setattr(database, "run_query", fake_run_query)
+    token = make_token("admin@experienceeducate.org")
+    r = client.get(
+        "/api/elab/mentors?cu=Mpigi&term=term3",
+        headers={**client_headers, "Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is False
+    assert body["data"] == []
+
+
 def test_summary_by_cu_requires_auth(client, client_headers):
     r = client.get("/api/elab/summary-by-cu", headers=client_headers)
     assert r.status_code in (401, 403)
