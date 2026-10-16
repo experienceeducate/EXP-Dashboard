@@ -2741,9 +2741,10 @@ const MQ_SUBTABS = [
   { id: 'group-mentoring', label: '👥 Group Mentoring' },
   { id: 'skills-day', label: '🧴 Skills Day' },
   { id: 'elab', label: '📱 E-Lab' },
+  { id: 'mentoring-week', label: '🗓️ Mentoring Week' },
 ];
 
-function MentorQualityTab({ term, year, summaryData }) {
+function MentorQualityTab({ term, year, summaryData, schoolData, onDrill }) {
   const [subTab, setSubTab] = useState('highlights');
   return (
     <div>
@@ -2882,7 +2883,252 @@ function MentorQualityTab({ term, year, summaryData }) {
         />
       ) : null}
       {subTab === 'elab' ? <ElabNationalSubTab /> : null}
+      {subTab === 'mentoring-week' ? <MentoringWeekSubTab year={year} term={term} summaryData={summaryData} schoolData={schoolData} onDrill={onDrill} /> : null}
     </div>
+  );
+}
+
+// ── Mentor Quality · Mentoring Week ─────────────────────────────────────────
+// Which schools have at least one Mentoring Week report for Trip 1 / Trip 2 in
+// the selected year and term (silver exp_common_mentor_activity_report, trip
+// from mentoring_week_category, one row per school, read live — see
+// routers/mentoring_week.py). Schools, regions, CUs, mentors and FOAs come from
+// the gold school list for the same term (825 schools), joined on school_id;
+// report rows for a school_id not on that list are not counted.
+// Reuses the existing cards and drill: Active Mentors as on the E-Lab sub-tab,
+// Total Schools as on the LEC tab, the trip cards as the M5/M6 cards, and the
+// shared Region → CU → School DrillPanel.
+
+// The gold term the school list and active mentors are read from: the selected
+// term, or under All Terms the latest term with data that year (adding terms
+// together would count every school and mentor once per term).
+function mwScopeTerm(summaryData, year, term) {
+  if (term !== 'all') return term;
+  return [...Object.keys(TERM_CONFIG)].reverse()
+    .find((t) => summaryData.some((d) => d.year == year && d.term === t)) || 'term1';
+}
+
+function MentoringWeekSubTab({ year, term, summaryData, schoolData, onDrill }) {
+  const scopeTerm = mwScopeTerm(summaryData, year, term);
+  const [reports, setReports] = useState(null); // null = loading
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    api
+      .fetchMentoringWeekSchools(term)
+      .then((res) => { if (active) setReports(res.data || []); })
+      .catch((e) => {
+        if (active) {
+          setReports([]);
+          setError(e.message || 'Failed to load Mentoring Week data.');
+        }
+      });
+    return () => { active = false; };
+  }, [term]);
+
+  const view = useMemo(() => {
+    // Master list: one row per school in the gold school rows for scopeTerm.
+    const master = new Map();
+    (schoolData || []).filter((d) => d.year == year && d.term === scopeTerm)
+      .forEach((d) => { if (!master.has(String(d.school_id))) master.set(String(d.school_id), d); });
+    // Same basis as the E-Lab sub-tab's Active Mentors: the term's CU rows'
+    // total_active_mentors from the gold model.
+    const cuRows = summaryData.filter((d) => d.year == year && d.term === scopeTerm);
+    const activeMentors = sum(cuRows, (d) => N(d.total_active_mentors));
+    const cuCount = new Set(cuRows.map((d) => `${d.region}|${d.cu}`)).size;
+    // Each report row carries its year and term: apply the dashboard's year
+    // selector here (term is already applied by the request, as on the other
+    // Mentor Quality tabs; re-checked so a stale response can't leak in).
+    const inSelection = (r) => r.year == year && (term === 'all' || r.term === term);
+    const tripIds = (trip) => [...new Set((reports || [])
+      .filter((r) => inSelection(r) && r[`trip${trip}`] && master.has(String(r.school_id)))
+      .map((r) => String(r.school_id)))];
+    // Active mentors per CU, for the Region breakdown table (sums to the card).
+    const activeByCu = new Map();
+    cuRows.forEach((d) => {
+      const key = `${d.region}|${d.cu}`;
+      activeByCu.set(key, (activeByCu.get(key) || 0) + N(d.total_active_mentors));
+    });
+    return {
+      totalSchools: master.size, activeMentors, cuCount, trip1: tripIds(1), trip2: tripIds(2),
+      schools: [...master.values()], activeByCu,
+    };
+  }, [schoolData, summaryData, year, term, reports, scopeTerm]);
+
+  const tripCard = (trip, ids) => {
+    const pct = formatPercentage1(ids.length, view.totalSchools);
+    return (
+      <KpiHeroCard
+        label={`Mentoring Week (Trip ${trip})`}
+        valueClass={ragKpiClass(pct)}
+        value={pct}
+        unit="%"
+        sub={`${ids.length} of ${view.totalSchools} schools`}
+        drill="⌕ Regional breakdown"
+        onClick={() => onDrill({ metric: 'mentoring_week', trip, reportedSchoolIds: ids, scopeTerm })}
+      />
+    );
+  };
+
+  // While loading (or on error) the trip slots keep their card shape so the
+  // row stays four equal cards.
+  const tripSlot = (trip, ids) => (reports !== null && !error ? tripCard(trip, ids) : (
+    <KpiHeroCard label={`Mentoring Week (Trip ${trip})`} valueClass="kpi-blue" value="—" sub={error || 'Loading Mentoring Week reports…'} />
+  ));
+
+  return (
+    <>
+      <div className="card-row-4">
+        <ScoreCard tone="blue" label="Active Mentors" value={view.activeMentors} subtext={`term ${scopeTerm.replace('term', '')} (gold model)`} />
+        <KpiHeroCard label="Total Schools" valueClass="kpi-blue" value={view.totalSchools} sub={`${view.cuCount} CUs in view`} drill="⌕ Schools by region" onClick={() => onDrill({ metric: 'total_schools', scopeTerm })} />
+        {tripSlot(1, view.trip1)}
+        {tripSlot(2, view.trip2)}
+      </div>
+      {reports !== null && !error ? (
+        <MentoringWeekRegionTable
+          schools={view.schools}
+          activeByCu={view.activeByCu}
+          trip1={view.trip1}
+          trip2={view.trip2}
+          totalActive={view.activeMentors}
+        />
+      ) : null}
+    </>
+  );
+}
+
+// Region → CU → School breakdown for Mentoring Week, in one table with one
+// drill state (the LEC Observation "Region breakdown" table's look: same
+// header, Drill pill, Grand Total row; breadcrumb and ← Back as in DrillPanel).
+// Trip columns count distinct schools; "All Reported" = at least one trip.
+function MentoringWeekRegionTable({ schools, activeByCu, trip1, trip2, totalActive }) {
+  const [path, setPath] = useState([]); // [] · [region] · [region, cu]
+  const t1 = useMemo(() => new Set(trip1), [trip1]);
+  const t2 = useMemo(() => new Set(trip2), [trip2]);
+
+  const stats = (rows) => {
+    const n = rows.length;
+    const c1 = rows.filter((s) => t1.has(String(s.school_id))).length;
+    const c2 = rows.filter((s) => t2.has(String(s.school_id))).length;
+    const any = rows.filter((s) => t1.has(String(s.school_id)) || t2.has(String(s.school_id))).length;
+    return { n, c1, c2, any };
+  };
+  const activeFor = (region, cu) => [...activeByCu.entries()]
+    .filter(([key]) => key.startsWith(`${region}|`) && (cu == null || key === `${region}|${cu}`))
+    .reduce((s, [, v]) => s + v, 0);
+  const groupBy = (rows, field) => [...rows.reduce((m, s) => m.set(s[field], [...(m.get(s[field]) || []), s]), new Map()).entries()]
+    .sort(([a], [b]) => String(a).localeCompare(String(b)));
+
+  const [region, cu] = path;
+  const level = path.length === 0 ? 'region' : path.length === 1 ? 'cu' : 'school';
+  const inRegion = region ? schools.filter((s) => s.region === region) : schools;
+  const crumbs = ['All Regions', region, cu].filter(Boolean);
+  const subtitle = level === 'region' ? 'Mentoring Week reporting by region · click a region to drill into its CUs'
+    : level === 'cu' ? `CUs in ${region} · click a CU to see its schools`
+      : `Schools in ${cu} · schools with no report first`;
+
+  const PctCell = ({ x, y }) => {
+    const pct = formatPercentage1(x, y);
+    return (
+      <td style={{ padding: '.5rem .75rem' }}>
+        <ProgressCell pct={pct} />
+        <div style={{ fontSize: '.72rem', color: '#666' }}>{x} of {y} schools</div>
+      </td>
+    );
+  };
+  const statCells = (st) => (
+    <>
+      <PctCell x={st.c1} y={st.n} />
+      <PctCell x={st.c2} y={st.n} />
+      <PctCell x={st.any} y={st.n} />
+    </>
+  );
+  const tick = (on) => (on ? <span style={{ color: C.green, fontWeight: 800 }}>✓</span> : <span style={{ color: '#ccc' }}>—</span>);
+
+  let body;
+  if (level === 'school') {
+    const rows = inRegion.filter((s) => s.cu === cu)
+      .map((s) => ({ s, r1: t1.has(String(s.school_id)), r2: t2.has(String(s.school_id)) }))
+      .sort((a, b) => (Number(a.r1) + Number(a.r2)) - (Number(b.r1) + Number(b.r2)) || String(a.s.school_name).localeCompare(String(b.s.school_name)));
+    body = (
+      <table className="breakdown-table">
+        <thead>
+          <tr><th style={THWRAP}>School</th><th style={THWRAP}>Trip 1</th><th style={THWRAP}>Trip 2</th><th style={THWRAP}>Mentor</th><th style={THWRAP}>FOA</th></tr>
+        </thead>
+        <tbody>
+          {rows.map(({ s, r1, r2 }) => (
+            <tr key={s.school_id}>
+              <td style={{ fontWeight: 600 }}>{s.school_name || `School ${s.school_id}`}</td>
+              <td style={{ textAlign: 'center' }}>{tick(r1)}</td>
+              <td style={{ textAlign: 'center' }}>{tick(r2)}</td>
+              <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
+              <td style={{ color: '#555' }}>{s.foa_name || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  } else {
+    const groups = groupBy(inRegion, level === 'region' ? 'region' : 'cu');
+    const total = stats(inRegion);
+    body = (
+      <table className="breakdown-table">
+        <thead>
+          <tr>
+            <th style={THWRAP}>{level === 'region' ? 'Region' : 'Cluster Unit'}</th>
+            <th style={THWRAP}>Active Mentors</th>
+            <th style={THWRAP}>Mentoring Week (Trip 1)</th>
+            <th style={THWRAP}>Mentoring Week (Trip 2)</th>
+            <th style={THWRAP}>All Reported</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map(([name, rows]) => (
+            <tr key={name} className="clickable" onClick={() => setPath([...path, name])}>
+              <td style={{ fontWeight: 700 }}>{name}<DrillTag /></td>
+              <td style={{ textAlign: 'center' }}>{level === 'region' ? activeFor(name) : activeFor(region, name)}</td>
+              {statCells(stats(rows))}
+            </tr>
+          ))}
+          <tr style={{ background: '#f0f4ff', borderTop: '2px solid #dee2e6', fontWeight: 800 }}>
+            <td>{level === 'region' ? 'Grand Total' : `${region} Total`}</td>
+            <td style={{ textAlign: 'center' }}>{level === 'region' ? totalActive : activeFor(region)}</td>
+            {statCells(total)}
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+
+  return (
+    <Section title="Region breakdown" subtitle={subtitle}>
+      {path.length > 0 ? (
+        <div style={{ marginBottom: '.6rem' }}>
+          <div style={{ fontSize: '.85rem', marginBottom: '.5rem' }}>
+            {crumbs.map((c, i) => (
+              <span key={c}>
+                {i > 0 ? <span style={{ color: '#aaa' }}> › </span> : null}
+                <span
+                  onClick={i < crumbs.length - 1 ? () => setPath(path.slice(0, i)) : undefined}
+                  style={{ color: C.navy, fontWeight: 600, cursor: i < crumbs.length - 1 ? 'pointer' : 'default', textDecoration: i < crumbs.length - 1 ? 'underline' : 'none' }}
+                >
+                  {c}
+                </span>
+              </span>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setPath(path.slice(0, -1))}
+            style={{ background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: 6, padding: '.35rem .8rem', cursor: 'pointer', fontSize: '.8rem', fontWeight: 600, color: C.navy }}
+          >
+            ← Back
+          </button>
+        </div>
+      ) : null}
+      <div className="table-wrap">{body}</div>
+    </Section>
   );
 }
 
@@ -4379,7 +4625,7 @@ export default function NationalView({ summaryData, schoolData, year, term, onDr
       case 'lec': return <LecTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
       case 'pb': return <PbTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
       case 'quality': return <QualityTab summaryData={summaryData} schoolData={schoolData} data={data} year={year} term={term} onDrill={onDrill} />;
-      case 'mentor': return <MentorQualityTab term={term} year={year} summaryData={summaryData} />;
+      case 'mentor': return <MentorQualityTab term={term} year={year} summaryData={summaryData} schoolData={schoolData} onDrill={onDrill} />;
       case 'lmm': return <LearningMeasurementMapTab onJumpTab={setTab} summaryData={summaryData} schoolData={schoolData} year={year} />;
       default: return null;
     }

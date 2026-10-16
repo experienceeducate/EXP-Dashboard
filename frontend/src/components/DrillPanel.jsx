@@ -28,15 +28,25 @@ const METRIC_LABELS = {
   club_milestone: 'Club Milestone',
 };
 
-const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day', 'club_milestone', 'non_scholar']);
+const PCT_METRICS = new Set(['lec_delivery', 'lec_single', 'recruitment', 'pb_quality', 'pb_completion', 'observations', 'retention', 'report_timeliness', 'gm', 'community_day', 'skills_day', 'club_milestone', 'non_scholar', 'mentoring_week']);
 
 // Metrics whose region/CU values must count distinct schools from the school
 // rows rather than add up CU rows: non-scholar participation always (a CU row
 // can't say how many of its schools had any), and a club milestone under All
 // Terms (BMP runs in T2 and T3, and a few schools did both).
-const usesSchoolRows = (metric, term) => metric === 'non_scholar' || (metric === 'club_milestone' && term === 'all');
+// Mentoring Week also counts distinct schools: the master list's schools in
+// scope against the set that reported the trip (passed in on the drill).
+const usesSchoolRows = (metric, term) => metric === 'non_scholar' || metric === 'mentoring_week' || (metric === 'club_milestone' && term === 'all');
 
-function schoolRowsMetric(metric, schoolRows, milestoneKey) {
+function schoolRowsMetric(metric, schoolRows, milestoneKey, mw) {
+  if (metric === 'mentoring_week') {
+    const schools = new Set(schoolRows.map((d) => String(d.school_id)));
+    const reported = [...schools].filter((sid) => mw.reported.has(sid)).length;
+    return {
+      val: schools.size > 0 ? Math.round((reported / schools.size) * 100) : 0,
+      sub: `${reported} of ${schools.size} reported ${mw.label}`,
+    };
+  }
   if (metric === 'non_scholar') {
     const schools = schoolNonScholarStats(schoolRows);
     const withNS = schools.filter((s) => s.nsTotal > 0).length;
@@ -154,7 +164,7 @@ function evalMetric(metric, { rows, t1Rows, obsRows, schoolCount, t1SchoolCount,
 }
 
 // Region-level rows (from CU summaryData).
-function regionRows(metric, summaryData, schoolData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
+function regionRows(metric, summaryData, schoolData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField, mw) {
   const lecNums = getLECsForTerm(year, term);
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
   const t1 = summaryData.filter((d) => d.year == year && d.term === 'term1');
@@ -163,7 +173,7 @@ function regionRows(metric, summaryData, schoolData, year, term, lecNum, milesto
   const match = (d, reg) => String(d.region || '').trim().toLowerCase() === reg.trim().toLowerCase();
   if (usesSchoolRows(metric, term)) {
     const schools = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term));
-    return regions.map((reg) => ({ key: reg, name: reg, ...schoolRowsMetric(metric, schools.filter((d) => match(d, reg)), milestoneKey) }));
+    return regions.map((reg) => ({ key: reg, name: reg, ...schoolRowsMetric(metric, schools.filter((d) => match(d, reg)), milestoneKey, mw) }));
   }
   return regions.map((reg) => {
     const rd = data.filter((d) => match(d, reg));
@@ -180,7 +190,7 @@ function regionRows(metric, summaryData, schoolData, year, term, lecNum, milesto
 }
 
 // CU-level rows within a region.
-function cuRows(metric, summaryData, schoolData, year, term, region, lecNum, milestoneKey, pbTerm, milestoneNum, gmField) {
+function cuRows(metric, summaryData, schoolData, year, term, region, lecNum, milestoneKey, pbTerm, milestoneNum, gmField, mw) {
   const lecNums = getLECsForTerm(year, term);
   const inRegion = (d) => String(d.region || '').trim().toLowerCase() === String(region).trim().toLowerCase();
   const data = summaryData.filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inRegion(d));
@@ -190,7 +200,7 @@ function cuRows(metric, summaryData, schoolData, year, term, region, lecNum, mil
   const byCu = (rows, c) => rows.filter((d) => String(d.cu || '').toLowerCase() === String(c).toLowerCase());
   if (usesSchoolRows(metric, term)) {
     const schools = (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inRegion(d));
-    return cus.map((c) => ({ key: c, name: c, ...schoolRowsMetric(metric, byCu(schools, c), milestoneKey) }));
+    return cus.map((c) => ({ key: c, name: c, ...schoolRowsMetric(metric, byCu(schools, c), milestoneKey, mw) }));
   }
   return cus.map((c) => {
     const rd = byCu(data, c);
@@ -337,6 +347,11 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
   // All Terms — so the drill matches the number that was clicked.
   const term = drill.scopeTerm || selectedTerm;
   const { metric, lecNum, milestoneKey, pbTerm, milestoneNum, gmField, gmLabel } = drill;
+  // Mentoring Week: which schools reported the trip (from the drill that was
+  // clicked), and its label for the title and Detail column.
+  const mw = metric === 'mentoring_week'
+    ? { reported: new Set((drill.reportedSchoolIds || []).map(String)), label: `Mentoring Week (Trip ${drill.trip})` }
+    : null;
   // Region → CU → School for every metric here (the Mentor Quality tab has its
   // own separate region → CU → mentor drill, not this panel). GM and club
   // milestones show a per-school ✓/✗ against a single field; Mentor Observation
@@ -497,7 +512,8 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
     );
   }
 
-  const label = metric === 'lec_single' ? `LEC ${lecNum || ''}`
+  const label = mw ? mw.label
+    : metric === 'lec_single' ? `LEC ${lecNum || ''}`
     : metric === 'club_milestone' ? (drill.milestoneLabel || METRIC_LABELS.club_milestone)
       : metric === 'gm' ? (gmLabel || METRIC_LABELS.gm)
         : METRIC_LABELS[metric] || metric;
@@ -507,10 +523,10 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
   let rows;
   let colHeader;
   if (level === 'region') {
-    rows = regionRows(metric, summaryData, schoolData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
+    rows = regionRows(metric, summaryData, schoolData, year, term, lecNum, milestoneKey, pbTerm, milestoneNum, gmField, mw);
     colHeader = 'Region';
   } else if (level === 'cu') {
-    rows = cuRows(metric, summaryData, schoolData, year, term, stack[0], lecNum, milestoneKey, pbTerm, milestoneNum, gmField);
+    rows = cuRows(metric, summaryData, schoolData, year, term, stack[0], lecNum, milestoneKey, pbTerm, milestoneNum, gmField, mw);
     colHeader = 'Cluster Unit';
   } else if (level === 'mentor') {
     rows = mentorObsRows(schoolData, year, term, stack[1]);
@@ -518,6 +534,21 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
   } else if (isBooleanSchoolField) {
     const fieldKey = metric === 'gm' ? (gmField || 'schools_with_gm') : milestoneKey;
     rows = schoolFieldRows(schoolData, year, term, stack[1], fieldKey).map((r) => ({ ...r, val: r.held ? '✓' : '✗' }));
+    colHeader = 'School';
+  } else if (mw) {
+    // Every school in the CU from the master list: 100% if it reported the
+    // trip, 0% if not — not-yet-reported first, then by name.
+    const inCu = (d) => String(d.cu || '').toLowerCase() === String(stack[1]).toLowerCase();
+    const bySchool = new Map();
+    (schoolData || []).filter((d) => d.year == year && (term === 'all' ? true : d.term === term) && inCu(d))
+      .forEach((d) => { if (!bySchool.has(String(d.school_id))) bySchool.set(String(d.school_id), d); });
+    rows = [...bySchool.values()].map((d) => ({
+      key: String(d.school_id),
+      name: d.school_name || `School ${d.school_id}`,
+      val: mw.reported.has(String(d.school_id)) ? 100 : 0,
+      mentorName: d.mentor_name || '—',
+      foaName: d.foa_name || '—',
+    })).sort((a, b) => a.val - b.val || a.name.localeCompare(b.name));
     colHeader = 'School';
   } else {
     rows = schoolAggRows(metric, schoolData, year, term, stack[1], lecNum, pbTerm, milestoneNum);
@@ -578,7 +609,7 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
                   <>
                     <th>Mentor</th>
                     <th>FOA</th>
-                    <th>School Type</th>
+                    {mw ? null : <th>School Type</th>}
                   </>
                 ) : (
                   <th>Detail</th>
@@ -587,7 +618,7 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
             </thead>
             <tbody>
               {rows.length === 0 ? (
-                <tr><td colSpan={level === 'school' ? 5 : 3} style={{ color: '#888', padding: '1rem' }}>No data at this level.</td></tr>
+                <tr><td colSpan={level === 'school' ? (mw ? 4 : 5) : 3} style={{ color: '#888', padding: '1rem' }}>No data at this level.</td></tr>
               ) : rows.map((r) => {
                 const clickable = level !== 'school' && level !== 'mentor';
                 const isBooleanRow = level === 'school' && isBooleanSchoolField;
@@ -600,7 +631,7 @@ export default function DrillPanel({ drill, summaryData, schoolData, year, term:
                       <>
                         <td style={{ color: '#555' }}>{r.mentorName}</td>
                         <td style={{ color: '#555' }}>{r.foaName}</td>
-                        <td style={{ color: '#555' }}>{r.schoolType}</td>
+                        {mw ? null : <td style={{ color: '#555' }}>{r.schoolType}</td>}
                       </>
                     ) : (
                       <td style={{ color: '#555' }}>{r.sub}</td>
