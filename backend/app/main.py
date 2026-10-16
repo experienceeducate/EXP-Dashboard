@@ -16,7 +16,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import auth
 from app.core import access
 from app.core.config import settings
-from app.routers import access_admin, admin, analytics, cu, elab, ensight, health, mentor_quality, overview, tasks
+from app.routers import access_admin, admin, analytics, cu, elab, ensight, health, mentor_quality, mentoring_week, overview, tasks
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(access_admin.router)
     app.include_router(tasks.router)
     app.include_router(elab.router)
+    app.include_router(mentoring_week.router)
     return app
 
 

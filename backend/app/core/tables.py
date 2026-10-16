@@ -36,3 +36,10 @@ GROUP_MENTORING_OBSERVATIONS = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_2026_g
 # column of its own — "active mentors" comes from DASHBOARD_MODEL's
 # total_active_mentors (see routers/elab.py).
 ELAB_ACTIVITY = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_elab_mentor_activity_report`"
+
+# ── Mentoring Week (mentor school visits) ───────────────────────────────────
+# The common mentor activity report — the silver table mentor reports land in.
+# Mentoring Week rows have report_type 'Mentoring_week' and the trip in
+# `mentoring_week_category` ("Mentoring week - Trip 1" / "- Trip 2"). See
+# routers/mentoring_week.py.
+MENTOR_ACTIVITY_REPORT = f"`{settings.BQ_PROJECT_ID}.silver_exp.exp_common_mentor_activity_report`"

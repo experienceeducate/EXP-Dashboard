@@ -368,6 +368,15 @@ export async function fetchElabSummaryByCu(term = 'term3') {
   return request(`/api/elab/summary-by-cu?term=${encodeURIComponent(term)}`);
 }
 
+// GET /api/mentoring-week/schools?term=term3 → { status, data: [{ school_id,
+// year, term, trip1, trip2 }] } — one row per school/year/term with a
+// Mentoring Week report; read live (no server cache). Term is sent the same
+// way as every Mentor Quality call (omitted for All Terms); the caller
+// applies the year selector to each row's year.
+export async function fetchMentoringWeekSchools(term) {
+  return request(`/api/mentoring-week/schools${mentorQualityQuery(term)}`);
+}
+
 // GET /api/elab/mentors?cu=NAME&term=term3 → { status, term, expected_sessions,
 // data: [{ mentor_id, mentor_name, gender, role, sessions_completed,
 // sessions_in_progress, completion_pct, sessions: [...] }] }

@@ -78,6 +78,14 @@ export const METRIC_DEFINITIONS = {
     threshold: '≥ 80% = On Track (Green) · 60–79% = Near (Amber) · < 60% = Behind (Red)',
     note: 'LEC delivery resets each term — T2 LECs are numbered 6–14. A school is counted as "delivered" for LEC n if schools_with_lecN > 0 for its CU row.',
   },
+  mentoring_week: {
+    label: 'Mentoring Week (Trip 1 / Trip 2)',
+    what: 'A school counts as reported when at least one Mentoring Week report with session "Mentoring week - Trip 1" (or Trip 2) is submitted for it. Each school is counted once.',
+    formula: 'Percentage = schools reported ÷ schools in scope × 100',
+    source: 'silver_exp.exp_common_mentor_activity_report — report_type "Mentoring_week", mentoring_week_category (selected year and term); schools joined on school_id to the gold school list (region, CU, mentor, FOA)',
+    threshold: '≥ 80% = On Track · 60–79% = Near · < 60% = Behind',
+    note: 'Duplicate reports for the same school and trip count once. A school can report both trips and then counts once in each.',
+  },
   lec_single: {
     label: 'Individual LEC Delivery',
     what: 'Delivery rate for a single LEC session (e.g. LEC 6) across all schools — what % of schools have delivered this specific session.',

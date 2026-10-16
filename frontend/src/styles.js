@@ -103,6 +103,11 @@ body { margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; backgro
 .kpi-hero-sub { font-size:11.5px; color:#C8DCE8; line-height:1.5; margin-top:auto; padding-top:4px; }
 .kpi-hero-sub strong { color:#fff; font-weight:700; }
 .kpi-hero-drill { font-size:10px; color:#7AAFC4; font-weight:500; margin-top:6px; display:flex; align-items:center; gap:3px; border-top:1px solid rgba(255,255,255,.08); padding-top:6px; }
+/* One row of equal-width, equal-height cards (Mentoring Week): 4 → 2 → 1 columns. */
+.card-row-4 { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; align-items:stretch; margin-bottom:1.5rem; }
+.card-row-4 > * { height:100%; margin:0; box-sizing:border-box; }
+@media (max-width:1000px) { .card-row-4 { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:560px) { .card-row-4 { grid-template-columns:1fr; } }
 
 /* Metric tiles */
 .metric-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:1.25rem; }
