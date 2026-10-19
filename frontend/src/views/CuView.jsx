@@ -1072,17 +1072,31 @@ function MilestoneReporting({ data, term }) {
 }
 
 // ── Club Milestones & BMP per school (✓/✗) ───────────────────────────────────
+// Club meetings follow the term's own numbers (CM1-2 / CM3-4 / CM5-6, all six
+// under All Terms); BMP shows for Term 3 only. Each milestone is read only from
+// the rows of the term that runs it — the gold model also files a few later
+// meetings under CM1-4 on Term 2/3 rows. Under All Terms a school has one row
+// per term, so it is ✓ if any of its rows for that term has the milestone.
+const TERMS = ['term1', 'term2', 'term3'];
+
 function ClubMilestonesBySchool({ data, term }) {
-  const all = [
-    { key: 'schools_with_club_meeting_1', label: 'CM 1', terms: ['term1', 'all'] },
-    { key: 'schools_with_club_meeting_2', label: 'CM 2', terms: ['term1', 'all'] },
-    { key: 'schools_with_club_meeting_3', label: 'CM 3', terms: ['term2', 'all'] },
-    { key: 'schools_with_club_meeting_4', label: 'CM 4', terms: ['term2', 'all'] },
-    { key: 'schools_with_bmp', label: 'BMP', terms: ['term2', 'all'] },
+  const active = [
+    ...getClubMeetingsInScope(term).map((c) => ({
+      key: `schools_with_club_meeting_${c}`,
+      label: `CM ${c}`,
+      term: TERMS.find((t) => getClubMeetingsInScope(t).includes(c)),
+    })),
+    ...(term === 'term3' ? [{ key: 'schools_with_bmp', label: 'BMP', term: 'term3' }] : []),
   ];
-  const active = all.filter((m) => m.terms.includes(term));
-  if (active.length === 0) return <Placeholder label="No club milestones for the selected term." />;
-  const schools = dedupSchools(data);
+  const bySchool = new Map();
+  data.forEach((r) => {
+    const sid = String(r.school_id);
+    if (!bySchool.has(sid)) bySchool.set(sid, { ...r, done: {} });
+    const s = bySchool.get(sid);
+    active.forEach((m) => { if (r.term === m.term && N(r[m.key]) > 0) s.done[m.key] = true; });
+  });
+  const schools = [...bySchool.values()];
+  if (!schools.some((s) => active.some((m) => s.done[m.key]))) return <Placeholder label="No data for this term yet." />;
   const tot = schools.length;
   const chk = (v) => <span style={{ color: v ? C.green : C.red }}>{v ? '✓' : '✗'}</span>;
   return (
@@ -1098,7 +1112,7 @@ function ClubMilestonesBySchool({ data, term }) {
         </thead>
         <tbody>
           {active.map((m) => {
-            const cnt = schools.filter((s) => N(s[m.key]) > 0).length;
+            const cnt = schools.filter((s) => s.done[m.key]).length;
             const pct = formatPercentage1(cnt, tot);
             const rc = cnt > 0 ? ragColor(pct) : '#ccc';
             return (
@@ -1122,7 +1136,7 @@ function ClubMilestonesBySchool({ data, term }) {
               <tr key={s.school_id}>
                 <td style={{ fontWeight: 600 }}>{s.school_name || '—'}</td>
                 <td style={{ color: '#555' }}>{s.mentor_name || '—'}</td>
-                {active.map((m) => (<td key={m.key} className="center">{chk(N(s[m.key]))}</td>))}
+                {active.map((m) => (<td key={m.key} className="center">{chk(s.done[m.key])}</td>))}
               </tr>
             ))}
           </tbody>
