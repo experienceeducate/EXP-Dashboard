@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from jose import jwt
+import jwt
 
 from app.auth import create_token
 from app.core import access_runtime
@@ -66,7 +66,7 @@ def test_token_for_unknown_session_is_refused(client):
 
 def test_alg_none_token_is_refused(client, make_token):
     good = make_token("admin@experienceeducate.org")
-    claims = jwt.get_unverified_claims(good)
+    claims = jwt.decode(good, options={"verify_signature": False})
     import base64
     import json
 
