@@ -6,11 +6,11 @@ google-auth==2.40.3
 # advisories with no fixed release (PYSEC-2026-4298, PYSEC-2026-1325). Same
 # library as the EXP Training Toolkit. HS256 only (security review DATA-894).
 PyJWT==2.15.0
-authlib==1.6.5
+authlib==1.9.1
 httpx==0.28.1
 cachetools==5.5.2
 pydantic-settings==2.11.0
-python-dotenv==1.1.1
+python-dotenv==1.2.2
 itsdangerous==2.2.0
 openai==1.59.6
 # E!nsight's export (app/core/ensight_export.py): a PowerPoint deck or Word
