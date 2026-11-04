@@ -4,6 +4,47 @@ Short ADRs capturing the "why". Newest first.
 
 ---
 
+## ADR-011 — Individual guest access replaces the shared dashboard password
+**Status:** Accepted · **Date:** 2026-11-04 · **Supersedes:** ADR-004
+
+**Context.** ADR-004's shared `DASHBOARD_PASSWORD` let anyone who knew it sign
+in as *any* listed email, admins and access managers included (security review
+DATA-894). Its only real job was letting a few people without an
+`@experienceeducate.org` Google account in. Separately, 8-hour JWTs that
+carried the access scope could not be revoked, and the OAuth callback put the
+JWT itself in the redirect URL (`#token=`).
+
+**Decision.**
+- **Staff** sign in with Google SSO only. The callback redirects to
+  `FRONTEND_URL/#login_code=<code>` (60 s, single use); the SPA strips the hash
+  and exchanges the code (`POST /api/auth/session/exchange`). No token ever
+  appears in a URL.
+- **Guests** get individual, time-limited access: request (or invite) →
+  an access manager approves with exactly one region or CU and an end date
+  (90 days default) → the exact email is whitelisted (a separate control) →
+  the guest requests a single-use 15-minute magic link. The SPA redeems
+  `#magic=` only when the guest presses "Sign in" (email scanners prefetch
+  links). Managed in Admin → Guest access; every change is an audited event.
+- **Server-side sessions** for both: a 15-minute access JWT bound to a session
+  id that is re-validated on every request (revocation is immediate), a
+  rotating refresh token (reuse after the grace window revokes the session),
+  a 60-minute idle timeout and an absolute lifetime. The SPA keeps both tokens
+  in `sessionStorage`, refreshes proactively and on 401 via one in-flight
+  request, and `POST /api/auth/logout` revokes the session.
+- `POST /api/auth/login` and `DASHBOARD_PASSWORD` are removed.
+- Alongside: the "National view only" tier (any domain colleague not on a
+  list) keeps national aggregates but loses person/school drill-downs and task
+  updates (403); the SPA hides those entry points.
+
+**Consequences.** Non-domain users must go through the guest flow (one scope
+each, with an expiry) instead of sharing a secret. Guest sign-in depends on
+outbound email (`MAIL_BACKEND`); when it's unset the login screen hides the
+guest options and the admin panel warns. Existing 8-hour tokens are refused
+once (one-time sign-out on deploy). Tokens remain in `sessionStorage` (not
+httpOnly cookies) — accepted, given the CSP and 15-minute access lifetime.
+
+---
+
 ## ADR-010 — E!nsight: dashboard-first Q&A, generated SQL as a guardrailed fallback
 **Status:** Accepted · **Date:** 2026-09-23
 
@@ -405,7 +446,7 @@ entries. Unknown emails resolve to no access → 403.
 ---
 
 ## ADR-004 — Email + shared password login, alongside Google SSO
-**Status:** Accepted · **Date:** 2026-07-16
+**Status:** Superseded by ADR-011 · **Date:** 2026-07-16
 
 **Decision.** Two sign-in paths, one JWT scheme: (a) email + shared
 `DASHBOARD_PASSWORD`, and (b) Google SSO restricted to `@experienceeducate.org`.

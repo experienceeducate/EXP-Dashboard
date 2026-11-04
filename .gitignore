@@ -49,3 +49,13 @@ SETUP_CHEATSHEET.md
 /Group+mentoring++observation++form+2026 (1).xlsx
 /SkillsDay_Observation_Form_2026+t2 (1).xlsx
 ~$*.xlsx
+
+# Claude Code per-machine settings (hooks are wired here)
+.claude/settings.local.json
+
+# Local dev sign-in mail (MAIL_BACKEND=file)
+outbox/
+
+# gitleaks local outputs (docs/security/SECRETS_RUNBOOK.md) — never commit
+gitleaks-coverage/
+gitleaks-history.json

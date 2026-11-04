@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DASHBOARD_VERSION, getTermLabel } from './lib/config.js';
 import * as api from './lib/api.js';
-import { normalizeAccess, visibleViewTabs, defaultView, scopedRegions, scopedCUs } from './lib/access.js';
+import { normalizeAccess, visibleViewTabs, defaultView, scopedRegions, scopedCUs, PersonLevelContext } from './lib/access.js';
 import { getTermLabelShort } from './lib/format.js';
 import LoginScreen from './components/LoginScreen.jsx';
 import LoadingOverlay from './components/LoadingOverlay.jsx';
@@ -22,14 +22,24 @@ const SSO_ERRORS = {
   oauth_failed: 'Google sign-in failed. Please try again.',
 };
 
-// Consume the OAuth redirect fragment (#token / #error) exactly once at module
-// load — before React renders. Token storage and hash-stripping are side effects
-// and must NOT run inside a component render (render must stay pure; StrictMode
+// Consume the auth fragment (#login_code / #magic / #error) exactly once at
+// module load — before React renders. Hash-stripping is a side effect and must
+// NOT run inside a component render (render must stay pure; StrictMode
 // double-invokes initializers, and concurrent renders can be discarded).
-const INITIAL_SSO_ERROR = (() => {
-  const { error } = api.consumeAuthRedirect();
-  return error ? SSO_ERRORS[error] || 'Sign-in failed. Please try again.' : '';
-})();
+// Tokens never appear in URLs: Google SSO hands back a 60-second one-time
+// code that we exchange for a session; a guest's emailed #magic token is kept
+// in memory only and redeemed when they press "Sign in" (never on load —
+// email scanners prefetch links).
+const INITIAL_REDIRECT = api.consumeAuthRedirect();
+const INITIAL_SSO_ERROR = INITIAL_REDIRECT.error ? SSO_ERRORS[INITIAL_REDIRECT.error] || 'Sign-in failed. Please try again.' : '';
+let pendingLoginCode = INITIAL_REDIRECT.loginCode || null; // consumed once (StrictMode-safe)
+api.resumeSession();
+
+function formatDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
 
 function ExportTabsModal({ tabs, selected, onToggle, onSelectAll, onDeselectAll, onCancel, onConfirm }) {
   return (
@@ -101,7 +111,8 @@ export default function App() {
   const [authed, setAuthed] = useState(() => !!api.getToken());
   const [user, setUser] = useState(null);
   const [loginError, setLoginError] = useState(INITIAL_SSO_ERROR);
-  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginBusy, setLoginBusy] = useState(() => !!pendingLoginCode);
+  const [magicToken, setMagicToken] = useState(() => INITIAL_REDIRECT.magic || null);
 
   const [loading, setLoading] = useState(false);
   const [loadMsg, setLoadMsg] = useState('Loading…');
@@ -162,11 +173,7 @@ export default function App() {
       }
       setLoadPct(100);
     } catch (e) {
-      if (e.status === 401) {
-        api.clearToken();
-        setAuthed(false);
-        return;
-      }
+      if (e.status === 401) return; // session ended — api.onSessionEnded signs out
       setDataError(e.message || 'Failed to load data.');
     } finally {
       setLoading(false);
@@ -177,8 +184,49 @@ export default function App() {
     if (authed) loadData();
   }, [authed, loadData]);
 
-  // After a Google SSO redirect we have a token but no in-memory user object
-  // (handleLogin never ran). Hydrate it from /api/auth/me.
+  // ── Session ───────────────────────────────────────────────────────────────
+  const resetSignedOut = useCallback(() => {
+    setAuthed(false);
+    setUser(null);
+    setSummaryData([]);
+    setSchoolData([]);
+    setAccess(null);
+    setEnsightAvailable(false);
+    setAdminAvailable(false);
+  }, []);
+
+  // A refresh that fails (session revoked, idle, expired, guest access ended)
+  // drops back to the login screen from wherever it happened.
+  useEffect(() => {
+    api.onSessionEnded(() => {
+      resetSignedOut();
+      setLoginError('Your session has ended. Please sign in again.');
+    });
+    return () => api.onSessionEnded(null);
+  }, [resetSignedOut]);
+
+  // Google SSO came back with #login_code: exchange it for a session, once.
+  useEffect(() => {
+    const code = pendingLoginCode;
+    if (!code) return;
+    pendingLoginCode = null;
+    api
+      .exchangeLoginCode(code)
+      .then(() => {
+        // user stays null: the /api/auth/me effect below hydrates it with the
+        // session fields (authKind, sessionExpiresAt, accessExpiresAt).
+        setLoginError('');
+        setAuthed(true);
+      })
+      .catch((e) => {
+        setLoginError(e.status === 400 || e.status === 401
+          ? 'Google sign-in could not be completed. Please try again.'
+          : e.message || 'Sign-in failed. Please try again.');
+      })
+      .finally(() => setLoginBusy(false));
+  }, []);
+
+  // A user object without a session (page reload) is hydrated from /api/auth/me.
   useEffect(() => {
     if (!authed || user) return;
     let active = true;
@@ -271,10 +319,14 @@ export default function App() {
     };
   }, [authed, sessionId]);
 
+  // National-view-only users get national aggregates only: per-person/school
+  // drill-downs and task-status changes 403 for them (backend person_level_user).
+  const personLevel = !(access && access.nationalOnly);
+
   // Fetch CU school rows when a CU is selected in CU view.
   useEffect(() => {
     let active = true;
-    if (view === 'cu' && cu) {
+    if (view === 'cu' && cu && personLevel) {
       api
         .fetchCU(cu)
         .then((res) => {
@@ -289,33 +341,31 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [view, cu]);
+  }, [view, cu, personLevel]);
 
   // ── Auth handlers ────────────────────────────────────────────────────────
-  const handleLogin = async (email, password) => {
+  // Guest pressed "Sign in" on the magic-link landing card.
+  const handleRedeemMagic = async () => {
+    if (!magicToken) return;
     setLoginBusy(true);
     setLoginError('');
     try {
-      const res = await api.login(email, password);
-      setUser(res.user || { email });
-      setAuthed(true);
+      await api.redeemMagicLink(magicToken);
+      setMagicToken(null);
+      setAuthed(true); // user hydrates from /api/auth/me (incl. accessExpiresAt)
     } catch (e) {
-      setLoginError(e.status === 401 ? 'Access denied. Please check your email and password.' : e.message);
+      setLoginError(e.status === 400 || e.status === 401
+        ? e.message || 'This sign-in link is invalid or has expired.'
+        : e.message || 'Sign-in failed. Please try again.');
     } finally {
       setLoginBusy(false);
     }
   };
 
-  const handleLogout = () => {
-    api.clearToken();
-    setAuthed(false);
-    setUser(null);
+  const handleLogout = async () => {
+    await api.logout(); // revokes the server-side session, then clears storage
+    resetSignedOut();
     setLoginError('');
-    setSummaryData([]);
-    setSchoolData([]);
-    setAccess(null);
-    setEnsightAvailable(false);
-    setAdminAvailable(false);
   };
 
   const handleRefresh = () => loadData();
@@ -377,15 +427,21 @@ export default function App() {
   );
 
   const userEmail = (user && user.email) || (access && access.email) || '';
+  const guestUntil = user && user.authKind === 'guest' ? formatDate(user.accessExpiresAt) : '';
 
   // ── Render ─────────────────────────────────────────────────────────────────
   if (!authed) {
     return (
       <LoginScreen
-        onLogin={handleLogin}
         error={loginError}
         busy={loginBusy}
         onDismissError={() => setLoginError('')}
+        magicToken={magicToken}
+        onRedeemMagic={handleRedeemMagic}
+        onDiscardMagic={() => {
+          setMagicToken(null);
+          setLoginError('');
+        }}
       />
     );
   }
@@ -469,7 +525,12 @@ export default function App() {
                 ) : null}
               </>
             ) : null}
-            <span id="userInfo">{userEmail}</span>
+            <span id="userInfo">
+              {userEmail}
+              {guestUntil ? (
+                <span style={{ display: 'block', fontSize: '.7rem', opacity: 0.8 }}>Guest access · ends {guestUntil}</span>
+              ) : null}
+            </span>
             <button className="btn" onClick={handleExport}>⬇ Export</button>
             <button className="btn" onClick={handleRefresh} title="Refresh">🔄</button>
             <button className="btn primary" onClick={handleLogout}>Logout</button>
@@ -484,6 +545,7 @@ export default function App() {
         </nav>
       </header>
 
+      <PersonLevelContext.Provider value={personLevel}>
       <main className="content">
         {dataError ? <div className="login-error" style={{ maxWidth: 600 }}>{dataError}</div> : null}
         {view === 'national' ? (
@@ -504,7 +566,7 @@ export default function App() {
             year={year}
             term={term}
             region={region}
-            onSelectCU={(name) => { setView('cu'); setCu(name); }}
+            onSelectCU={personLevel ? (name) => { setView('cu'); setCu(name); } : null}
             onDrill={setDrill}
           />
         ) : null}
@@ -525,6 +587,7 @@ export default function App() {
         {view === 'ensight' ? <EnsightView term={term} /> : null}
         {view === 'admin' ? <AdminView /> : null}
       </main>
+      </PersonLevelContext.Provider>
 
       {drill ? (
         <DrillPanel drill={drill} summaryData={summaryData} schoolData={schoolData} year={year} term={term} onClose={() => setDrill(null)} />

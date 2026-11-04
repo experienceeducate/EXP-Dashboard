@@ -11,7 +11,7 @@ FastAPI backend + React 19 / Vite SPA, deployed to DigitalOcean Kubernetes.
 BigQuery (gold_exp.exp_ai_dashboard_model)
     ↓  service-account key (BigQuery Data Viewer + Job User)
 FastAPI backend (Python 3.14)  → single replica / single process
-    │  /api/auth/*      email+password or Google SSO → JWT (carries access scope)
+    │  /api/auth/*      Google SSO (staff) / magic links (guests) → server-side session
     │  /api/overview/*  CU + school rows, row-level access-scoped
     │  /api/cu          CU drilldown (school rows)
     │  every /api/* needs a valid JWT + the X-Exp-Client header
@@ -73,25 +73,44 @@ on `educate-data-warehouse-test`. Setting `GOOGLE_SERVICE_ACCOUNT_KEY` to a JSON
 path still works and still takes precedence; that is how the cluster runs.
 
 ### Required `backend/.env`
-`BQ_PROJECT_ID` / `BQ_DATASET` / `BQ_TABLE`, `JWT_SECRET`, `DASHBOARD_PASSWORD`,
-the client-header token, and `FRONTEND_URL`
-(`GOOGLE_SERVICE_ACCOUNT_KEY` is optional — see above). Google OAuth vars are optional locally (email+password works
-without them). See `backend/.env.example`.
+`BQ_PROJECT_ID` / `BQ_DATASET` / `BQ_TABLE`, `JWT_SECRET`, the client-header
+token, and `FRONTEND_URL` (`GOOGLE_SERVICE_ACCOUNT_KEY` is optional — see above).
+There is no shared password any more: sign in locally with Google SSO
+(`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, see below) or as a guest via a
+magic link — set `MAIL_BACKEND=file` + `MAIL_OUTBOX_DIR` to have links written to
+disk instead of emailed, and `ACCESS_EVENTS_IN_MEMORY=true` to keep sessions in
+memory instead of BigQuery. See `backend/.env.example`.
 
 ## Auth & access model
-One JWT scheme (HS256, 8h, `sessionStorage`, `Authorization: Bearer`). The UI
-offers **Google SSO** as the primary sign-in; the password path is retained as a
-hidden break-glass fallback (revealed by a link on the login screen):
-- **Google SSO** (`@experienceeducate.org`) → `/api/auth/google/login` → Google →
-  `/api/auth/google/callback` → redirects to `FRONTEND_URL/#token=<jwt>` (or
-  `/#error=<code>` on failure); the SPA reads the fragment and stores the token.
-- **Email + shared password** (fallback) → `POST /api/auth/login`. Also the only
-  path for the few non-`@experienceeducate.org` FOA accounts in `ACCESS_CONFIG`,
-  which SSO's domain check rejects.
+Every sign-in creates a **server-side session** (`core/guest_access.py`): a
+15-minute access JWT (`Authorization: Bearer`) bound to the session id and
+re-validated on every request (so revocation is immediate), plus a rotating
+refresh token, a 60-minute idle timeout and an absolute lifetime (8h). The SPA
+keeps both tokens in `sessionStorage`, refreshes ~1 minute before expiry and on
+any 401 (`POST /api/auth/session/refresh`), and `POST /api/auth/logout` revokes
+the session. Tokens never appear in URLs. There is **no shared password** (the
+old `POST /api/auth/login` is gone — see ADR-011 in `docs/DECISION.md`).
+- **Staff — Google SSO** (`@experienceeducate.org`) → `/api/auth/google/login` →
+  Google → `/api/auth/google/callback` → redirects to
+  `FRONTEND_URL/#login_code=<one-time code>` (60 s, single use; or `/#error=<code>`).
+  The SPA strips the fragment and exchanges the code via
+  `POST /api/auth/session/exchange`.
+- **Guests — magic links.** A guest (partner, personal address) requests access
+  on the login screen (`POST /api/auth/request-access`) or is invited; an access
+  manager approves them in **Admin → Guest access** with exactly one region or
+  CU and an end date (90 days by default), and whitelists their exact email (a
+  separate control). They then request a single-use, 15-minute link
+  (`POST /api/auth/magic-link`) that lands on `FRONTEND_URL/#magic=<token>`; the
+  SPA only redeems it (`POST /api/auth/magic-link/redeem`) when the guest presses
+  **Sign in** — never on load, since email scanners prefetch links.
+  `GET /api/auth/config` tells the login screen which options are available.
 
-Both resolve the email to an **access scope** (`national` / `regional` / `cu`)
-via `ACCESS_CONFIG`, embedded in the JWT. **Row-level filtering is server-side**
-(`core/access.py` + `core/sql.py::access_clause`). Unknown emails get no access.
+Staff emails resolve to an **access scope** (`national` / `regional` / `cu`)
+via `ACCESS_CONFIG`, re-resolved on every request; a guest's scope is the one
+region/CU they were approved for. **Row-level filtering is server-side**
+(`core/access.py` + `core/sql.py::access_clause`). Unknown emails get no access;
+other `@experienceeducate.org` colleagues get *National view only* (national
+aggregates, no person/school drill-downs or task updates).
 
 ### Google OAuth setup (one-time)
 SSO needs a Google OAuth 2.0 client. In the Google Cloud console for the project:

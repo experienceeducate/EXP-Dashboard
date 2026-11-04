@@ -9,6 +9,13 @@ Two formats, two different jobs:
     the body: a fuller Insight, the full evidence table, the query that
     produced it, and any caveats.
 
+**Only what the server produced can be exported.** ``/ask`` signs each SQL
+source's text (``sig``) and the answer text (``answer_sig``) with an HMAC
+keyed off ``JWT_SECRET``; ``/export`` refuses any item whose signatures don't
+verify (see ``sign_ask_payload``/``verify_export_item`` below), so a client
+can't make the server run SQL it never generated, or brand an answer it
+never gave.
+
 **Evidence is re-derived, never trusted from the client.** The browser sends
 the questions and which sources each answer used — not the numbers. This
 module re-calls the endpoints (``ensight_calling.call_endpoint``, which
@@ -25,12 +32,16 @@ hex values as `frontend/src/lib/config.js`'s `TOKENS`/`RAG`.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import io
+import json
 import re
 from datetime import date
 
 from app.core import ensight_guardrails
 from app.core.access import UserAccess
+from app.core.config import settings
 from app.core.ensight_calling import EndpointCallError, call_endpoint
 from app.core.ensight_llm import EnsightLLMError, chat_text
 
@@ -119,6 +130,54 @@ def _table_block(text: str) -> tuple[str, list[list[str]]]:
         else:
             prose.append(line)
     return "\n".join(prose).strip(), rows
+
+
+# ─── Export signatures ──────────────────────────────────────────────────────
+# Distinct label so this key is never the JWT signing key itself.
+_SIGNING_LABEL = b"ensight-export-v1"
+
+
+def _signing_key() -> bytes:
+    return hmac.new(settings.JWT_SECRET.encode("utf-8"), _SIGNING_LABEL, hashlib.sha256).digest()
+
+
+def _sign(purpose: str, email: str, text: str) -> str:
+    """HMAC-SHA256 over (purpose, user, text). ``purpose`` separates an answer
+    signature from a SQL one (an answer the model was coaxed into writing as
+    SQL must not become runnable SQL); binding the user keeps one person's
+    signed payload from being replayed by another."""
+    message = json.dumps([purpose, (email or "").lower(), text or ""], ensure_ascii=False).encode("utf-8")
+    return hmac.new(_signing_key(), message, hashlib.sha256).hexdigest()
+
+
+def _verify(purpose: str, email: str, text: str, sig) -> bool:
+    if not isinstance(sig, str) or not sig:
+        return False
+    return hmac.compare_digest(_sign(purpose, email, text), sig)
+
+
+def sign_ask_payload(answer: str, sources: list, email: str) -> tuple[str, list[dict]]:
+    """``(answer_sig, sources)`` for an /ask response: copies of the sources
+    with a ``sig`` added to every SQL source."""
+    signed = []
+    for source in sources or []:
+        source = dict(source)
+        if source.get("kind") == "sql":
+            source["sig"] = _sign("sql", email, str(source.get("sql") or ""))
+        signed.append(source)
+    return _sign("answer", email, answer or ""), signed
+
+
+def verify_export_item(item: dict, email: str) -> bool:
+    """True only if the answer text and every SQL source carry valid
+    signatures. Endpoint sources need none: they're re-run under the caller's
+    own access scope, against the catalog only (call_endpoint)."""
+    if not _verify("answer", email, item.get("answer") or "", item.get("answer_sig")):
+        return False
+    for source in item.get("sources") or []:
+        if source.get("kind") == "sql" and not _verify("sql", email, str(source.get("sql") or ""), source.get("sig")):
+            return False
+    return True
 
 
 # ─── Evidence + expansion ───────────────────────────────────────────────────

@@ -46,7 +46,8 @@ Update this as the project evolves. It captures what isn't obvious from the code
 The React app reproduces the core of `legacy/dashboard-v1.html`. What's built vs.
 deferred as of the rewrite:
 
-**Built:** design system + tokens; login (email+password); header with all
+**Built:** design system + tokens; login (Google SSO for staff, magic links for
+approved guests — the original email+password login was removed); header with all
 filters; access-driven view tabs; the full `lib/` metric formulas; National view
 all 4 inner tabs' **primary** sections (6 KPI heroes, term comparison, scholar
 funnel, activity completion, Skills-Lab heatmap, PB Quality by milestone with
@@ -87,8 +88,25 @@ Single replica per service; **pod restart is the recovery path.**
   `database.run_query(...)` via the module object. A by-value
   `from app.core.database import run_query` would bypass the test monkeypatch —
   don't do it.
-- **Config fails fast.** Missing `JWT_SECRET` / `DASHBOARD_PASSWORD` raises at
-  import → crash-loop with a clear message.
+- **Config fails fast.** Missing `JWT_SECRET` raises at import → crash-loop
+  with a clear message. (`DASHBOARD_PASSWORD` is gone with the shared-password
+  login.) Guest sign-in links need `MAIL_BACKEND` configured; without it
+  `GET /api/auth/config` reports `guest_sign_in_available: false` and the login
+  screen hides the guest options — staff Google sign-in is unaffected.
+- **Sessions are server-side** (`core/guest_access.py` via
+  `core/access_runtime.py`). The access JWT lives 15 minutes and carries only
+  the session id; `current_user()` validates the session and re-resolves scope
+  on every request. The SPA (`frontend/src/lib/api.js`) owns refresh: one
+  in-flight `POST /api/auth/session/refresh`, rotating refresh tokens in
+  `sessionStorage`, retry-once on 401, 409 = rotated by another tab. Never put a
+  token in a URL — the OAuth callback hands back a one-time `#login_code`, and a
+  guest's `#magic` link is only redeemed on an explicit click.
+- **National view only gets aggregates only.** Person/school drill-downs
+  (`/api/cu`, mentor-quality mentors/mentor-observations/comments and their
+  skills-day/group-mentoring variants, `/api/elab/mentors`) and `POST /api/tasks`
+  return 403 for `national_only`; Highlights theme `samples` come back empty.
+  The SPA hides those entry points via `PersonLevelContext` (`lib/access.js`)
+  and shows a short "ask an access manager" note instead.
 - **BigQuery credentials have two paths** (`core/database.py`'s
   `_load_credentials`). `GOOGLE_SERVICE_ACCOUNT_KEY` set → that service-account
   key file; that is how every deploy runs and it always wins. Empty → Application
@@ -116,7 +134,9 @@ Single replica per service; **pod restart is the recovery path.**
   `national_only`, so it always came back `False` after token decode — the
   bug was invisible before ADR-010 because nothing server-side branched on it
   (the frontend's `nationalOnly` check only ever ran against the fresh
-  `resolve_access()` result from `/api/auth/login`, not the JWT round-trip).
+  `resolve_access()` result from the since-removed `/api/auth/login`, not the
+  JWT round-trip). Since server-side sessions, scope is re-resolved per request
+  rather than carried in the JWT.
   E!nsight's national-only-excluded gate depends on this field surviving
   every request, not just the first — regression-tested in
   `test_auth_and_access.py::test_national_only_survives_the_jwt_round_trip`.
@@ -161,6 +181,9 @@ Single replica per service; **pod restart is the recovery path.**
 - gitleaks (`secret-scan.yml`) hard-fails on any finding — the authoritative gate.
 
 ## Known limitations (accepted for the pilot)
-- Shared guest password; JWT in `sessionStorage`; `JWT_SECRET` also the OAuth
-  session key (ADR-004).
+- Tokens (15-minute access JWT + rotating refresh token) in `sessionStorage`,
+  readable by any script on the origin — mitigated by the CSP in
+  `security-headers.conf` and the short access lifetime. The shared guest
+  password is gone (ADR-004 superseded by ADR-011, "Individual guest access
+  replaces the shared dashboard password").
 - No horizontal scaling (ADR-001). No per-row auth beyond region/CU scoping.

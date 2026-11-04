@@ -50,7 +50,6 @@ class Settings(BaseSettings):
     JWT_EXPIRY_HOURS: int = 8
 
     # Shared password for the email+password (non-SSO) login path.
-    DASHBOARD_PASSWORD: str = Field(..., description="Shared login password. REQUIRED.")
 
     # Google OAuth (optional locally — email+password login works without it).
     GOOGLE_CLIENT_ID: str = ""
@@ -86,6 +85,30 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "anthropic/claude-sonnet-5"
 
+    # ── Individual guest access + server-side sessions (security review DATA-894) ──
+    # Signing key for the OAuth state cookie. Kept separate from JWT_SECRET so a
+    # leak of one doesn't forge the other; derived from JWT_SECRET if unset.
+    SESSION_SECRET: str = ""
+    # Emailed sign-in links (guests). MAIL_BACKEND: smtp | file (local dev) |
+    # empty = disabled (guests cannot get links; staff Google sign-in unaffected).
+    MAIL_BACKEND: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_STARTTLS: bool = True
+    MAIL_OUTBOX_DIR: str = ""
+    SESSION_IDLE_MINUTES: int = 60
+    STAFF_SESSION_HOURS: int = 8
+    GUEST_SESSION_HOURS: int = 8
+    # Off in production: /docs + /openapi.json map the whole API for anyone.
+    ENABLE_API_DOCS: bool = False
+    # Optional read-only identity for E!nsight's generated SQL (key file path).
+    ENSIGHT_GOOGLE_SERVICE_ACCOUNT_KEY: str = ""
+    # Local development only: keep sessions in memory instead of BigQuery.
+    ACCESS_EVENTS_IN_MEMORY: bool = False
+
     @property
     def table_ref(self) -> str:
         """Fully-qualified, backtick-quoted table reference for SQL."""
@@ -108,6 +131,19 @@ class Settings(BaseSettings):
         return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_exp_access_mapping_events"
 
     @property
+    def access_events_table(self) -> str:
+        """Append-only guest/session/audit event log (core/guest_access.py)."""
+        return f"{self.BQ_PROJECT_ID}.{self.DASHBOARD_APP_DATASET}.raw_exp_dashboard_access_events"
+
+    @property
+    def session_signing_key(self) -> str:
+        if self.SESSION_SECRET:
+            return self.SESSION_SECRET
+        import hashlib
+        import hmac
+        return hmac.new(self.JWT_SECRET.encode(), b"oauth-session-cookie-v1", hashlib.sha256).hexdigest()
+
+    @property
     def cors_origins(self) -> list[str]:
         origins = [self.FRONTEND_URL, "http://localhost:3000", "http://localhost:5173"]
         if self.EXTRA_CORS_ORIGINS:
@@ -124,7 +160,7 @@ def get_settings() -> Settings:
     except Exception as exc:  # pydantic ValidationError on missing required env
         raise RuntimeError(
             "Configuration error — a required setting is missing. "
-            "Ensure JWT_SECRET and DASHBOARD_PASSWORD are set (see .env.example). "
+            "Ensure JWT_SECRET is set (see .env.example). "
             "GOOGLE_SERVICE_ACCOUNT_KEY is optional: set it to a service-account "
             "JSON path for a deploy, or leave it empty locally to use "
             f"`gcloud auth application-default login`. Original error: {exc}"

@@ -2,6 +2,7 @@
 import { ragColor, formatPercentage1 } from '../lib/format.js';
 import { C } from '../lib/config.js';
 import { ELAB_LEC_NUMS, ELAB_SLICE_LABELS } from '../lib/elab.js';
+import { DRILL_LOCKED_NOTE } from '../lib/access.js';
 
 // LEC × Week delivery heatmap (#schools per cell). Shared by National + Regional.
 // `matrix` = { lecN: { 'Wk n': count } } (see metrics.buildLecWeekMatrix).
@@ -195,6 +196,16 @@ export function Tag({ tag }) {
 
 export function Placeholder({ label }) {
   return <div className="placeholder">{label || 'Coming soon'}</div>;
+}
+
+// Shown in place of a person/school-level drill-down for National-view-only
+// users (see PersonLevelContext in lib/access.js).
+export function DrillLockedNote({ text }) {
+  return (
+    <div style={{ background: '#f0f4f8', border: '1px solid #d6e0ea', borderRadius: 8, padding: '.6rem .8rem', fontSize: '.8rem', color: '#555', margin: '.5rem 0' }}>
+      🔒 {text || DRILL_LOCKED_NOTE}
+    </div>
+  );
 }
 
 // E-Lab role/gender breakdown table — shared by RegionalView and NationalView's

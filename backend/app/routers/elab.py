@@ -21,7 +21,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from google.cloud import bigquery
 
-from app.auth import current_user
+from app.auth import current_user, person_level_user
 from app.core import database
 from app.core.access import UserAccess
 from app.core.metric_rollup import lecs_for_term
@@ -207,7 +207,7 @@ def summary_by_cu(
 def mentors(
     cu: str = Query(...),
     term: str = Query(default="term3", pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Per-mentor e-lab completion for one CU — CU View's detail table."""
     lec_nums = lecs_for_term(term)

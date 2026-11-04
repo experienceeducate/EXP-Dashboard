@@ -161,10 +161,15 @@ function EnsightExportDialog({ open, onClose, thread }) {
       .map((t) => ({
         question: t.question,
         answer: t.result.answer,
+        // /ask signs the answer and every SQL source; /export refuses anything
+        // unsigned or altered, so echo the signatures back exactly as received.
+        answer_sig: t.result.answer_sig || null,
         // Sources travel, not figures: the server re-reads the evidence so an
         // exported number has passed the same guardrails as the on-screen one.
         sources: (t.result.sources || []).map((s) =>
-          s.kind === 'sql' ? { kind: 'sql', sql: s.sql } : { kind: 'endpoint', path: s.path, params: s.params || {} },
+          s.kind === 'sql'
+            ? { kind: 'sql', sql: s.sql, sig: s.sig || null }
+            : { kind: 'endpoint', path: s.path, params: s.params || {} },
         ),
         notes: (t.result.notes || []).slice(0, 8),
       }));

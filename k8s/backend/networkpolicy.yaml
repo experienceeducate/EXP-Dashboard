@@ -1,0 +1,43 @@
+# NetworkPolicy — security review DATA-894 (defence in depth, OWASP A01/A05).
+#
+# Only the ingress controller may open connections to the API pod; other
+# workloads in the cluster can no longer reach it directly (the Dockerfile
+# trusts X-Forwarded-For from private addresses, so this also stops in-cluster
+# clients from choosing their own IP). Egress is limited to DNS and
+# HTTPS/SMTP-submission (BigQuery, Google OAuth, OpenRouter, mail relay).
+#
+# BEFORE APPLYING (Patrick): confirm the ingress controller's namespace label —
+#     kubectl get ns --show-labels | grep -i ingress
+# and adjust `kubernetes.io/metadata.name: ingress-nginx` below if it differs.
+# DOKS enforces NetworkPolicy via Cilium. Apply, then check the dashboard loads
+# and sign-in works; roll back with `kubectl delete -f` if not.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: exp-dashboard-server
+  namespace: data-ingestion
+spec:
+  podSelector:
+    matchLabels:
+      app: exp-dashboard-server
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 8000 }
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - ports:
+        - { protocol: TCP, port: 443 }   # BigQuery, Google OAuth, OpenRouter (E!nsight)
+        - { protocol: TCP, port: 587 }   # SMTP submission (STARTTLS) for sign-in links
+        - { protocol: TCP, port: 465 }   # SMTPS, if the relay uses it

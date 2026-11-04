@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from google.cloud import bigquery
 
-from app.auth import current_user
+from app.auth import current_user, person_level_user
 from app.core import database
 from app.core.access import UserAccess
 from app.core.sql import VALID_TERMS, access_clause_fuzzy_cu, build_where, cu_clause_fuzzy
@@ -431,7 +431,7 @@ def questions(
 def mentors(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Per-mentor rows for one CU — the region → CU → mentor ID drill-down.
 
@@ -472,7 +472,7 @@ def mentor_observations(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     mentor_id: str = Query(..., min_length=1),
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Every individual observation for one mentor — who observed them, when,
     the per-dimension scores, and the full comment. The mentor ID drill's leaf.
@@ -520,7 +520,7 @@ def mentor_observations(
 @router.get("/comments")
 def comments(
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Per-observation comments, rules-based theme tagged (see core/theme_tags.py)."""
     obs_sql, obs_params = _observation_base_cte(user, term)
@@ -702,7 +702,7 @@ def group_mentoring_summary_by_cu(
 def group_mentoring_mentors(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Per-mentor rows for one CU — the region → CU → mentor ID drill-down."""
     lookup_sql = _mentor_cu_lookup_cte()
@@ -735,7 +735,7 @@ def group_mentoring_mentor_observations(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     mentor_id: str = Query(..., min_length=1),
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Every individual Group Mentoring observation for one mentor."""
     lookup_sql = _mentor_cu_lookup_cte()
@@ -784,7 +784,7 @@ def group_mentoring_mentor_observations(
 @router.get("/group-mentoring/comments")
 def group_mentoring_comments(
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Group Mentoring free-text comments, rules-based theme tagged.
 
@@ -938,7 +938,7 @@ def skills_day_summary_by_cu(
 def skills_day_mentors(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Per-mentor rows for one CU — the region → CU → mentor ID drill-down."""
     lookup_sql = _mentor_cu_lookup_cte()
@@ -972,7 +972,7 @@ def skills_day_mentor_observations(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     mentor_id: str = Query(..., min_length=1),
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Every individual Skills Day observation for one mentor."""
     lookup_sql = _mentor_cu_lookup_cte()
@@ -1023,7 +1023,7 @@ def skills_day_mentor_observations(
 @router.get("/skills-day/comments")
 def skills_day_comments(
     term: str | None = Query(default=None, pattern=_TERM_PATTERN),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     """Skills Day free-text fields, rules-based theme tagged.
 
@@ -1155,10 +1155,15 @@ def highlights(
     lec_gm_theme_summary = summarize(list(lec_comments) + list(gm_comments), comment_field="comment")
     sd_theme_summary = summarize(sd_comments, comment_field="comment", themes=SKILLS_DAY_THEMES)
 
+    combined = merge_summaries(lec_gm_theme_summary, sd_theme_summary)
+    if user.national_only:
+        # Theme counts only: verbatim observer quotes are person-level detail
+        # (security review — see auth.person_level_user).
+        combined = [{**t, "samples": []} for t in combined]
     return {
         "status": "ok",
         "lec": lec_rollup[0] if lec_rollup else {},
         "skills_day": sd_rollup[0] if sd_rollup else {},
         "group_mentoring": gm_rollup[0] if gm_rollup else {},
-        "combined_theme_summary": merge_summaries(lec_gm_theme_summary, sd_theme_summary),
+        "combined_theme_summary": combined,
     }

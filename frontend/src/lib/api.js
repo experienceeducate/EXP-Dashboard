@@ -1,12 +1,21 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Data layer against the NEW FastAPI backend.
-// Every /api request sends X-Exp-Client: dashboard-v1 and (except login) a Bearer
-// token. JWT is stored in sessionStorage. On 401 the token is cleared.
+// Every /api request sends X-Exp-Client: dashboard-v1 and (except the public
+// auth endpoints) a Bearer access token.
+//
+// Sessions are server-side (backend/app/auth.py): a 15-minute access JWT plus a
+// rotating refresh token, both kept in sessionStorage. The access token is
+// refreshed ~1 minute before it expires (while the user is active) and on any
+// 401, with a single in-flight refresh shared by every caller; the original
+// request is retried once. A refresh that fails with 400/401 signs the user out.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BASE = import.meta.env.VITE_API_URL || '';
 const TOKEN_KEY = 'exp_token';
+const REFRESH_KEY = 'exp_refresh';
+const EXPIRES_KEY = 'exp_token_expires'; // epoch ms
 const CLIENT_HEADER = 'dashboard-v1';
+const REFRESH_LEAD_MS = 60 * 1000;
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -16,49 +25,212 @@ export class ApiError extends Error {
   }
 }
 
-export function getToken() {
+function readStore(key) {
   try {
-    return sessionStorage.getItem(TOKEN_KEY);
+    return sessionStorage.getItem(key);
   } catch {
     return null;
   }
 }
 
-export function setToken(token) {
+function writeStore(key, value) {
   try {
-    if (token) sessionStorage.setItem(TOKEN_KEY, token);
-    else sessionStorage.removeItem(TOKEN_KEY);
+    if (value) sessionStorage.setItem(key, value);
+    else sessionStorage.removeItem(key);
   } catch {
     /* ignore */
   }
 }
 
+export function getToken() {
+  return readStore(TOKEN_KEY);
+}
+
+function getRefreshToken() {
+  return readStore(REFRESH_KEY);
+}
+
+function getExpiresAt() {
+  const v = Number(readStore(EXPIRES_KEY));
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+// ── Session lifecycle ────────────────────────────────────────────────────────
+let refreshTimer = null;
+let lastActivity = Date.now();
+let sessionEndedHandler = null;
+
+// App registers this so a failed refresh (session revoked, idle, expired)
+// drops the user back to the login screen from wherever it happened.
+export function onSessionEnded(fn) {
+  sessionEndedHandler = fn;
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+  const expiresAt = getExpiresAt();
+  if (!expiresAt || !getRefreshToken()) return;
+  const delay = Math.max(0, expiresAt - Date.now() - REFRESH_LEAD_MS);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    // Only keep an active user's session warm: refreshing an untouched tab
+    // forever would defeat the server's idle timeout. An idle tab refreshes
+    // on its next request instead (ensureFreshToken / the 401 path).
+    const issuedAt = expiresAt - 15 * 60 * 1000;
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    if (lastActivity > issuedAt && !hidden) refreshSession().catch(() => {});
+  }, delay);
+}
+
+// Store a session response ({token, refresh_token, expires_in, ...}).
+function setSession(json) {
+  writeStore(TOKEN_KEY, json.token);
+  writeStore(REFRESH_KEY, json.refresh_token);
+  const seconds = Number(json.expires_in) || 900;
+  writeStore(EXPIRES_KEY, String(Date.now() + seconds * 1000));
+  scheduleRefresh();
+}
+
 export function clearToken() {
-  setToken(null);
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+  writeStore(TOKEN_KEY, null);
+  writeStore(REFRESH_KEY, null);
+  writeStore(EXPIRES_KEY, null);
+}
+
+function endSession() {
+  clearToken();
+  if (sessionEndedHandler) sessionEndedHandler();
+}
+
+// Re-arm the proactive refresh after a page reload (tokens survive in
+// sessionStorage, timers don't).
+export function resumeSession() {
+  if (getToken()) scheduleRefresh();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function postRefresh(refreshToken) {
+  let res;
+  try {
+    res = await fetch(`${BASE}/api/auth/session/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Exp-Client': CLIENT_HEADER },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch (e) {
+    throw new ApiError(`Network error: ${e.message}`, 0);
+  }
+  const json = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError((json && json.detail) || `Refresh failed (${res.status})`, res.status);
+  return json;
+}
+
+async function doRefresh() {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) throw new ApiError('Your session has ended. Please sign in again.', 401);
+  try {
+    setSession(await postRefresh(refreshToken));
+    return true;
+  } catch (e) {
+    if (e.status !== 409) throw e;
+  }
+  // 409: this refresh token was rotated moments ago (another tab sharing this
+  // session's storage). Wait, re-read, and retry once with the newer token.
+  // Never re-send the same rotated token after the grace window — the server
+  // treats that as theft and revokes the session.
+  await sleep(1000);
+  const latest = getRefreshToken();
+  if (latest && latest !== refreshToken) {
+    setSession(await postRefresh(latest));
+    return true;
+  }
+  if (getToken() && getExpiresAt() > Date.now()) return true; // already refreshed
+  throw new ApiError('Your session has ended. Please sign in again.', 401);
+}
+
+let refreshInFlight = null;
+
+// Single in-flight refresh: concurrent callers share one rotation.
+export function refreshSession() {
+  if (!refreshInFlight) {
+    refreshInFlight = doRefresh()
+      .catch((e) => {
+        // Network/5xx: keep the session (the next call retries). Anything
+        // else (400/401/409-after-retry) means the session is gone.
+        if (e.status && e.status !== 429 && e.status < 500) endSession();
+        throw e;
+      })
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+async function ensureFreshToken() {
+  const expiresAt = getExpiresAt();
+  if (getRefreshToken() && expiresAt && expiresAt - Date.now() < REFRESH_LEAD_MS) {
+    try {
+      await refreshSession();
+    } catch {
+      /* fall through: the request itself will 401 and be handled */
+    }
+  }
+}
+
+function authHeaders() {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// fetch() for an authenticated /api call: refreshes ahead of expiry, and on a
+// 401 refreshes once and retries the original request once.
+async function authedFetch(path, init) {
+  lastActivity = Date.now();
+  await ensureFreshToken();
+  const send = () => fetch(`${BASE}${path}`, { ...init, headers: { ...init.headers, ...authHeaders() } });
+  let res;
+  try {
+    res = await send();
+    if (res.status === 401 && getRefreshToken()) {
+      let refreshed = false;
+      try {
+        refreshed = await refreshSession();
+      } catch {
+        refreshed = false;
+      }
+      if (refreshed) res = await send();
+    }
+  } catch (e) {
+    throw new ApiError(`Network error: ${e.message}`, 0);
+  }
+  if (res.status === 401) {
+    endSession();
+    throw new ApiError('Unauthorized', 401);
+  }
+  return res;
 }
 
 async function request(path, { method = 'GET', body, auth = true } = {}) {
   const headers = { 'X-Exp-Client': CLIENT_HEADER };
   if (body) headers['Content-Type'] = 'application/json';
-  if (auth) {
-    const token = getToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
-  }
+  const init = { method, headers, body: body ? JSON.stringify(body) : undefined };
 
   let res;
-  try {
-    res = await fetch(`${BASE}${path}`, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (e) {
-    throw new ApiError(`Network error: ${e.message}`, 0);
-  }
-
-  if (res.status === 401) {
-    clearToken();
-    throw new ApiError('Unauthorized', 401);
+  if (auth) {
+    res = await authedFetch(path, init);
+  } else {
+    try {
+      res = await fetch(`${BASE}${path}`, init);
+    } catch (e) {
+      throw new ApiError(`Network error: ${e.message}`, 0);
+    }
   }
 
   let json = null;
@@ -75,17 +247,21 @@ async function request(path, { method = 'GET', body, auth = true } = {}) {
   return json;
 }
 
+// ── Sign-in ──────────────────────────────────────────────────────────────────
 // Full URL that kicks off the Google SSO flow. The backend redirects the browser
-// to Google and, on success, back to FRONTEND_URL/#token=<jwt>. We navigate the
-// whole window here (not fetch) so the browser follows the OAuth redirects.
+// to Google and, on success, back to FRONTEND_URL/#login_code=<one-time code>
+// (never a token in a URL). We navigate the whole window here (not fetch) so the
+// browser follows the OAuth redirects.
 export function googleLoginUrl() {
   return `${BASE}/api/auth/google/login`;
 }
 
-// Consume the auth fragment the OAuth callback leaves in the URL
-// (FRONTEND_URL/#token=<jwt> or /#error=<msg>). Stores the token, strips the hash
-// so it can't be re-consumed or leak into history, and returns what it found.
-// Call once at startup, before the first render decides auth state.
+// Consume the auth fragment left in the URL — #login_code=<code> (Google SSO),
+// #magic=<token> (guest email link) or #error=<code> — strip the hash at once
+// (no history entry, nothing left to leak or re-consume) and return what it
+// found. Nothing is stored or redeemed here: the caller exchanges the login
+// code, and a magic link is only redeemed when the guest presses "Sign in"
+// (email scanners prefetch links). Call once at module load.
 export function consumeAuthRedirect() {
   let hash = '';
   try {
@@ -95,11 +271,11 @@ export function consumeAuthRedirect() {
   }
   if (!hash || hash.length < 2) return {};
   const params = new URLSearchParams(hash.slice(1)); // drop leading '#'
-  const token = params.get('token');
+  const loginCode = params.get('login_code');
+  const magic = params.get('magic');
   const error = params.get('error');
-  if (!token && !error) return {};
+  if (!loginCode && !magic && !error) return {};
 
-  // Strip the fragment without adding a history entry.
   try {
     const clean = window.location.pathname + window.location.search;
     window.history.replaceState(null, '', clean);
@@ -107,22 +283,55 @@ export function consumeAuthRedirect() {
     /* ignore */
   }
 
-  if (token) {
-    setToken(token);
-    return { token };
-  }
+  if (loginCode) return { loginCode };
+  if (magic) return { magic };
   return { error };
 }
 
-// POST /api/auth/login → { status:"ok", token, user }
-export async function login(email, password) {
-  const json = await request('/api/auth/login', {
-    method: 'POST',
-    body: { email, password },
-    auth: false,
-  });
-  if (json.token) setToken(json.token);
+// GET /api/auth/config (public) → { status, google, guest_sign_in_available }
+export async function fetchAuthConfig() {
+  return request('/api/auth/config', { auth: false });
+}
+
+// POST /api/auth/session/exchange {code} → session response
+// { status, token, refresh_token, expires_in, session_expires_at, auth_kind, user }
+export async function exchangeLoginCode(code) {
+  const json = await request('/api/auth/session/exchange', { method: 'POST', body: { code }, auth: false });
+  setSession(json);
   return json;
+}
+
+// POST /api/auth/magic-link/redeem {token} → session response (same shape)
+export async function redeemMagicLink(token) {
+  const json = await request('/api/auth/magic-link/redeem', { method: 'POST', body: { token }, auth: false });
+  setSession(json);
+  return json;
+}
+
+// POST /api/auth/request-access → 202 { status, message } (generic, whatever the email's state)
+export async function requestGuestAccess({ email, organization, reason }) {
+  return request('/api/auth/request-access', { method: 'POST', body: { email, organization, reason }, auth: false });
+}
+
+// POST /api/auth/magic-link {email} → 202 { status, message } (generic)
+export async function requestMagicLink(email) {
+  return request('/api/auth/magic-link', { method: 'POST', body: { email }, auth: false });
+}
+
+// POST /api/auth/logout — revokes the server-side session, then clears storage
+// whatever the outcome (signing out must never fail on the client).
+export async function logout() {
+  const token = getToken();
+  clearToken();
+  if (!token) return;
+  try {
+    await fetch(`${BASE}/api/auth/logout`, {
+      method: 'POST',
+      headers: { 'X-Exp-Client': CLIENT_HEADER, Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    /* best-effort */
+  }
 }
 
 // GET /api/auth/me → { status, user }
@@ -254,24 +463,16 @@ export async function askEnsight(question, history, filters = {}, forceRefresh =
 }
 
 // POST /api/ensight/export → a binary .pptx/.docx file. Not routed through
-// request() — that helper only ever parses JSON — so this does its own fetch
-// and Content-Disposition parsing, same as the JWT/client-header attachment
-// any other /api/* call needs (a plain <a href> can't attach either header).
+// request() — that helper only ever parses JSON — so this uses authedFetch
+// (Bearer + refresh/retry) and does its own Content-Disposition parsing (a
+// plain <a href> can't attach either header). Each item must echo /ask's
+// answer_sig and every SQL source's sig unchanged, or the server refuses (400).
 export async function exportEnsight(format, items) {
-  let res;
-  try {
-    res = await fetch(`${BASE}/api/ensight/export`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Exp-Client': CLIENT_HEADER, Authorization: `Bearer ${getToken()}` },
-      body: JSON.stringify({ format, items }),
-    });
-  } catch (e) {
-    throw new ApiError(`Network error: ${e.message}`, 0);
-  }
-  if (res.status === 401) {
-    clearToken();
-    throw new ApiError('Unauthorized', 401);
-  }
+  const res = await authedFetch('/api/ensight/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Exp-Client': CLIENT_HEADER },
+    body: JSON.stringify({ format, items }),
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(body.detail || `Export failed (${res.status})`, res.status);
@@ -310,6 +511,32 @@ export async function updateAccessMapping({ scopeType, scopeKey, addEmail, remov
     method: 'POST',
     body: { scope_type: scopeType, scope_key: scopeKey, add_email: addEmail || null, remove_email: removeEmail || null },
   });
+}
+
+// ── Guest access administration (backend/app/routers/guests_admin.py) ──────
+// GET /api/admin/guests → { status, requests, guests, whitelist, defaultDays,
+// maxDays, scopes: { regional: [...], cu: [...] }, signInAvailable, canEdit }.
+// Rows are snake_case: { email, status, organization, reason,
+// grant: { scope_type, scope_key }, requested_at, expires_at, days_left,
+// whitelisted, can_sign_in, last_login_at, active_sessions }.
+export async function fetchGuests() {
+  return request('/api/admin/guests');
+}
+
+// GET /api/admin/guests/audit?limit=200 → { status, events: [{ event_type,
+// event_timestamp, subject_email, actor_email, ... }] }
+export async function fetchGuestAudit(limit = 200) {
+  return request(`/api/admin/guests/audit?limit=${encodeURIComponent(limit)}`);
+}
+
+// POST /api/admin/guests/<action> — email always in the body, never the URL.
+// invite {email, scope_type, scope_key, days?, organization?} → { linkSent }
+// approve {email, scope_type, scope_key, days?, whitelist} · reject {email, reason?}
+// renew {email, days?} · revoke {email} · whitelist/add|remove {email}
+const GUEST_ACTIONS = ['invite', 'approve', 'reject', 'renew', 'revoke', 'whitelist/add', 'whitelist/remove'];
+export async function guestAction(action, body) {
+  if (!GUEST_ACTIONS.includes(action)) throw new ApiError(`Unknown guest action: ${action}`, 0);
+  return request(`/api/admin/guests/${action}`, { method: 'POST', body });
 }
 
 // POST /api/analytics/event — fire-and-forget usage tracking. Never throws:

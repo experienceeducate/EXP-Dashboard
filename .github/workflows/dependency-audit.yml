@@ -1,0 +1,45 @@
+name: dependency-audit
+
+# Security review (OWASP A06 — vulnerable and outdated components): known-CVE
+# check of the Python and npm dependency trees on every PR that touches them,
+# and weekly. High/critical npm advisories and any pip-audit finding fail the job.
+
+on:
+  pull_request:
+    paths:
+      - 'backend/requirements*.txt'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - '.github/workflows/dependency-audit.yml'
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: pip-audit
+        working-directory: backend
+        run: |
+          python -m pip install --quiet "pip-audit==2.7.3"
+          for f in requirements*.txt; do
+            echo "::group::$f"
+            pip-audit --requirement "$f" --strict --progress-spinner off
+            echo "::endgroup::"
+          done
+
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: npm audit (production deps, high+)
+        working-directory: frontend
+        run: npm audit --omit=dev --audit-level=high

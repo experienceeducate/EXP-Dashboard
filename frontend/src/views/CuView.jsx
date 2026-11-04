@@ -3,7 +3,8 @@ import * as api from '../lib/api.js';
 import { getLECsForTerm, getLECsInScope, getGMsInScope, getMilestonesInScope, getClubMeetingsInScope, C } from '../lib/config.js';
 import { sum, computeCuPriorityAlerts, computeLecClusters, getReportTimelinessSummary, mergeRowsAcrossTerms } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragColor, ragScoreClass, calculatePBQualityScore, getObsQualityColor, getObsQualityLabel, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
-import { Section, ScoreCard, ProgressCell, Placeholder } from '../components/ui.jsx';
+import { Section, ScoreCard, ProgressCell, Placeholder, DrillLockedNote } from '../components/ui.jsx';
+import { usePersonLevelAccess } from '../lib/access.js';
 import { getIssueKey, getIssueStatus, loadIssueTracker, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend } from './NationalView.jsx';
 
@@ -411,11 +412,13 @@ const CU_ELAB_ROLE_LABELS = { mentor: 'Mentor', co_mentor: 'Co-Mentor', unknown:
 const CU_ELAB_GENDER_LABELS = { female: 'Female', male: 'Male', unknown: 'Unknown' };
 
 function CuElabCompletion({ cu }) {
+  // Per-mentor e-lab rows (/api/elab/mentors) are 403 for National-view-only.
+  const canDrill = usePersonLevelAccess();
   const [rows, setRows] = useState(null); // null = loading
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!cu) return;
+    if (!cu || !canDrill) return;
     let active = true;
     setRows(null);
     setError('');
@@ -433,8 +436,9 @@ function CuElabCompletion({ cu }) {
     return () => {
       active = false;
     };
-  }, [cu]);
+  }, [cu, canDrill]);
 
+  if (!canDrill) return <DrillLockedNote />;
   if (!cu) return <Placeholder label="Select a CU to view e-lab completion." />;
   if (rows === null) return <div style={{ padding: '1.25rem', color: '#888' }}>Loading e-lab data…</div>;
   if (error) return <div className="login-error">{error}</div>;
@@ -605,6 +609,8 @@ const PRIORITY_ICON = { critical: '🔴', high: '🟠', medium: '🟡' };
 const PRIORITY_COLOR = { critical: C.red, high: '#e67e22', medium: C.yellow };
 
 function AlertResolution({ alert, issueKey, region, cu, onSaved }) {
+  // Status changes (POST /api/tasks) are refused for National-view-only.
+  const canAct = usePersonLevelAccess();
   const iss = getIssueStatus(issueKey);
   const [status, setStatus] = useState(iss.status === 'resolved' ? 'resolved' : iss.status === 'in-progress' ? 'in-progress' : 'in-progress');
   const [notes, setNotes] = useState('');
@@ -651,6 +657,7 @@ function AlertResolution({ alert, issueKey, region, cu, onSaved }) {
           ))}
         </div>
       ) : null}
+      {canAct ? (
       <div style={{ display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <select value={status} onChange={(e) => setStatus(e.target.value)} style={{ padding: '.35rem .5rem', borderRadius: 6, border: '1px solid #ccc' }}>
           <option value="open">Open</option>
@@ -660,6 +667,7 @@ function AlertResolution({ alert, issueKey, region, cu, onSaved }) {
         <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Add a resolution note…" style={{ flex: 1, minWidth: 180, padding: '.35rem .6rem', borderRadius: 6, border: '1px solid #ccc' }} />
         <button type="button" onClick={save} style={{ padding: '.4rem .9rem', borderRadius: 6, border: 'none', background: C.navy, color: '#fff', fontWeight: 700, cursor: 'pointer' }}>Save</button>
       </div>
+      ) : null}
     </div>
   );
 }

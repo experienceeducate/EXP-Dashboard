@@ -77,8 +77,8 @@ hold mixed casing. Group or join on `UPPER(TRIM(col))`, never the raw column.
 `access_clause` is applied server-side to every data query.
 
 E!nsight is gated tighter than that: **only emails explicitly listed in
-`ACCESS_CONFIG["national"]`.** It excludes `national_only`, the shared-password
-tier, and all regional/CU staff, because it is the one feature that turns a
+`ACCESS_CONFIG["national"]`.** It excludes `national_only` (the domain-fallback
+tier), and all regional/CU staff, because it is the one feature that turns a
 typed sentence into a warehouse query and spends money per question.
 
 ### Conventions this feature must not break, and the one it bends
@@ -128,18 +128,34 @@ Every check fails closed. Order matters — each is cheaper than the next.
 
 | Check | Catches |
 |---|---|
-| Comments stripped, single statement, `SELECT`/`WITH` only, no DML/DDL | Anything that writes; a second statement hidden in a comment |
-| Fully-qualified table allowlist; anything unresolvable is a violation | Reads outside the vetted tables |
-| No `SELECT *` | Unknown output columns, which would defeat the PII gate |
-| Dry run | Syntax errors and unknown columns — free, before spending. Fed back for **one** repair attempt |
+| GoogleSQL **lexer** (strings incl. triple-quoted/raw/bytes, backtick identifiers, `--`/`#`/`/* */` comments); every check below runs on its tokens | A comment marker inside a string literal (`'/*'`) hiding a clause from the checks |
+| Single statement (one trailing `;` at most), `SELECT`/`WITH` only, no DML/DDL/scripting keyword, no `INFORMATION_SCHEMA` | Anything that writes or scripts; metadata reads |
+| Every `FROM`/`JOIN` target is a CTE name, `UNNEST(...)`, a subquery, or one backticked `project.dataset.table` in the allowed datasets | Reads outside the vetted datasets, incl. `` `p`.`d`.`t` `` and bare `dataset.table` |
+| No `SELECT *` / `t.*` | Unknown output columns, which would defeat the PII gate |
+| **PII identifiers** in the SQL text (see below) | `SELECT phone AS x` — a rename the output-schema gate can't see |
+| Dry run (+ `statement_type == SELECT`, every `referenced_tables` entry in the allowed datasets) | Syntax errors and unknown columns — free, before spending. Fed back for **one** repair attempt |
 | Byte budget against the dry run's estimate | A runaway scan, before a cent is spent |
-| **PII gate on the dry run's output schema** | Personal data leaving the backend |
+| **PII gate on the dry run's output schema** (nested fields too) | Personal data leaving the backend |
 | `maximum_bytes_billed` on the real job | The estimate being wrong |
 
-The PII gate reads the **output schema**, never the SQL text. Only the output
-schema tells `COUNT(DISTINCT mentor_id)` — a legitimate way to count people —
-apart from `SELECT mentor_id`. A text-matching filter would block the first and
-miss an aliased version of the second.
+**What runs is what was checked.** The SQL that is dry-run and executed is the
+lexer's normalized text (comments removed, trailing `;` dropped) — never the
+model's original string. That normalized SQL is what `sources[].sql` shows.
+
+PII is checked twice. On the **SQL tokens**: contact, email, ID-number,
+birth-date, GPS and personal-name identifiers (and `guardian`) are rejected
+anywhere outside a string. Person IDs (`mentor_id`, `scholar_id`, …) and
+unvetted `*name*` columns are legitimate join/count keys, so they're allowed
+everywhere except a SELECT list — and there only inside `COUNT`-family
+aggregates or as an un-renamed pass-through column (no `AS x`, no wrapping
+expression, no scalar subquery). A table alias/CTE name used as a value
+(`TO_JSON_STRING(t)`) is rejected too. On the **output schema**: the dry run's
+column names (including nested STRUCT fields) are checked again, which is what
+catches a pass-through `mentor_id` that reaches the final result.
+
+Optional: set `ENSIGHT_GOOGLE_SERVICE_ACCOUNT_KEY` to a key-file path and the
+dry run + execution use that (read-only) service account instead of the
+dashboard's main client.
 
 Underneath all of it the service account has **no write access anywhere** in the
 warehouse (verified: `create_table` returns 403 on every dataset). Text
@@ -183,6 +199,29 @@ from `POST /api/ensight/ask` carries, alongside `answer`:
   "Ask again" (`force_refresh`) bypasses the cache explicitly rather than
   leaving a stale figure the only option.
 
+## Exports are signed
+
+`POST /api/ensight/export` re-runs each answer's SQL and puts its answer text
+into an Educate!-branded document, so it only accepts what `/ask` produced:
+
+- `/ask` returns **`answer_sig`** (over the answer text) and a **`sig`** on
+  every `kind: "sql"` source (over its `sql`). HMAC-SHA256, keyed by
+  `HMAC(JWT_SECRET, "ensight-export-v1")`, bound to the purpose (answer vs SQL)
+  and the signed-in user's email.
+- The client echoes them back unchanged: each export item carries
+  `answer_sig`, and each SQL source carries `sig`. A missing or invalid
+  signature on any item is a generic **400**; nothing is run.
+- Endpoint sources need no signature — they're re-run under the caller's own
+  access scope, only against cataloged paths, with each endpoint's declared
+  `Query` constraints (pattern/length/bounds) enforced.
+
+Rotating `JWT_SECRET` invalidates outstanding signatures (re-ask, then export).
+
+## Input limits
+
+`question` ≤ 1000 chars; `history` ≤ 6 entries, each `role` exactly `user` or
+`assistant` and `content` ≤ 4000 chars (anything else is a 422).
+
 ## Access, cost, caching, audit
 
 - **Gate:** listed national users only. Re-checked server-side on every request,
@@ -199,7 +238,8 @@ from `POST /api/ensight/ask` carries, alongside `answer`:
 - **Audit:** every question is logged — who, route taken, generated SQL,
   duration, cached or not. The table does not exist yet (the service account has
   no write access); the insert degrades to a **logged warning**, never a silent
-  swallow. See `DATA_ENG_BIGQUERY_TABLES_REQUEST.md` table 4.
+  swallow — and no audit failure of any kind can replace the answer or the
+  real error. See `DATA_ENG_BIGQUERY_TABLES_REQUEST.md` table 4.
 
 Budget roughly US$0.05 and 30–50 s per question.
 
@@ -212,7 +252,7 @@ Budget roughly US$0.05 and 30–50 s per question.
 | `backend/app/core/ensight_guardrails.py` | Every check above |
 | `backend/app/core/ensight_llm.py` | OpenRouter client, tolerant JSON parsing, truncation detection |
 | `backend/app/core/ensight_pipeline.py` | The four steps, cache, rate limit, audit |
-| `backend/app/routers/ensight.py` | `GET /availability`, `POST /ask` |
+| `backend/app/routers/ensight.py` | `GET /availability`, `POST /ask`, `POST /export` (signature check) |
 | `frontend/src/views/EnsightView.jsx` | The tab |
 | `frontend/src/lib/markdown.jsx` | Minimal renderer (bold, code, lists, tables) |
 </content>

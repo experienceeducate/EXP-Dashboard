@@ -13,6 +13,7 @@ of per-browser.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -30,13 +31,29 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
 def _may_act_on(user: UserAccess, region: str, cu: str) -> bool:
+    # "National view only" (any colleague on the domain, no assignment) can
+    # read but not change follow-up status (security review DATA-894).
+    if user.national_only:
+        return False
     if user.has_national:
         return True
     if cu and cu.lower() in {c.lower() for c in user.cus}:
         return True
-    if region and region in user.regions:
+    if region and region.lower() in {r.lower() for r in user.regions}:
         return True
     return False
+
+
+def _key_prefix(cu: str) -> str:
+    """Mirror of frontend/src/lib/issueTracker.js getIssueKey()'s CU part."""
+    return re.sub(r"\s", "_", f"{cu}_").lower()
+
+
+def _key_matches_cu(issue_key: str, cu: str) -> bool:
+    """An issue_key starts with its CU. Without this check a CU user could
+    post ANOTHER CU's issue_key alongside their own cu and change the status
+    everyone else sees for it (security review DATA-894)."""
+    return bool(cu) and issue_key.lower().startswith(_key_prefix(cu))
 
 
 def _combine_notes(reason: str | None, notes: str | None) -> str:
@@ -91,6 +108,8 @@ class UpdateTaskRequest(BaseModel):
 def update_task_status(body: UpdateTaskRequest, user: UserAccess = Depends(current_user)):
     if not _may_act_on(user, body.region, body.cu):
         raise HTTPException(status_code=403, detail="Not permitted to update issues for this region/CU.")
+    if not _key_matches_cu(body.issue_key, body.cu):
+        raise HTTPException(status_code=422, detail="issue_key does not belong to this CU.")
 
     now = datetime.now(timezone.utc)
     row = {

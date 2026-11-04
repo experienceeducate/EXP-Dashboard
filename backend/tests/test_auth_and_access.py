@@ -48,34 +48,15 @@ def test_access_clause_regional_and_cu():
     assert len(params) == 1
 
 
-def test_login_wrong_password(client, client_headers):
+def test_shared_password_login_is_gone(client, client_headers):
+    """Security review DATA-894: the shared-password route let anyone holding
+    the password sign in as ANY listed email, admins included."""
     r = client.post(
         "/api/auth/login",
-        json={"email": "admin@experienceeducate.org", "password": "nope"},
+        json={"email": "admin@experienceeducate.org", "password": "anything"},
         headers=client_headers,
     )
-    assert r.status_code == 401
-
-
-def test_login_ok_returns_token(client, client_headers):
-    r = client.post(
-        "/api/auth/login",
-        json={"email": "admin@experienceeducate.org", "password": "test-password"},
-        headers=client_headers,
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["token"]
-    assert body["user"]["hasNational"] is True
-
-
-def test_login_no_access_email_403(client, client_headers):
-    r = client.post(
-        "/api/auth/login",
-        json={"email": "stranger@example.com", "password": "test-password"},
-        headers=client_headers,
-    )
-    assert r.status_code == 403
+    assert r.status_code in (404, 405)
 
 
 def test_national_only_survives_the_jwt_round_trip(client, client_headers, make_token):

@@ -30,7 +30,7 @@ Educate! staff (browser)
 | Module | Responsibility |
 |---|---|
 | `app/main.py` | App factory: CORS, SessionMiddleware, client-header guard, `include_router`. No handlers. |
-| `app/auth.py` | Email+password + Google SSO → JWT (carries access scope); `current_user` dep. |
+| `app/auth.py` | Google SSO (staff) + magic links (guests) → server-side session (15-min access JWT + rotating refresh token); `current_user` dep. |
 | `app/core/config.py` | Pydantic Settings; fail-fast on missing secrets. |
 | `app/core/cache.py` | In-memory `TTLCache` (512 / 300s). Process-bound. |
 | `app/core/database.py` | BigQuery client + `run_query` (the single test seam). |
@@ -45,9 +45,15 @@ Educate! staff (browser)
 | Method | Path | Auth | Returns |
 |---|---|---|---|
 | GET | `/health` | none | `{status:"ok"}` |
-| POST | `/api/auth/login` | client-header | `{status, token, user}` (email+password) |
+| GET | `/api/auth/config` | client-header | `{status, google, guest_sign_in_available}` |
 | GET | `/api/auth/google/login` | none (exempt) | 302 → Google |
-| GET | `/api/auth/google/callback` | none (exempt) | 302 → `FRONTEND_URL/#token=…` |
+| GET | `/api/auth/google/callback` | none (exempt) | 302 → `FRONTEND_URL/#login_code=…` (one-time) |
+| POST | `/api/auth/session/exchange` | client-header | session `{status, token, refresh_token, expires_in, session_expires_at, auth_kind, user}` |
+| POST | `/api/auth/session/refresh` | client-header | same shape, new `refresh_token` (409 = rotated by another tab) |
+| POST | `/api/auth/request-access` | client-header | 202 `{status, message}` (generic) |
+| POST | `/api/auth/magic-link` | client-header | 202 `{status, message}` (generic) |
+| POST | `/api/auth/magic-link/redeem` | client-header | session (same shape) |
+| POST | `/api/auth/logout` | Bearer + header | `{status}` — revokes the session |
 | GET | `/api/auth/me` | JWT + header | `{status, user}` |
 | GET | `/api/overview/summary?term=` | JWT + header | `{status, data, cu, schools, access}` |
 | GET | `/api/cu?cu=&term=` | JWT + header | `{status, data}` |

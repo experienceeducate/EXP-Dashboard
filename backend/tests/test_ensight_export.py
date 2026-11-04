@@ -109,3 +109,24 @@ def test_expand_skips_the_model_call_with_no_evidence(monkeypatch):
     monkeypatch.setattr(export, "chat_text", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")))
     result = export._expand({"answer": "concise answer"}, "")
     assert result == "concise answer"
+
+
+# ── Export signatures ────────────────────────────────────────────────────────
+
+def test_sign_ask_payload_signs_sql_sources_only_and_verifies():
+    email = "admin@experienceeducate.org"
+    sources = [{"kind": "sql", "sql": "SELECT 1"}, {"kind": "endpoint", "path": "/api/cu", "params": {}}]
+    answer_sig, signed = export.sign_ask_payload("the answer", sources, email)
+    assert "sig" in signed[0] and "sig" not in signed[1]
+    assert "sig" not in sources[0]  # caller's (possibly cached) dicts untouched
+    item = {"answer": "the answer", "answer_sig": answer_sig, "sources": signed}
+    assert export.verify_export_item(item, email)
+    assert not export.verify_export_item({**item, "answer": "other"}, email)
+    assert not export.verify_export_item(item, "other@experienceeducate.org")
+    assert not export.verify_export_item({**item, "sources": [{**signed[0], "sql": "SELECT 2"}]}, email)
+
+
+def test_signing_key_is_derived_not_the_raw_jwt_secret():
+    from app.core.config import settings
+
+    assert export._signing_key() != settings.JWT_SECRET.encode()

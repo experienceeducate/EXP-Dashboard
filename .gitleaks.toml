@@ -1,21 +1,66 @@
-# gitleaks config — extends the default ruleset, adds an allowlist for
-# verified false positives. secret-scan.yml hard-fails on any real finding.
+# gitleaks configuration — https://github.com/gitleaks/gitleaks (v8.19+; CI pins 8.30.1)
+#
+# One config for every gate (security review DATA-888 / DATA-894):
+#   * pre-commit hook   .pre-commit-config.yaml  → gitleaks git --pre-commit --staged
+#   * Claude hook       .claude/hooks/precommit-secret-scan.ps1 (+ .sh)
+#   * CI                .github/workflows/secret-scan.yml (full history, every push + PR)
+# Known historical findings live in .gitleaks-baseline.json, NOT in this
+# allowlist: a baseline entry is pinned to one commit+line, so the same string
+# committed again is still caught.
+
+title = "exp-dashboard gitleaks config"
+
 [extend]
 useDefault = true
 
+# ── Custom rules: GCP service-account keys (security review DATA-888) ─────────
+# gitleaks' default rules catch a PEM private key and an AIza API key, but not
+# the other parts of a service-account key file, nor the base64-encoded form
+# that ends up in .env files and Kubernetes Secret manifests. These rules
+# cover JSON, YAML, TOML and .env spellings — proven by
+# scripts/gitleaks-selftest.sh / .ps1, which builds throwaway keys at runtime
+# (nothing secret-shaped is committed for the test).
+
+[[rules]]
+id = "gcp-service-account-private-key-id"
+description = "GCP service-account private_key_id (JSON / YAML / TOML / .env)"
+regex = '''(?i)private[_-]?key[_-]?id["']?\s*[:=]\s*["']?([a-f0-9]{40})\b'''
+secretGroup = 1
+keywords = ["private_key_id", "private-key-id", "privatekeyid"]
+
+[[rules]]
+id = "gcp-service-account-private-key"
+description = "GCP service-account private_key field holding a PEM key (escaped or literal newlines)"
+regex = '''(?i)private[_-]?key["']?\s*[:=]\s*[|>]?[-+]?\s*["']?(-----BEGIN (?:RSA )?PRIVATE KEY-----(?:\\n|\\r|[\s]|[A-Za-z0-9+/=]){100,}?-----END (?:RSA )?PRIVATE KEY-----)'''
+secretGroup = 1
+keywords = ["private key-----"]
+
+[[rules]]
+id = "gcp-service-account-base64"
+description = "Base64-encoded GCP service-account key file (common in .env files and k8s Secret data)"
+regex = '''(?:ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3Vu|eyJ0eXBlIjoic2VydmljZV9hY2NvdW50|ewogICAgInR5cGUiOiAic2VydmljZV9hY2NvdW50|eyJ0eXBlIjogInNlcnZpY2VfYWNjb3Vu)[A-Za-z0-9+/=]{40,}'''
+keywords = ["ewogicj0exblijoginnlcnzpy2vfywnjb3vu", "eyj0exblijoic2vydmljzv9hy2nvdw50", "ewogicaginr5cguioiaic2vydmljzv9hy2nvdw50", "eyj0exblijoginnlcnzpy2vfywnjb3vu"]
+
+[[rules]]
+id = "gcp-service-account-client-email-with-key"
+description = "Service-account key body: type=service_account followed by a private_key holding a PEM key"
+regex = '''(?is)["']?type["']?\s*[:=]\s*["']?service_account["']?.{0,400}?private_key["']?\s*[:=]\s*[|>]?[-+]?\s*["']?-----BEGIN'''
+keywords = ["service_account"]
+
+# Allowlist — ONLY verified false positives, as narrow as possible. Never add a
+# path or pattern here to silence a real secret: remove it, rotate it, then
+# clean history (docs/security/SECRETS_RUNBOOK.md).
+#
+# Tightened in the security review: the old list exempted EVERY *.md file and
+# every index.html, which would have hidden a real key pasted into docs.
 [allowlist]
 description = "Verified false positives"
 paths = [
-  '''backend/\.env\.example''',
-  '''legacy/dashboard-v1\.html''',   # legacy single-file app; public GAS URL only, no secrets
-  '''(^|/)index\.html$''',           # same legacy app under its historical path + the Vite entry
-  '''.*\.md''',
+  '''(^|/)backend/\.env\.example$''',
+  '''(^|/)\.gitleaks-baseline\.json$''',
 ]
 regexes = [
-  # Placeholder values used in docs/examples.
-  '''change-me.*''',
-  '''your-.*-here''',
-  # BigQuery column names, not secrets — the "...Key: 'gm1_total_scholars'" shape
-  # (object property named schlKey) trips the generic-api-key entropy heuristic.
-  '''gm[1-4]_total_scholars''',
+  # BigQuery column names, not secrets: the  schlKey: 'gm1_total_scholars'  shape
+  # (an object property named schlKey) trips the generic-api-key entropy heuristic.
+  '''^gm[1-4]_total_scholars$''',
 ]

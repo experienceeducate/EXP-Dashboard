@@ -264,6 +264,65 @@ CLUSTER BY scope_type, scope_key;
 
 ---
 
-*All five tables are written to exclusively by the dashboard's FastAPI backend
+## Table 6 — `raw_exp_dashboard_access_events` (security review DATA-894 — NEW, needs creating)
+
+**Purpose**: the append-only access log behind individual guest access and
+server-side sessions (`app/core/guest_access.py`, `app/core/access_runtime.py`).
+One row per event: access requested / approved / invited / renewed / rejected /
+revoked, whitelist added / removed, sign-in link issued / redeemed /
+invalidated / denied, session created / refreshed / revoked, sign-in
+succeeded / failed. The app rebuilds guest, whitelist and session state from
+this log at start-up (single replica), so it is also the audit trail the
+Admin → Guest access panel shows.
+
+Written **only by streaming inserts** — the app never runs UPDATE/DELETE on it
+(no streaming-buffer DML conflicts). **Never stores a token or a sign-in link**:
+`token_hash` is a SHA-256 of a refresh token / link token, never the token.
+
+Until this table exists: staff Google sign-in still works (sessions are kept in
+memory and end at the next restart), but **guest access fails closed** — no
+guest can be approved and no sign-in link is sent.
+
+**Do not set a partition expiration** on this table: the app replays the whole
+log to rebuild who is approved and whitelisted.
+
+| Column | Type | Description |
+|---|---|---|
+| `event_id` | `STRING` | UUID per event |
+| `event_timestamp` | `TIMESTAMP` | Server-side capture time |
+| `event_type` | `STRING` | e.g. `guest_approved`, `whitelist_added`, `magic_link_issued`, `session_revoked`, `auth_failed` |
+| `subject_email` | `STRING` | Normalised email the event is about |
+| `actor_email` | `STRING` | Access manager who acted (admin events); null for self-service |
+| `session_id` | `STRING` | Server-side session id (session events) |
+| `link_id` | `STRING` | Sign-in link id (link events) |
+| `token_hash` | `STRING` | SHA-256 of a refresh/link token — never the token |
+| `client_ip` | `STRING` | Client IP as seen through the ingress |
+| `details` | `STRING` | JSON: grant (scope), expiry, organisation, reason, failure reason |
+
+```sql
+CREATE TABLE IF NOT EXISTS `educate-data-warehouse-test.bronze_exp.raw_exp_dashboard_access_events` (
+  event_id        STRING    NOT NULL,
+  event_timestamp TIMESTAMP NOT NULL,
+  event_type      STRING    NOT NULL,
+  subject_email   STRING,
+  actor_email     STRING,
+  session_id      STRING,
+  link_id         STRING,
+  token_hash      STRING,
+  client_ip       STRING,
+  details         STRING
+)
+PARTITION BY DATE(event_timestamp)
+CLUSTER BY event_type, subject_email
+OPTIONS (description = "EXP Dashboard guest access + session event log (append-only, streaming inserts only). DATA-894.");
+```
+
+The dashboard's service account needs `bigquery.tables.updateData` (insert)
+and `bigquery.tables.getData` (read) on this table — it already has both on
+`bronze_exp` for tables 1–5.
+
+---
+
+*All six tables are written to exclusively by the dashboard's FastAPI backend
 via the same service account it already uses for reads — no other write
 path.*
