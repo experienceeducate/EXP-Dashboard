@@ -254,7 +254,7 @@ def test_manager_approve_flow_and_audit(client, make_token):
     g = access_runtime.store.guests[GUEST]
     assert g.grant == {"scope_type": "cu", "scope_key": "mpigi"}
     assert GUEST in access_runtime.store.whitelist
-    assert 29 <= (g.expires_at - time.time()) / 86400 <= 30
+    assert 29 <= (g.expires_at - time.time()) / 86400 <= 30.001   # float/clock tolerance (Windows)
 
     renewed = client.post("/api/admin/guests/renew", json={"email": GUEST}, headers=_auth(token))
     assert renewed.status_code == 200 and renewed.json()["expiresAt"]

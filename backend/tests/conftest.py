@@ -5,7 +5,7 @@ environment before importing anything under ``app``.
 """
 import os
 
-os.environ.setdefault("JWT_SECRET", "test-secret-do-not-use-in-prod")
+os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-not-for-production-0000000000000000")
 os.environ.setdefault("ACCESS_EVENTS_IN_MEMORY", "true")
 os.environ.setdefault("ENABLE_API_DOCS", "false")
 os.environ.setdefault("GOOGLE_SERVICE_ACCOUNT_KEY", "/nonexistent/key.json")
