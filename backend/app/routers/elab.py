@@ -15,10 +15,27 @@ column of its own. That denominator is a CU/region-level aggregate with no
 gender or mentor/co-mentor split, so it can't be used for the gender/role
 breakdowns below; those instead show completion against mentors who have any
 e-lab record in that slice (labelled accordingly, not as "active mentors").
+
+Incident (2026-09-29): Data Engineering repointed
+``silver_exp.exp_elab_mentor_activity_report`` to a general common-activity-
+report feed (data_source values like ``field_hub``/``texit`` — Club Meetings,
+GM, Passbook, etc.), which dropped every column this router depends on
+(``gender``, ``position``, ``lesson_name``, ``date_started``,
+``date_finished``). Every query here now fails with a BigQuery ``BadRequest``
+("Unrecognized name: ..."), an error class ``query_rows_ignore_missing_table``
+doesn't catch (it only catches a table not existing, not an existing table
+whose columns changed) — so both endpoints below catch it explicitly and
+degrade to an empty, clearly-flagged ("available": false) response instead of
+a 500. This is an upstream data problem, not a query bug — needs Data
+Engineering to either restore the original table or point this at wherever
+the real e-lab lesson-completion data lives now.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Query
+from google.api_core.exceptions import BadRequest
 from google.cloud import bigquery
 
 from app.auth import current_user
@@ -28,9 +45,22 @@ from app.core.metric_rollup import lecs_for_term
 from app.core.sql import access_clause, access_clause_fuzzy_cu, build_where, level_clause, term_clause
 from app.core.tables import DASHBOARD_MODEL, ELAB_ACTIVITY
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/elab", tags=["elab"])
 
 _TERM_PATTERN = "^(term1|term2|term3)$"
+
+
+def _run_query_or_unavailable(sql: str, params: list, scope_key: str) -> tuple[list[dict], bool]:
+    """Like database.run_query, but degrades to ([], False) on a BigQuery
+    BadRequest (e.g. the source table's schema changed upstream) instead of
+    a 500 — see the incident note in this module's docstring."""
+    try:
+        return database.run_query(sql, params, scope_key=scope_key), True
+    except BadRequest:
+        logger.warning("E-Lab query failed (source table schema likely changed upstream): %s", sql, exc_info=True)
+        return [], False
 
 # Normalizes CU spelling drift between this source and gold_exp (e.g.
 # "Busia-Namayingo" vs "busia - namayingo") into one canonical hyphenated
@@ -199,8 +229,8 @@ def summary_by_cu(
     ORDER BY r.region, r.cu
     """
     params = roster_params + sessions_params
-    rows = database.run_query(sql, params, scope_key=f"{user.scope_key}|elab-summary-by-cu|{term}")
-    return {"status": "ok", "term": term, "expected_sessions": lec_nums, "data": rows}
+    rows, available = _run_query_or_unavailable(sql, params, scope_key=f"{user.scope_key}|elab-summary-by-cu|{term}")
+    return {"status": "ok", "term": term, "expected_sessions": lec_nums, "data": rows, "available": available}
 
 
 @router.get("/mentors")
@@ -242,5 +272,5 @@ def mentors(
     ORDER BY mentor_name
     """
     params = sessions_params + [bigquery.ScalarQueryParameter("cu", "STRING", cu)]
-    rows = database.run_query(sql, params, scope_key=f"{user.scope_key}|elab-mentors|{cu}|{term}")
-    return {"status": "ok", "term": term, "expected_sessions": lec_nums, "data": rows}
+    rows, available = _run_query_or_unavailable(sql, params, scope_key=f"{user.scope_key}|elab-mentors|{cu}|{term}")
+    return {"status": "ok", "term": term, "expected_sessions": lec_nums, "data": rows, "available": available}
