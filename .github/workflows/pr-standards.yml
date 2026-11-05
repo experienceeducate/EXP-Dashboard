@@ -1,0 +1,48 @@
+# Distributed to every experienceeducate repo by workflow_sync (canonical copy:
+# gh_metrics' backend/workflows/pr-standards.yml). Don't edit this file in place —
+# workflow_sync compares it by content hash and will open a PR reverting any
+# local change. Change it in gh_metrics instead.
+#
+# Deliberately a stub. All of the logic — currently the ES-25 issue-key regex,
+# the exemptions (draft / label / bot authors / gh-metrics/* branches) and the
+# Jira lookup — lives in the reusable workflow this calls, so it is maintained
+# in one place rather than copy-pasted across ~150 repos, and a new PR rule is
+# a commit in gh_metrics rather than another 150 PRs. See
+# https://github.com/experienceeducate/gh_metrics/blob/develop/docs/features/pr-standards.md
+#
+# Two things here are effectively frozen once this lands org-wide, and both
+# are already broader than the one rule enforced today:
+#
+#  - `types:` below. A reusable workflow can't declare its own triggers, so
+#    the list has to live in the caller.
+#  - the `pr-standards` job id. The required status check is named
+#    "<job id> / <called job name>", i.e. "pr-standards / PR standards".
+#    Renaming either half silently drops enforcement in every ruleset that
+#    required the old name, so neither is named after the Jira rule.
+#
+# Failing is not blocking: until this is a required status check on the repo's
+# protected branches, a violation is a red X a human can still merge past.
+# That gap is the intended grace period (ES-25 step 4 / ENG-05).
+
+name: PR Standards
+
+on:
+  pull_request:
+    # Every entry clears a red X that would otherwise stick after the fix:
+    # `edited` for a title corrected after the fact, `labeled`/`unlabeled`
+    # for the exemption label being applied or removed, `ready_for_review`
+    # for a draft being promoted. Drop that last one and a PR opened as a
+    # draft keeps its green check forever, because drafts are skipped.
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled, ready_for_review]
+
+jobs:
+  # Half of the required check's name — see the note above before renaming.
+  pr-standards:
+    # Pinned to @develop so fixes and new rules land everywhere without 150
+    # PRs. Pin a SHA instead if this repo needs supply-chain immutability
+    # more than it needs automatic updates.
+    uses: experienceeducate/gh_metrics/.github/workflows/pr-standards.yml@develop
+    # Passes the org's JIRA_* secrets through without naming them. Drop it and
+    # the check still runs — it just pattern-matches the key instead of
+    # resolving it against Jira.
+    secrets: inherit
