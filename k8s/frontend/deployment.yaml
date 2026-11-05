@@ -15,6 +15,7 @@ spec:
       labels:
         app: exp-dashboard-app
     spec:
+      automountServiceAccountToken: false   # nginx never calls the k8s API
       containers:
         - name: app
           image: patrickgichini/exp-dashboard-app:latest

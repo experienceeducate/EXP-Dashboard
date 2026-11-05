@@ -17,9 +17,10 @@ Orientation map for a new engineer (or Claude Code session). Read in this order.
 ## Mental model in three sentences
 A React SPA talks to a FastAPI backend that runs parameterised, access-scoped
 queries against one wide BigQuery table (`gold_exp.exp_ai_dashboard_model`) and
-caches results in-memory for 5 minutes. Users authenticate by email (shared
-password or Google SSO); their email resolves to an access scope (national /
-regional / CU) that filters every row server-side. Everything is single-replica
+caches results in-memory for 5 minutes. Staff sign in with Google SSO and
+approved guests with single-use emailed links (no shared password — ADR-011);
+both get a server-side session, and the email resolves to an access scope
+(national / regional / CU) that filters every row server-side. Everything is single-replica
 and read-only — the operational constraints follow from the in-memory cache.
 
 ## Quick-start

@@ -1,0 +1,23 @@
+# Git pre-commit hooks (security review DATA-888, plan v1.3 §4).
+#
+# One-time setup per clone:
+#     pip install pre-commit        # or: pipx install pre-commit / brew install pre-commit
+#     pre-commit install
+# Then every `git commit` runs gitleaks on the STAGED changes only:
+#     gitleaks git --pre-commit --staged
+# with this repo's .gitleaks.toml (the same config CI uses). A finding blocks
+# the commit; values are redacted. To check without committing:
+#     pre-commit run gitleaks
+#
+# The hook builds the pinned gitleaks release from source on first run (pre-commit
+# bootstraps Go itself), so nothing else needs installing. If you already have
+# gitleaks >= 8.19 on PATH, swap `id: gitleaks` for `id: gitleaks-system`.
+#
+# Never use `git commit --no-verify` to get past a finding: remove the secret,
+# rotate it, and see docs/security/SECRETS_RUNBOOK.md. CI scans full history on
+# every push and PR, so a bypassed hook only delays the failure.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

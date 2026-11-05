@@ -28,7 +28,8 @@ import {
   sum,
 } from '../lib/metrics.js';
 import { ragColor, ragKpiClass, delta, num, getGMLabel, formatPercentage1 } from '../lib/format.js';
-import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, ScoreCard, Placeholder, ElabSliceTable } from '../components/ui.jsx';
+import { Section, KpiHeroCard, MetricTile, ProgressCell, StackedBar, ScoreCard, Placeholder, ElabSliceTable, DrillLockedNote } from '../components/ui.jsx';
+import { usePersonLevelAccess } from '../lib/access.js';
 import { ELAB_LEC_NUMS, aggregateElabBreakdown, aggregateElabPerSession } from '../lib/elab.js';
 
 const REGIONS = ['Central', 'East', 'North', 'South', 'West'];
@@ -2084,6 +2085,7 @@ const normCu = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const THWRAP = { whiteSpace: 'normal', overflowWrap: 'break-word', maxWidth: 105 };
 
 function LecObservationSubTab({ term, year, summaryData }) {
+  const canDrill = usePersonLevelAccess();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cuRows, setCuRows] = useState([]);
@@ -2105,7 +2107,7 @@ function LecObservationSubTab({ term, year, summaryData }) {
   const [mentorDrillRows, setMentorDrillRows] = useState([]);
   const [mentorDrillLoading, setMentorDrillLoading] = useState(false);
   useEffect(() => {
-    if (!drill || drill.kind !== 'cu') return undefined;
+    if (!drill || drill.kind !== 'cu' || !canDrill) return undefined;
     let active = true;
     setMentorDrillLoading(true);
     api
@@ -2122,12 +2124,12 @@ function LecObservationSubTab({ term, year, summaryData }) {
     return () => {
       active = false;
     };
-  }, [drill, term]);
+  }, [drill, term, canDrill]);
 
   const [mentorObsRows, setMentorObsRows] = useState([]);
   const [mentorObsLoading, setMentorObsLoading] = useState(false);
   useEffect(() => {
-    if (!drill || drill.kind !== 'mentor') return undefined;
+    if (!drill || drill.kind !== 'mentor' || !canDrill) return undefined;
     let active = true;
     setMentorObsLoading(true);
     api
@@ -2144,7 +2146,7 @@ function LecObservationSubTab({ term, year, summaryData }) {
     return () => {
       active = false;
     };
-  }, [drill, term]);
+  }, [drill, term, canDrill]);
 
   const [commentSearch, setCommentSearch] = useState('');
   const [sentimentFilter, setSentimentFilter] = useState('all');
@@ -2162,7 +2164,8 @@ function LecObservationSubTab({ term, year, summaryData }) {
       api.fetchMentorQualitySummary(term),
       api.fetchMentorQualitySessions(term),
       api.fetchMentorQualityQuestions(term),
-      api.fetchMentorQualityComments(term),
+      // Free-text observer comments are person-level: 403 for National-view-only.
+      canDrill ? api.fetchMentorQualityComments(term) : Promise.resolve({ data: [], theme_summary: [] }),
     ])
       .then(([cu, s, se, q, c]) => {
         if (!active) return;
@@ -2183,7 +2186,7 @@ function LecObservationSubTab({ term, year, summaryData }) {
     return () => {
       active = false;
     };
-  }, [term]);
+  }, [term, canDrill]);
 
   if (loading) return <Placeholder label="Loading mentor quality data…" />;
   if (error) return <Placeholder label={error} />;
@@ -2436,7 +2439,8 @@ function LecObservationSubTab({ term, year, summaryData }) {
         </div>
       </Section>
 
-      <Section title="Unpacking the qualitative feedback" subtitle={`Rules-based theme tagging across ${comments.length} observer comments · click a theme to browse comments`}>
+      <Section title="Unpacking the qualitative feedback" subtitle={canDrill ? `Rules-based theme tagging across ${comments.length} observer comments · click a theme to browse comments` : 'Observer comments are drill-down detail'}>
+        {!canDrill ? <DrillLockedNote /> : null}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.85rem' }}>
           {themeSummary.filter((t) => t.total > 0).map((t) => {
             const strengthPct = Math.round((t.strength_count / t.total) * 100);
@@ -2480,6 +2484,7 @@ function LecObservationSubTab({ term, year, summaryData }) {
           setSentimentFilter={setSentimentFilter}
           commentSearch={commentSearch}
           setCommentSearch={setCommentSearch}
+          canDrill={canDrill}
           onDrillCu={(region, cu, cuTerm) => pushDrill({ kind: 'cu', region, cu, term: cuTerm })}
           onDrillMentor={(region, cu, cuTerm, mentorId) => pushDrill({ kind: 'mentor', region, cu, term: cuTerm, mentorId })}
         />
@@ -2491,7 +2496,9 @@ function LecObservationSubTab({ term, year, summaryData }) {
 function MentorQualityDrill({
   drill, onBack, onClose, cuRows, goldByCu, mentorDrillRows, mentorDrillLoading, mentorObsRows, mentorObsLoading,
   comments, themeSummary, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch, onDrillCu, onDrillMentor,
+  canDrill = true,
 }) {
+  const locked = !canDrill && drill.kind !== 'region';
   const title = drill.kind === 'region' ? drill.region
     : drill.kind === 'cu' ? drill.cu
       : drill.kind === 'mentor' ? `Mentor ${drill.mentorId}`
@@ -2519,20 +2526,21 @@ function MentorQualityDrill({
           <div className="drill-subtitle">{subtitle}</div>
         </div>
         <div className="drill-body">
+          {locked ? <DrillLockedNote /> : null}
           {drill.kind === 'region' ? (
             <RegionCuDrillList region={drill.region} cuRows={cuRows} goldByCu={goldByCu} onDrillCu={onDrillCu} />
           ) : null}
-          {drill.kind === 'cu' ? (
+          {drill.kind === 'cu' && !locked ? (
             <MentorDrillList
               loading={mentorDrillLoading}
               rows={mentorDrillRows}
               onDrillMentor={(mentorId) => onDrillMentor(drill.region, drill.cu, drill.term, mentorId)}
             />
           ) : null}
-          {drill.kind === 'mentor' ? (
+          {drill.kind === 'mentor' && !locked ? (
             <MentorObservationDrillList loading={mentorObsLoading} rows={mentorObsRows} />
           ) : null}
-          {drill.kind === 'theme' ? (
+          {drill.kind === 'theme' && !locked ? (
             <ThemeCommentDrillList
               themeKey={drill.themeKey}
               comments={comments}
@@ -3358,6 +3366,12 @@ function ElabNationalSubTab() {
   );
 }
 
+// Example quotes ("samples") are person-level free text: the Highlights
+// endpoint sends them empty for National-view-only users.
+function NoQuotesNote() {
+  return <div style={{ fontSize: '.78rem', color: '#888' }}>Example quotes are drill-down detail and aren't shown for this account.</div>;
+}
+
 function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -3494,11 +3508,12 @@ function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
                     <div style={{ fontSize: '.75rem', color: '#0077b6', fontWeight: 700 }}>{t.total} mention{t.total !== 1 ? 's' : ''} · view Skills Day ⌕</div>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-                    {t.samples.map((s, i) => (
+                    {(t.samples || []).map((s, i) => (
                       <div key={i} style={{ fontSize: '.85rem', color: '#333', fontStyle: 'italic', paddingLeft: '.75rem', borderLeft: `3px solid ${s.sentiment === 'strength' ? C.green : C.red}` }}>
                         “{s.quote}”
                       </div>
                     ))}
+                    {(t.samples || []).length === 0 ? <NoQuotesNote /> : null}
                   </div>
                 </div>
               );
@@ -3515,11 +3530,12 @@ function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
               <div style={{ fontSize: '.75rem', color: '#888' }}>{topGrowthTheme.growth_count} growth-area · {topGrowthTheme.strength_count} strength mentions</div>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-              {topGrowthTheme.samples.filter((s) => s.sentiment === 'growth_area').slice(0, 3).map((s, i) => (
+              {(topGrowthTheme.samples || []).filter((s) => s.sentiment === 'growth_area').slice(0, 3).map((s, i) => (
                 <div key={i} style={{ fontSize: '.85rem', color: '#333', fontStyle: 'italic', paddingLeft: '.75rem', borderLeft: `3px solid ${C.red}` }}>
                   “{s.quote}”
                 </div>
               ))}
+              {(topGrowthTheme.samples || []).filter((s) => s.sentiment === 'growth_area').length === 0 ? <NoQuotesNote /> : null}
             </div>
           </div>
         </Section>
@@ -3554,6 +3570,7 @@ function MentorQualityHighlightsSubTab({ term, onJumpSubTab }) {
 // ── Generic Observation Source sub-tab (Group Mentoring / Skills Day share this shape) ──
 
 function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceApi, dimensionColumns, extraKpis, renderMentorRow, mentorColumns, renderObservation, renderCommentMeta, spotlightThemes }) {
+  const canDrill = usePersonLevelAccess();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [cuRows, setCuRows] = useState([]);
@@ -3569,7 +3586,7 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
   const [mentorDrillRows, setMentorDrillRows] = useState([]);
   const [mentorDrillLoading, setMentorDrillLoading] = useState(false);
   useEffect(() => {
-    if (!drill || drill.kind !== 'cu') return undefined;
+    if (!drill || drill.kind !== 'cu' || !canDrill) return undefined;
     let active = true;
     setMentorDrillLoading(true);
     sourceApi
@@ -3578,12 +3595,12 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
       .catch(() => { if (active) setMentorDrillRows([]); })
       .finally(() => { if (active) setMentorDrillLoading(false); });
     return () => { active = false; };
-  }, [drill, term]);
+  }, [drill, term, canDrill]);
 
   const [mentorObsRows, setMentorObsRows] = useState([]);
   const [mentorObsLoading, setMentorObsLoading] = useState(false);
   useEffect(() => {
-    if (!drill || drill.kind !== 'mentor') return undefined;
+    if (!drill || drill.kind !== 'mentor' || !canDrill) return undefined;
     let active = true;
     setMentorObsLoading(true);
     sourceApi
@@ -3592,7 +3609,7 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
       .catch(() => { if (active) setMentorObsRows([]); })
       .finally(() => { if (active) setMentorObsLoading(false); });
     return () => { active = false; };
-  }, [drill, term]);
+  }, [drill, term, canDrill]);
 
   const [commentSearch, setCommentSearch] = useState('');
   const [sentimentFilter, setSentimentFilter] = useState('all');
@@ -3602,7 +3619,9 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
     let active = true;
     setLoading(true);
     setError('');
-    Promise.all([sourceApi.fetchSummaryByCu(term), sourceApi.fetchComments(term)])
+    // Free-text observer comments are person-level: 403 for National-view-only.
+    const commentsReq = canDrill ? sourceApi.fetchComments(term) : Promise.resolve({ data: [], theme_summary: [] });
+    Promise.all([sourceApi.fetchSummaryByCu(term), commentsReq])
       .then(([cu, c]) => {
         if (!active) return;
         setCuRows(cu.data || []);
@@ -3613,7 +3632,7 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
       .catch((e) => { if (active) setError(e.message || `Failed to load ${title} data.`); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [term]);
+  }, [term, canDrill]);
 
   if (loading) return <Placeholder label={`Loading ${title} data…`} />;
   if (error) return <Placeholder label={error} />;
@@ -3750,7 +3769,7 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
                     <div style={{ fontSize: '.75rem', color: '#0077b6', fontWeight: 700 }}>{t.total} mention{t.total !== 1 ? 's' : ''} · browse all ⌕</div>
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
-                    {t.samples.map((s, i) => (
+                    {(t.samples || []).map((s, i) => (
                       <div key={i} style={{ fontSize: '.85rem', color: '#333', fontStyle: 'italic', paddingLeft: '.75rem', borderLeft: `3px solid ${s.sentiment === 'strength' ? C.green : C.red}` }}>
                         “{s.quote}”
                       </div>
@@ -3763,7 +3782,8 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
         </Section>
       ) : null}
 
-      <Section title="Unpacking the qualitative feedback" subtitle={`Rules-based theme tagging across ${comments.length} observer comments · click a theme to browse comments`}>
+      <Section title="Unpacking the qualitative feedback" subtitle={canDrill ? `Rules-based theme tagging across ${comments.length} observer comments · click a theme to browse comments` : 'Observer comments are drill-down detail'}>
+        {!canDrill ? <DrillLockedNote /> : null}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.85rem' }}>
           {themeSummary.filter((t) => t.total > 0).map((t) => {
             const strengthPct = Math.round((t.strength_count / t.total) * 100);
@@ -3807,6 +3827,7 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
           setSentimentFilter={setSentimentFilter}
           commentSearch={commentSearch}
           setCommentSearch={setCommentSearch}
+          canDrill={canDrill}
           onDrillCu={(region, cu) => pushDrill({ kind: 'cu', region, cu })}
           onDrillMentor={(region, cu, mentorId) => pushDrill({ kind: 'mentor', region, cu, mentorId })}
           mentorColumns={mentorColumns}
@@ -3822,8 +3843,9 @@ function ObservationSourceSubTab({ term, year, summaryData, title, api: sourceAp
 function ObservationSourceDrill({
   drill, onBack, onClose, cuRows, mentorDrillRows, mentorDrillLoading, mentorObsRows, mentorObsLoading,
   comments, themeSummary, sentimentFilter, setSentimentFilter, commentSearch, setCommentSearch, onDrillCu, onDrillMentor,
-  mentorColumns, renderMentorRow, renderObservation, renderCommentMeta,
+  mentorColumns, renderMentorRow, renderObservation, renderCommentMeta, canDrill = true,
 }) {
+  const locked = !canDrill && drill.kind !== 'region';
   const title = drill.kind === 'region' ? drill.region
     : drill.kind === 'cu' ? drill.cu
       : drill.kind === 'mentor' ? `Mentor ${drill.mentorId}`
@@ -3851,6 +3873,7 @@ function ObservationSourceDrill({
           <div className="drill-subtitle">{subtitle}</div>
         </div>
         <div className="drill-body">
+          {locked ? <DrillLockedNote /> : null}
           {drill.kind === 'region' ? (
             <div className="table-wrap">
               <table className="breakdown-table">
@@ -3872,7 +3895,7 @@ function ObservationSourceDrill({
               </table>
             </div>
           ) : null}
-          {drill.kind === 'cu' ? (
+          {drill.kind === 'cu' && !locked ? (
             mentorDrillLoading ? <Placeholder label="Loading mentors…" /> : mentorDrillRows.length === 0 ? <Placeholder label="No observed mentors found for this CU." /> : (
               <div className="table-wrap">
                 <table className="breakdown-table">
@@ -3901,7 +3924,7 @@ function ObservationSourceDrill({
               </div>
             )
           ) : null}
-          {drill.kind === 'mentor' ? (
+          {drill.kind === 'mentor' && !locked ? (
             mentorObsLoading ? <Placeholder label="Loading observations…" /> : mentorObsRows.length === 0 ? <Placeholder label="No observations found for this mentor." /> : (
               <>
                 {mentorObsRows[0]?.mentor_name ? <div style={{ fontWeight: 700, marginBottom: '.75rem' }}>{mentorObsRows[0].mentor_name}</div> : null}
@@ -3924,7 +3947,7 @@ function ObservationSourceDrill({
               </>
             )
           ) : null}
-          {drill.kind === 'theme' ? (
+          {drill.kind === 'theme' && !locked ? (
             <ThemeCommentDrillList
               themeKey={drill.themeKey}
               comments={comments}

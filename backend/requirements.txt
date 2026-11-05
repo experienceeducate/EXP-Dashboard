@@ -2,7 +2,10 @@ fastapi==0.138.0
 uvicorn[standard]==0.49.0
 google-cloud-bigquery==3.42.0
 google-auth==2.40.3
-python-jose[cryptography]==3.5.0
+# PyJWT, not python-jose: python-jose 3.5.0 and its ecdsa dependency have
+# advisories with no fixed release (PYSEC-2026-4298, PYSEC-2026-1325). Same
+# library as the EXP Training Toolkit. HS256 only (security review DATA-894).
+PyJWT==2.15.0
 authlib==1.9.1
 httpx==0.28.1
 cachetools==5.5.2

@@ -163,7 +163,7 @@ body { margin:0; font-family:'Inter',system-ui,-apple-system,sans-serif; backgro
 .login-google:hover { background:#f7f8f8; box-shadow:0 1px 3px rgba(0,0,0,.12); }
 .login-google:disabled { opacity:.6; cursor:default; }
 .login-google svg { width:18px; height:18px; flex:none; }
-.login-fallback-link { display:block; margin:1rem auto 0; background:none; border:none; color:var(--educate-grey); font-size:.78rem; text-decoration:underline; cursor:pointer; }
+.login-link { display:block; margin:1rem auto 0; background:none; border:none; color:var(--educate-grey); font-size:.78rem; text-decoration:underline; cursor:pointer; }
 .login-info { margin-top:1.25rem; background:#f0f4f8; border-radius:8px; padding:.85rem; font-size:.78rem; color:#555; line-height:1.5; }
 .login-error { background:#fcf3f1; border:1px solid #e8b8b0; color:#7a2e26; border-radius:8px; padding:.7rem; font-size:.85rem; margin-bottom:.9rem; }
 

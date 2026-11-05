@@ -16,7 +16,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import auth
 from app.core import access
 from app.core.config import settings
-from app.routers import access_admin, admin, analytics, cu, elab, ensight, health, mentor_quality, mentoring_week, overview, tasks
+from app.routers import (
+    access_admin, admin, analytics, cu, elab, ensight, guests_admin, health, mentor_quality, mentoring_week, overview, tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +61,8 @@ async def _lifespan(app: FastAPI):
     yield
 
 # Paths that bypass the custom client-header guard. Browsers don't attach custom
-# headers to cross-site OAuth redirects, and tooling needs the docs/health.
+# headers to cross-site OAuth redirects. The API docs are off in production
+# (ENABLE_API_DOCS=false), so their paths 404 there regardless.
 _HEADER_EXEMPT_PATHS = {
     "/health",
     "/docs",
@@ -76,6 +79,10 @@ def create_app() -> FastAPI:
         version="1.0.0",
         description="Read-only dashboard API over BigQuery (gold_exp.exp_ai_dashboard_model).",
         lifespan=_lifespan,
+        # Security review (OWASP A05): no public API map in production.
+        docs_url="/docs" if settings.ENABLE_API_DOCS else None,
+        redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
+        openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
     )
 
     # CORS — locked to the app hostname + localhost dev origins.
@@ -87,8 +94,16 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", settings.CLIENT_HEADER_NAME],
     )
 
-    # OAuth state storage. NOTE: JWT_SECRET doubles as the session key (v1 limitation).
-    app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
+    # OAuth state storage only (no identity lives in this cookie). Its key is
+    # SESSION_SECRET, or a key derived from JWT_SECRET for one purpose — never
+    # JWT_SECRET itself (security review: one secret, one job).
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_signing_key,
+        same_site="lax",
+        https_only=settings.FRONTEND_URL.startswith("https://"),
+        max_age=600,
+    )
 
     # Custom client-header guard: every /api/* request must carry the token.
     @app.middleware("http")
@@ -113,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(analytics.router)
     app.include_router(admin.router)
     app.include_router(access_admin.router)
+    app.include_router(guests_admin.router)
     app.include_router(tasks.router)
     app.include_router(elab.router)
     app.include_router(mentoring_week.router)

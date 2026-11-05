@@ -210,10 +210,31 @@ def _filters_line(filters: dict) -> str:
     return line
 
 
+# Bounds on client-supplied follow-up history (also enforced by the router's
+# request model — repeated here so the pipeline is safe on its own).
+MAX_HISTORY_ENTRIES = 6
+MAX_HISTORY_CONTENT_CHARS = 4000
+_HISTORY_ROLES = ("user", "assistant")
+
+
+def _clean_history(history) -> list[dict]:
+    """Keep only well-formed user/assistant turns, capped in count and length.
+    Anything else (a forged "system" turn, a non-string body) is dropped."""
+    cleaned = []
+    for h in list(history or [])[-MAX_HISTORY_ENTRIES:]:
+        if not isinstance(h, dict):
+            continue
+        role, content = h.get("role"), h.get("content")
+        if role not in _HISTORY_ROLES or not isinstance(content, str):
+            continue
+        cleaned.append({"role": role, "content": content[:MAX_HISTORY_CONTENT_CHARS]})
+    return cleaned
+
+
 def _history_and_question(history: list[dict], question: str, context_line: str) -> str:
     lines = [context_line]
-    for h in (history or [])[-6:]:
-        lines.append(f"{h.get('role', 'user')}: {h.get('content', '')}")
+    for h in _clean_history(history):
+        lines.append(f"{h['role']}: {h['content']}")
     lines.append(f"user: {question}")
     return "\n".join(lines)
 
@@ -470,6 +491,17 @@ _ANSWER_SCHEMA = {
 
 
 def _audit(user: UserAccess, question: str, route: str, sql: str | None, duration_s: float, cached: bool, error: str | None) -> None:
+    """Runs in ask()'s ``finally``: an exception escaping here would replace
+    the real result (or the real error) with an audit failure. insert_rows
+    only absorbs NotFound/Forbidden itself, so anything else is caught and
+    logged here."""
+    try:
+        _write_audit(user, question, route, sql, duration_s, cached, error)
+    except Exception:  # noqa: BLE001 — logged, never allowed to mask the answer
+        logger.exception("E!nsight audit log write raised")
+
+
+def _write_audit(user: UserAccess, question: str, route: str, sql: str | None, duration_s: float, cached: bool, error: str | None) -> None:
     row = {
         "question_id": str(uuid.uuid4()),
         "event_timestamp": datetime.now(timezone.utc).isoformat(),
@@ -497,6 +529,7 @@ def ask(
     question = (question or "").strip()
     if not question:
         raise EnsightLLMError("Ask a question first.")
+    history = _clean_history(history)
 
     check_rate_limit(user.email)
 
@@ -641,7 +674,10 @@ def ask(
             schema=_ANSWER_SCHEMA,
             max_tokens=1500,
         )
-        source = {"kind": "sql", "sql": sql_used, "bytes_processed": result.dry_run_bytes, "row_count": len(rows)}
+        # The normalized SQL that was validated and actually executed (comments
+        # removed) — this is what the UI shows and what an export re-runs.
+        executed_sql = result.sql or sql_used
+        source = {"kind": "sql", "sql": executed_sql, "bytes_processed": result.dry_run_bytes, "row_count": len(rows)}
         return _finish({
             "answer": step4["answer"], "route": "sql",
             "sources": [source], "rows": rows[:_JSON_ROWS_LIMIT], "row_count": len(rows),

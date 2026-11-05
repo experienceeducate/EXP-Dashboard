@@ -3,7 +3,8 @@ import * as api from '../lib/api.js';
 import { getLECsForTerm, getLECsInScope, getGMsInScope, getMilestonesInScope, getClubMeetingsInScope, C } from '../lib/config.js';
 import { avgScholarsPerLec, getReportTimelinessSummary, buildLecWeekMatrix, computeHeatmapHeader, computeLecClusters, computeRegionalIssues, mergeRowsAcrossTerms, sum } from '../lib/metrics.js';
 import { formatPercentage, formatPercentage1, ragScoreClass, ragColor, calculatePBQualityScore, num, getGMLabel, getNonLECActivityLabel } from '../lib/format.js';
-import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap, ElabSliceTable } from '../components/ui.jsx';
+import { Section, ScoreCard, ProgressCell, Placeholder, LecWeekHeatmap, ElabSliceTable, DrillLockedNote } from '../components/ui.jsx';
+import { usePersonLevelAccess } from '../lib/access.js';
 import { ELAB_LEC_NUMS, aggregateElabBreakdown, aggregateElabPerSession } from '../lib/elab.js';
 import { getIssueKey, getIssueStatus, loadIssueTracker, updateIssueStatus } from '../lib/issueTracker.js';
 import { TimelinessBar, TimelinessLegend, HeatmapInsights } from './NationalView.jsx';
@@ -119,7 +120,7 @@ function CUBreakdown({ summaryData, data, year, term, onSelectCU }) {
             const obs = N(cu.total_observed_mentors);
             const mTotal = N(cu.total_active_mentors);
             return (
-              <tr key={cu.cu} className="clickable" onClick={() => onSelectCU(cu.cu)}>
+              <tr key={cu.cu} className={onSelectCU ? 'clickable' : undefined} onClick={onSelectCU ? () => onSelectCU(cu.cu) : undefined}>
                 <td className="item-name">{cu.cu}</td>
                 <td style={{ color: '#555' }}>{cu.foa_name || '–'}</td>
                 <td className="center"><strong>{n}</strong></td>
@@ -418,6 +419,8 @@ function FollowUpForm({ issue, onCancel, onConfirm }) {
 }
 
 function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU }) {
+  // Follow-up status changes (POST /api/tasks) are refused for National-view-only.
+  const canAct = usePersonLevelAccess();
   const { issues: allIssues, bottom5, achievements } = useMemo(() => computeRegionalIssues(data, summaryData, year, term, schoolData), [data, summaryData, year, term, schoolData]);
   const [tick, setTick] = useState(0);
   const [openIssueKey, setOpenIssueKey] = useState(null);
@@ -469,11 +472,12 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
                 {issues.map((i, idx) => (
                   <Fragment key={`${i.cu}-${i.type}-${idx}`}>
                     <tr>
-                      <td className="item-name clickable" onClick={() => onSelectCU(i.cu)}>{i.cu}</td>
+                      <td className={onSelectCU ? 'item-name clickable' : 'item-name'} onClick={onSelectCU ? () => onSelectCU(i.cu) : undefined}>{i.cu}</td>
                       <td>{i.foa}</td>
                       <td><span style={{ background: sevBg[i.severity], padding: '.2rem .5rem', borderRadius: 4, borderLeft: `3px solid ${sevBorder[i.severity]}`, fontWeight: 600 }}>{i.type}</span></td>
                       <td>{i.value}</td>
                       <td>
+                        {canAct ? (
                         <button
                           type="button"
                           onClick={() => setOpenIssueKey(openIssueKey === i.issueKey ? null : i.issueKey)}
@@ -482,9 +486,10 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
                         >
                           ✓ Followed up
                         </button>
+                        ) : null}
                       </td>
                     </tr>
-                    {openIssueKey === i.issueKey ? (
+                    {canAct && openIssueKey === i.issueKey ? (
                       <FollowUpForm
                         issue={i}
                         onCancel={() => setOpenIssueKey(null)}
@@ -505,7 +510,7 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
               <thead><tr><th>CU</th><th>FOA</th><th>Improvement</th><th>Detail</th></tr></thead>
               <tbody>
                 {achievements.map((a, idx) => (
-                  <tr key={`${a.cu}-${a.type}-${idx}`} className="clickable" onClick={() => onSelectCU(a.cu)}>
+                  <tr key={`${a.cu}-${a.type}-${idx}`} className={onSelectCU ? 'clickable' : undefined} onClick={onSelectCU ? () => onSelectCU(a.cu) : undefined}>
                     <td className="item-name">{a.cu}</td>
                     <td>{a.foa}</td>
                     <td><span style={{ background: '#d4edda', padding: '.2rem .5rem', borderRadius: 4, borderLeft: `3px solid ${C.green}`, fontWeight: 600 }}>{a.type}</span></td>
@@ -523,7 +528,7 @@ function IssueSummary({ data, summaryData, year, term, schoolData, onSelectCU })
             <thead><tr><th>CU</th><th>FOA</th><th className="center">Schools</th><th className="center">LECs Delivered</th><th className="center">Delivery %</th><th style={{ minWidth: 140 }}>Progress</th></tr></thead>
             <tbody>
               {bottom5.map((c) => (
-                <tr key={c.cu} className="clickable" onClick={() => onSelectCU(c.cu)}>
+                <tr key={c.cu} className={onSelectCU ? 'clickable' : undefined} onClick={onSelectCU ? () => onSelectCU(c.cu) : undefined}>
                   <td className="item-name">{c.cu}</td>
                   <td>{c.foa}</td>
                   <td className="center">{c.n}</td>
@@ -711,7 +716,11 @@ function SkillsDayByCU({ data }) {
   );
 }
 
-export default function RegionalView({ summaryData, schoolData, year, term, region, onSelectCU, onDrill }) {
+export default function RegionalView({ summaryData, schoolData, year, term, region, onSelectCU: onSelectCUProp, onDrill }) {
+  // National-view-only users can't open a CU's school list (/api/cu → 403):
+  // CU rows stay unclickable for them (see PersonLevelContext).
+  const canDrill = usePersonLevelAccess();
+  const onSelectCU = canDrill ? onSelectCUProp : null;
   // One row per (CU, term) present for the region/year — under "All Terms"
   // this has 2 rows per CU (term1 + term2), each nulling out the fields that
   // don't apply to it. Kept around only for Report Timeliness, which is
@@ -751,6 +760,7 @@ export default function RegionalView({ summaryData, schoolData, year, term, regi
 
   return (
     <div>
+      {!canDrill ? <DrillLockedNote /> : null}
       <ScoreCards summaryData={summaryData} data={data} year={year} term={term} />
       <IssueSummary data={data} summaryData={summaryData} year={year} term={term} schoolData={regionSchoolData} onSelectCU={onSelectCU} />
       <Section title="✅ Activity Completion & Participation" subtitle="Delivery and participation across the region">

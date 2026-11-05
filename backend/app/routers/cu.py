@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.auth import current_user
+from app.auth import current_user, person_level_user
 from app.core import database
 from app.core.access import UserAccess
 from app.core.sql import build_where, cu_clause, level_clause, term_clause
@@ -31,7 +31,7 @@ def _may_access_cu(user: UserAccess, cu: str) -> bool:
 def cu_schools(
     cu: str = Query(..., min_length=1, description="Community unit name"),
     term: str | None = Query(default=None),
-    user: UserAccess = Depends(current_user),
+    user: UserAccess = Depends(person_level_user),
 ):
     if not _may_access_cu(user, cu):
         raise HTTPException(status_code=403, detail="Not permitted to view this CU")

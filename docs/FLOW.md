@@ -2,33 +2,63 @@
 
 Step-by-step traces of the important request paths.
 
-## 1. Login (email + shared password)
-1. User enters email + password in the SPA login screen.
-2. SPA `POST /api/auth/login` with body `{email, password}` and header
-   `X-Exp-Client: dashboard-v1`.
-3. Client-header guard middleware passes (header present).
-4. `auth.login` checks `password == DASHBOARD_PASSWORD` (401 if not).
-5. `resolve_access(email)` maps the email → `UserAccess` via `ACCESS_CONFIG`
-   (national / regions / cus). No access → 403.
-6. `create_token(access)` issues an HS256 JWT carrying `sub=email` and the
-   resolved `access` dict, 8-hour expiry.
-7. Response `{status:"ok", token, user}`. SPA stores the token in
-   `sessionStorage` and renders the dashboard scoped to `user`.
+## 1. Login — staff (Google SSO → one-time code → session)
+1. Login screen calls `GET /api/auth/config` (public) → `{google,
+   guest_sign_in_available}` and shows only the options that work.
+2. SPA sends the browser to `GET /api/auth/google/login` (header-exempt path).
+3. authlib redirects to Google; user consents.
+4. Google redirects to `GET /api/auth/google/callback` (header-exempt).
+5. Backend checks the email domain == `experienceeducate.org` and that
+   `resolve_access(email)` has any access (else redirect to
+   `FRONTEND_URL/#error=domain_not_allowed|no_access|oauth_failed`).
+6. `store.issue_login_code(...)` → redirect to
+   `FRONTEND_URL/#login_code=<code>` (60 s, single use — never a token in a URL).
+7. The SPA reads the fragment once at module load (`api.consumeAuthRedirect`),
+   strips it with `history.replaceState`, and `POST /api/auth/session/exchange
+   {code}` (with `X-Exp-Client`).
+8. Response `{status, token, refresh_token, expires_in: 900,
+   session_expires_at, auth_kind: "staff", user}`. SPA stores both tokens in
+   `sessionStorage`, then hydrates `user` from `GET /api/auth/me` (which adds
+   `authKind`, `sessionExpiresAt`, `accessExpiresAt`).
 
-## 2. Login (Google SSO)
-1. SPA sends the browser to `GET /api/auth/google/login` (header-exempt path).
-2. authlib redirects to Google; user consents.
-3. Google redirects to `GET /api/auth/google/callback` (header-exempt).
-4. Backend verifies the email domain == `experienceeducate.org` (403 otherwise),
-   `resolve_access(email)`, `create_token(...)`.
-5. Redirect to `FRONTEND_URL/#token=<jwt>`. The SPA reads the fragment, stores
-   the token, and strips the hash.
+## 2. Login — guest (request → approve + whitelist → magic link)
+1. Guest submits the login screen's "Request guest access" form:
+   `POST /api/auth/request-access {email, organization, reason}` → always 202
+   with the same generic message (429 if rate-limited).
+2. An access manager approves them in **Admin → Guest access** with one region
+   or CU and a number of days (`POST /api/admin/guests/approve`, which also
+   whitelists by default) — or invites them directly (`/invite`).
+3. Guest asks for a link: `POST /api/auth/magic-link {email}` → 202 generic
+   message; if approved + whitelisted + email configured, a single-use,
+   15-minute link to `FRONTEND_URL/#magic=<token>` is emailed.
+4. Opening the link: the SPA strips the fragment immediately, keeps the token in
+   memory only, and shows "Sign in to EXP Programme Dashboard" with a **Sign in**
+   button. Nothing is redeemed on load (email scanners prefetch links).
+5. On click: `POST /api/auth/magic-link/redeem {token}` → the same session
+   response (`auth_kind: "guest"`); 400 → generic invalid/expired message and a
+   way to request a new link. The header shows "Guest access · ends <date>".
+
+## 2a. Session refresh, 401s and logout
+- The access token lives 15 minutes. `lib/api.js` refreshes ~1 minute before
+  expiry (while the user is active) and on any 401, through a single in-flight
+  `POST /api/auth/session/refresh {refresh_token}`; the response carries a NEW
+  refresh token (rotation), and the original request is retried once.
+- 409 = the token was rotated moments ago by another tab sharing the session:
+  wait ~1 s, re-read the stored refresh token and retry once with it. 400/401
+  → sign out ("Your session has ended"). Re-presenting an already-rotated token
+  after the grace window revokes the session server-side (theft signal).
+- Every request re-validates the session (`current_user` → `store.validate`),
+  so revocation, idle timeout (60 min), absolute expiry and a guest's end date
+  apply immediately.
+- Logout: `POST /api/auth/logout` with the Bearer token revokes the session,
+  then the SPA clears `sessionStorage`.
 
 ## 3. Loading the overview (a scoped, cached query)
 1. SPA `GET /api/overview/summary?term=term1` with
    `Authorization: Bearer <jwt>` + `X-Exp-Client`.
-2. Client-header guard passes; `current_user` decodes the JWT → `UserAccess`
-   (401 if invalid/expired, 403 if no access).
+2. Client-header guard passes; `current_user` decodes the JWT, validates its
+   server-side session and re-resolves `UserAccess` (401 if invalid/expired/
+   revoked, 403 if no access).
 3. `overview.summary` calls `_fetch_level('cu', 'term1', user)` and
    `_fetch_level('school', 'term1', user)`.
 4. For each: `build_where(level_clause, term_clause, access_clause(user))`

@@ -61,8 +61,20 @@ class UpdateMappingRequest(BaseModel):
 
 @router.post("/mapping")
 def update_mapping(body: UpdateMappingRequest, user: UserAccess = Depends(current_user)):
-    if not user.can_manage_access:
+    if user.is_guest or not user.can_manage_access:
         raise HTTPException(status_code=403, detail="Not permitted to edit the access mapping.")
+    if body.add_email:
+        # Staff sign in with Google on the allowed domain only, so a mapping
+        # for any other address could never be used by staff sign-in — and
+        # personal addresses go through the guest flow (approval + whitelist
+        # + end date + audit) instead (security review DATA-894).
+        add = body.add_email.strip().lower()
+        if not add.endswith("@" + settings.OAUTH_ALLOWED_DOMAIN):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Only @{settings.OAUTH_ALLOWED_DOMAIN} addresses can be mapped. "
+                       "Add anyone else as a guest (Admin → Guest access).",
+            )
 
     now = datetime.now(timezone.utc).isoformat()
     rows = []

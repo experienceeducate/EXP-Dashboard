@@ -4,6 +4,8 @@
 // tab visibility and dropdown scoping (spec §7). No ACCESS_CONFIG lives here.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createContext, useContext } from 'react';
+
 const EMPTY = { hasNational: false, nationalOnly: false, regions: [], cus: [] };
 
 // Normalise an access object coming from the API into a predictable shape.
@@ -73,3 +75,17 @@ export function scopedCUs(access, summaryData, region) {
   }
   return cus.sort((x, y) => String(x).localeCompare(String(y)));
 }
+
+// Person- and school-level drill-downs (/api/cu, mentor-quality mentors /
+// mentor-observations / comments, elab mentors) and task-status updates are
+// refused (403) for the "National view only" tier — it gets national
+// aggregates only. App provides `!access.nationalOnly`; views read it to hide
+// those entry points instead of firing requests that would 403.
+export const PersonLevelContext = createContext(true);
+
+export function usePersonLevelAccess() {
+  return useContext(PersonLevelContext);
+}
+
+export const DRILL_LOCKED_NOTE =
+  'Drill-down detail needs a national, regional or CU assignment — ask an access manager.';

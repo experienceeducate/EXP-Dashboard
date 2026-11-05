@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Optional
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -297,6 +298,16 @@ class UserAccess:
     cus: list[str] = field(default_factory=list)
     is_admin: bool = False
     can_manage_access: bool = False
+    # Session context, filled in by auth.current_user (not part of the scope):
+    # "staff" (Google SSO) or "guest" (magic link; regional/CU scope only).
+    kind: str = "staff"
+    session_id: Optional[str] = None
+    session_expires_at: Optional[str] = None
+    access_expires_at: Optional[str] = None   # guests: end of their approved access window
+
+    @property
+    def is_guest(self) -> bool:
+        return self.kind == "guest"
 
     @property
     def has_any_access(self) -> bool:
@@ -325,6 +336,9 @@ class UserAccess:
             "cus": self.cus,
             "isAdmin": self.is_admin,
             "canManageAccess": self.can_manage_access,
+            "authKind": self.kind,
+            "sessionExpiresAt": self.session_expires_at,
+            "accessExpiresAt": self.access_expires_at,
         }
 
 

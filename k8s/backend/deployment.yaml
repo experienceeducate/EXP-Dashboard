@@ -17,21 +17,54 @@ spec:
       labels:
         app: exp-dashboard-server
     spec:
+      # Security review DATA-894: the app never calls the Kubernetes API, runs
+      # as the Dockerfile's non-root UID, and can't escalate.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: server
           image: patrickgichini/exp-dashboard-server:latest
           ports:
             - containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           envFrom:
             - secretRef:
                 name: exp-dashboard-credentials
           env:
             - name: GOOGLE_SERVICE_ACCOUNT_KEY
               value: /var/secrets/gcp/key.json
+            # Guest access + server-side sessions (security review DATA-894).
+            # DASHBOARD_PASSWORD is gone — delete it from exp-dashboard-credentials.
+            # SESSION_SECRET, MAIL_BACKEND and SMTP_* come from the Secret above
+            # (see secret.example.yaml); with MAIL_BACKEND unset guest sign-in is
+            # simply unavailable (fails closed) and staff Google sign-in works.
+            - name: SESSION_IDLE_MINUTES
+              value: "60"
+            - name: STAFF_SESSION_HOURS
+              value: "8"
+            - name: GUEST_SESSION_HOURS
+              value: "8"
+            # Read-only identity for E!nsight's generated SQL. Uncomment once
+            # the exp-dashboard-ensight-key Secret exists (DATA-894 Patrick ticket).
+            # - name: ENSIGHT_GOOGLE_SERVICE_ACCOUNT_KEY
+            #   value: /var/secrets/gcp-ensight/key.json
           volumeMounts:
             - name: gcp-key
               mountPath: /var/secrets/gcp
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            # - name: gcp-ensight-key
+            #   mountPath: /var/secrets/gcp-ensight
+            #   readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -68,3 +101,9 @@ spec:
             # namespace secret `gcp-service-account-key`, which other apps use and
             # stores its key under a different field name.
             secretName: exp-dashboard-gcp-key
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        # - name: gcp-ensight-key
+        #   secret:
+        #     secretName: exp-dashboard-ensight-key

@@ -1,0 +1,16 @@
+{
+  "//": "Copy to .claude/settings.local.json (gitignored) to make Claude Code scan staged changes before every git commit it runs. Windows: keep the powershell entry. macOS/Linux: replace the command with: bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/precommit-secret-scan.sh\"",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"$CLAUDE_PROJECT_DIR/.claude/hooks/precommit-secret-scan.ps1\""
+          }
+        ]
+      }
+    ]
+  }
+}
